@@ -8,7 +8,7 @@ defmodule BeamAgent.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       escript: [main_module: BeamAgent.CLI, name: "beam_agent"],
-      deps: []
+      deps: deps()
     ]
   end
 
@@ -16,6 +16,12 @@ defmodule BeamAgent.MixProject do
     [
       extra_applications: [:crypto, :inets, :logger, :ssl],
       mod: {BeamAgent.Application, []}
+    ]
+  end
+
+  defp deps do
+    [
+      {:term_ui, "~> 0.2.0"}
     ]
   end
 end

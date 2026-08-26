@@ -183,7 +183,8 @@ defmodule BeamAgent.CLITest do
             "--config",
             context.config_path,
             "--workspace",
-            context.root
+            context.root,
+            "--no-tui"
           ])
 
         send(parent, {:top_level_status, status})

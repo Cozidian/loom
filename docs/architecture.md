@@ -152,15 +152,18 @@ and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI
 becoming a second orchestration core.
 
-The terminal presentation is similarly isolated in `BeamAgent.CLI.UI`. It adds
-ANSI-aware headers, conversational roles, compact tool activity, setup guidance,
-slash-command discovery, and live delta rendering without owning sessions or
-interpreting model protocols. `TurnRunner` subscribes for exactly one turn and
-continues serving approval requests from the same mailbox. Tool activity is
-rendered from durable events as it happens, and a streamed final answer is not
-printed a second time. Running the executable with no arguments is the human
-path: it opens chat and performs guided setup first when configuration is absent.
-Explicit subcommands remain stable for scripts and diagnostics.
+Terminal presentation is isolated from the runtime in two adapters. On a real
+TTY, `BeamAgent.CLI.TUI.App` owns only Elm-style screen state and rendering while
+`BeamAgent.CLI.TUI.Controller` owns subscriptions, the active turn task,
+cancellation, approvals, and session rebinding. It consumes the same live stream
+and durable event APIs as any future view; it does not interpret provider
+protocols or own conversation state. The line-oriented `BeamAgent.CLI.UI` and
+`TurnRunner` remain the fallback for `--no-tui`, redirected streams, tests, and
+one-shot prompts. Tool activity is rendered from durable events as it happens,
+and a streamed final answer is not printed a second time in either path. Running
+the executable with no arguments is the human path: it opens chat and performs
+guided setup first when configuration is absent. Explicit subcommands remain
+stable for scripts and diagnostics.
 
 ## Provider boundary
 

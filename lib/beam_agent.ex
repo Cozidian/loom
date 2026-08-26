@@ -55,6 +55,8 @@ defmodule BeamAgent do
   def respond_approval(session_id, approval_id, decision),
     do: ToolPolicy.respond(session_id, approval_id, decision)
 
+  def set_approval_handler(session_id, handler), do: ToolPolicy.set_handler(session_id, handler)
+
   def events(session_id), do: EventLog.events(session_id)
   def context_snapshot(session_id), do: Context.snapshot(session_id)
   def skills(session_id), do: Context.skills(session_id)

@@ -200,6 +200,50 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
            end)
   end
 
+  test "a pending approval follows a newly attached interface", context do
+    {:ok, session_id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        approval_policy: :ask,
+        approval_handler: self()
+      )
+
+    authorization =
+      Task.async(fn ->
+        BeamAgent.Session.ToolPolicy.authorize(
+          session_id,
+          "create_file",
+          %{"path" => "pending.txt"},
+          :write
+        )
+      end)
+
+    assert_receive {:beam_agent_approval, first_request}
+    owner = self()
+
+    replacement =
+      spawn(fn ->
+        receive do
+          message ->
+            send(owner, {:replacement_handler, message})
+
+            receive do
+              :stop -> :ok
+            end
+        end
+      end)
+
+    assert :ok = BeamAgent.set_approval_handler(session_id, replacement)
+
+    assert_receive {:replacement_handler, {:beam_agent_approval, repeated_request}}
+    assert repeated_request.approval_id == first_request.approval_id
+    assert :ok = BeamAgent.respond_approval(session_id, repeated_request.approval_id, :deny)
+    assert Task.await(authorization) == {:error, {:tool_denied, "create_file"}}
+    send(replacement, :stop)
+  end
+
   test "sandboxed commands can write inside but not outside the workspace", context do
     tool_context = %{workspace_root: context.workspace}
 

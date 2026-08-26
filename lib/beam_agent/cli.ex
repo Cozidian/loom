@@ -2,7 +2,7 @@ defmodule BeamAgent.CLI do
   @moduledoc "Command-line entry point for configuring and running BeamAgent."
 
   alias BeamAgent.{ProjectContext, Workspace}
-  alias BeamAgent.CLI.{Config, TurnRunner, UI}
+  alias BeamAgent.CLI.{Config, TUI, TurnRunner, UI}
 
   @version Mix.Project.config()[:version]
   @run_switches [
@@ -16,7 +16,8 @@ defmodule BeamAgent.CLI do
     base_url: :string,
     api_key_env: :string,
     workspace: :string,
-    approval: :string
+    approval: :string,
+    tui: :boolean
   ]
 
   def main(args) do
@@ -236,8 +237,15 @@ defmodule BeamAgent.CLI do
       prompt = Enum.join(prompt_parts, " ")
 
       if prompt == "" do
-        UI.session_header(config, session_id)
-        chat_loop(session_id, config)
+        if TUI.available?(opts[:tui]) do
+          case TUI.run(session_id, config) do
+            :ok -> 0
+            {:error, reason} -> error(reason)
+          end
+        else
+          UI.session_header(config, session_id)
+          chat_loop(session_id, config)
+        end
       else
         UI.one_shot_header(config, session_id)
         ask_and_print(session_id, prompt, config)
@@ -845,6 +853,7 @@ defmodule BeamAgent.CLI do
       --approval ask|allow|deny              risky tool policy
       --max-steps N                          tool-loop limit
       --timeout MILLISECONDS                 provider request timeout
+      --no-tui                               use the line-oriented interactive UI
 
     Running `beam_agent init` opens a guided setup. For automated setup, add
     --non-interactive and provide provider/model flags explicitly.
@@ -900,7 +909,9 @@ defmodule BeamAgent.CLI do
 
     Omit the prompt for interactive chat. Supplying one runs a single turn and
     exits. Provider, model, endpoint, limits, and session storage can be
-    overridden with the common options shown by `beam_agent help`.
+    overridden with the common options shown by `beam_agent help`. Interactive
+    chat opens the full-screen TUI on a capable terminal; use `--no-tui` for the
+    line-oriented fallback.
     """)
   end
 

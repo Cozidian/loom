@@ -23,8 +23,8 @@ It includes:
 - synchronous append-only JSONL events and crash reconstruction;
 - `:rest_for_one` recovery from durable-state dependency loss.
 
-The implementation has no third-party dependencies. It uses Elixir's built-in
-`JSON` module and OTP's `:httpc` client for provider calls.
+The runtime uses Elixir's built-in `JSON` module and OTP's `:httpc` client for
+provider calls. The full-screen terminal interface is built on TermUI.
 
 ## Build and configure the CLI
 
@@ -79,14 +79,20 @@ The CLI also exposes durable-session and capability discovery:
 ./beam_agent help
 ```
 
-Inside chat, type `/help` to discover the small interactive command set. The
-most useful commands are `/new`, `/sessions`, `/status`, `/skills`, `/reload`,
-`/events`, `/clear`, and `/exit`. Provider/model and a shortened durable session ID remain visible in
-the header; tool calls and tool results are shown separately from the final
-assistant response. Ollama, OpenAI, xAI/Grok, and Anthropic responses render as
-they arrive; deterministic or custom non-streaming providers still render their
-final response through the same CLI. The interface uses ANSI styling when the
-terminal supports it and remains plain text in redirected output and tests.
+Interactive chat opens a full-screen TUI when a capable terminal is attached.
+It keeps the workspace, active profile/model, durable session, turn state,
+streaming response, tool activity, and approval requests visible without
+scrolling the shell. Press `Ctrl+P` for the command palette, `Ctrl+O` to add a
+line in the composer, `Ctrl+T` to expand tool results, `Page Up`/`Page Down` to
+move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
+idle). Approval dialogs default to deny and require an explicit one-shot choice.
+
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/skills`,
+`/reload`, `/events`, `/clear`, and `/exit`. Ollama, OpenAI, xAI/Grok, and
+Anthropic responses render as they arrive; deterministic or custom
+non-streaming providers render their final response through the same interface.
+Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
+redirected output, and tests select that fallback automatically.
 
 ## Work in a repository
 

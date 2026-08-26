@@ -24,6 +24,12 @@ defmodule BeamAgent.Session.ToolPolicy do
     end
   end
 
+  def set_handler(session_id, handler) when is_pid(handler) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
+      GenServer.call(pid, {:set_handler, handler})
+    end
+  end
+
   @impl true
   def init(opts) do
     handler = Keyword.get(opts, :approval_handler)
@@ -102,6 +108,16 @@ defmodule BeamAgent.Session.ToolPolicy do
         GenServer.reply(waiting, reply)
         {:reply, :ok, %{state | pending: pending}}
     end
+  end
+
+  def handle_call({:set_handler, handler}, _from, state) do
+    if state.handler_monitor, do: Process.demonitor(state.handler_monitor, [:flush])
+
+    Enum.each(state.pending, fn {_approval_id, pending} ->
+      send(handler, {:beam_agent_approval, pending.request})
+    end)
+
+    {:reply, :ok, %{state | handler: handler, handler_monitor: Process.monitor(handler)}}
   end
 
   @impl true
