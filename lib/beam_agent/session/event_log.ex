@@ -3,6 +3,7 @@ defmodule BeamAgent.Session.EventLog do
   use GenServer
 
   alias BeamAgent.Names
+  alias BeamAgent.Session.StreamHub
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -79,6 +80,7 @@ defmodule BeamAgent.Session.EventLog do
 
       with :ok <- IO.binwrite(state.io, [encoded, "\n"]),
            :ok <- :file.sync(state.io) do
+        StreamHub.publish_event(state.session_id, event)
         {:ok, event, %{state | events: state.events ++ [event]}}
       end
     rescue

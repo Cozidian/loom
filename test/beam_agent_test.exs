@@ -98,6 +98,22 @@ defmodule BeamAgentTest do
     assert {:ok, "echo(2): after policy crash"} = BeamAgent.ask(id, "after policy crash")
   end
 
+  test "agent lifecycle events retain the selected provider profile" do
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :echo,
+        provider_profile: "local-test",
+        provider_options: [model: "built-in"]
+      )
+
+    {:ok, events} = BeamAgent.events(id)
+    started = Enum.find(events, &(&1["type"] == "agent_started"))
+    assert started["data"]["provider"] == "echo"
+    assert started["data"]["provider_profile"] == "local-test"
+    assert started["data"]["model"] == "built-in"
+  end
+
   test "a stopped session can resume from its append-only log" do
     root = data_dir()
     id = "durable-resume"

@@ -3,6 +3,7 @@ defmodule BeamAgent.Providers.Anthropic do
   @behaviour BeamAgent.LLMProvider
 
   alias BeamAgent.Providers.Support
+  alias BeamAgent.Stream.SSEDecoder
 
   @impl true
   def id, do: :anthropic
@@ -25,7 +26,7 @@ defmodule BeamAgent.Providers.Anthropic do
     with {:ok, model} <- Support.require_option(options, :model),
          {:ok, base_url} <- Support.require_option(options, :base_url),
          {:ok, api_key} <- Support.api_key(options, configuration().default_api_key_env),
-         body <- request_body(model, messages, tools, options),
+         body <- request_body(model, messages, tools, options, false),
          headers <- [
            {"content-type", "application/json"},
            {"x-api-key", api_key},
@@ -45,6 +46,35 @@ defmodule BeamAgent.Providers.Anthropic do
   end
 
   @impl true
+  def stream(messages, tools, options, emit) do
+    options = Keyword.put_new(options, :base_url, configuration().default_base_url)
+
+    with {:ok, model} <- Support.require_option(options, :model),
+         {:ok, base_url} <- Support.require_option(options, :base_url),
+         {:ok, api_key} <- Support.api_key(options, configuration().default_api_key_env),
+         body <- request_body(model, messages, tools, options, true),
+         headers <- [
+           {"content-type", "application/json"},
+           {"x-api-key", api_key},
+           {"anthropic-version", "2023-06-01"}
+         ],
+         client <- Support.http_client(options),
+         :ok <- ensure_streaming_client(client),
+         initial <- %{decoder: SSEDecoder.new(), blocks: %{}, stop_reason: nil, usage: %{}},
+         result <-
+           client.post_json_stream(
+             Support.endpoint(base_url, "/v1/messages"),
+             headers,
+             body,
+             options,
+             initial,
+             &consume_stream_chunk(&1, &2, emit)
+           ) do
+      finish_stream(result, emit)
+    end
+  end
+
+  @impl true
   def healthcheck(options) do
     options = Keyword.put_new(options, :base_url, configuration().default_base_url)
 
@@ -55,12 +85,13 @@ defmodule BeamAgent.Providers.Anthropic do
     end
   end
 
-  defp request_body(model, messages, tools, options) do
+  defp request_body(model, messages, tools, options, streaming) do
     body = %{
       "model" => model,
       "max_tokens" => Keyword.get(options, :max_tokens, 4_096),
       "messages" => format_messages(messages),
-      "tools" => Enum.map(tools, &tool_schema/1)
+      "tools" => Enum.map(tools, &tool_schema/1),
+      "stream" => streaming
     }
 
     case Keyword.get(options, :system_prompt) do
@@ -166,4 +197,168 @@ defmodule BeamAgent.Providers.Anthropic do
 
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(content), do: content
+
+  defp ensure_streaming_client(client) do
+    if Code.ensure_loaded?(client) and function_exported?(client, :post_json_stream, 6),
+      do: :ok,
+      else: {:error, {:streaming_not_supported, client}}
+  end
+
+  defp consume_stream_chunk(chunk, state, emit) do
+    {frames, decoder} = SSEDecoder.feed(state.decoder, chunk)
+
+    with {:ok, state} <- consume_frames(frames, %{state | decoder: decoder}, emit) do
+      {:ok, state}
+    end
+  end
+
+  defp consume_frames(frames, state, emit) do
+    Enum.reduce_while(frames, {:ok, state}, fn frame, {:ok, acc} ->
+      case consume_frame(frame, acc, emit) do
+        {:ok, next} -> {:cont, {:ok, next}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp consume_frame(%{data: ""}, state, _emit), do: {:ok, state}
+
+  defp consume_frame(%{event: frame_event, data: data}, state, emit) do
+    case JSON.decode(data) do
+      {:ok, payload} when is_map(payload) ->
+        consume_event(frame_event || payload["type"], payload, state, emit)
+
+      {:ok, other} ->
+        {:error, {:invalid_stream_event, other}}
+
+      {:error, reason} ->
+        {:error, {:invalid_stream_json, reason, data}}
+    end
+  end
+
+  defp consume_event("ping", _payload, state, _emit), do: {:ok, state}
+  defp consume_event("message_stop", _payload, state, _emit), do: {:ok, state}
+
+  defp consume_event("message_start", payload, state, emit) do
+    usage = get_in(payload, ["message", "usage"]) || %{}
+    maybe_emit_usage(usage, emit)
+    {:ok, %{state | usage: Map.merge(state.usage, usage)}}
+  end
+
+  defp consume_event("content_block_start", payload, state, emit) do
+    index = payload["index"]
+    block = payload["content_block"] || %{}
+
+    case block["type"] do
+      "text" ->
+        text = block["text"] || ""
+        if text != "", do: emit.({:text_delta, text})
+        {:ok, put_in(state.blocks[index], %{type: :text, text: text})}
+
+      "tool_use" ->
+        tool = %{
+          type: :tool_use,
+          id: block["id"],
+          name: block["name"],
+          input: block["input"] || %{},
+          input_json: ""
+        }
+
+        emit.({:tool_call_delta, %{"index" => index, "id" => tool.id, "name" => tool.name}})
+        {:ok, put_in(state.blocks[index], tool)}
+
+      other ->
+        {:error, {:invalid_content_block, other}}
+    end
+  end
+
+  defp consume_event("content_block_delta", payload, state, emit) do
+    index = payload["index"]
+    delta = payload["delta"] || %{}
+
+    case {delta["type"], Map.get(state.blocks, index)} do
+      {"text_delta", %{type: :text} = block} ->
+        text = delta["text"] || ""
+        if text != "", do: emit.({:text_delta, text})
+        {:ok, put_in(state.blocks[index], %{block | text: block.text <> text})}
+
+      {"input_json_delta", %{type: :tool_use} = block} ->
+        fragment = delta["partial_json"] || ""
+        emit.({:tool_call_delta, %{"index" => index, "arguments" => fragment}})
+        {:ok, put_in(state.blocks[index], %{block | input_json: block.input_json <> fragment})}
+
+      {type, block} ->
+        {:error, {:invalid_content_block_delta, type, block}}
+    end
+  end
+
+  defp consume_event("content_block_stop", _payload, state, _emit), do: {:ok, state}
+
+  defp consume_event("message_delta", payload, state, emit) do
+    usage = payload["usage"] || %{}
+    maybe_emit_usage(usage, emit)
+
+    {:ok,
+     %{
+       state
+       | stop_reason: get_in(payload, ["delta", "stop_reason"]) || state.stop_reason,
+         usage: Map.merge(state.usage, usage)
+     }}
+  end
+
+  defp consume_event("error", payload, _state, _emit),
+    do: {:error, {:provider_stream_error, payload["error"] || payload}}
+
+  defp consume_event(event, payload, _state, _emit),
+    do: {:error, {:unknown_provider_stream_event, event, payload}}
+
+  defp finish_stream({:ok, status, :streamed, state}, emit) when status in 200..299 do
+    {frames, _decoder} = SSEDecoder.finish(state.decoder)
+
+    with {:ok, state} <- consume_frames(frames, %{state | decoder: ""}, emit),
+         {:ok, blocks} <- finalize_blocks(state.blocks) do
+      parse_response(%{"content" => blocks, "stop_reason" => state.stop_reason})
+    end
+  end
+
+  defp finish_stream({:ok, status, response}, _emit) do
+    with {:ok, response} <- Support.accept(status, response), do: parse_response(response)
+  end
+
+  defp finish_stream({:error, reason}, _emit), do: {:error, reason}
+
+  defp finalize_blocks(blocks) do
+    blocks
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.reduce_while({:ok, []}, fn
+      {_index, %{type: :text, text: text}}, {:ok, acc} ->
+        {:cont, {:ok, acc ++ [%{"type" => "text", "text" => text}]}}
+
+      {_index, %{type: :tool_use} = block}, {:ok, acc} ->
+        with {:ok, input} <- finalize_input(block) do
+          tool = %{
+            "type" => "tool_use",
+            "id" => block.id,
+            "name" => block.name,
+            "input" => input
+          }
+
+          {:cont, {:ok, acc ++ [tool]}}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+    end)
+  end
+
+  defp finalize_input(%{input_json: "", input: input}) when is_map(input), do: {:ok, input}
+
+  defp finalize_input(%{input_json: json}) do
+    case JSON.decode(json) do
+      {:ok, input} when is_map(input) -> {:ok, input}
+      _ -> {:error, {:invalid_tool_arguments, json}}
+    end
+  end
+
+  defp maybe_emit_usage(usage, emit) when map_size(usage) > 0, do: emit.({:usage, usage})
+  defp maybe_emit_usage(_usage, _emit), do: :ok
 end

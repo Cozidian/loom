@@ -3,7 +3,15 @@ defmodule BeamAgent.SessionSupervisor do
   use Supervisor
 
   alias BeamAgent.Names
-  alias BeamAgent.Session.{Context, EventLog, ResourceSupervisor, SubagentSupervisor, ToolPolicy}
+
+  alias BeamAgent.Session.{
+    Context,
+    EventLog,
+    ResourceSupervisor,
+    StreamHub,
+    SubagentSupervisor,
+    ToolPolicy
+  }
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -42,6 +50,7 @@ defmodule BeamAgent.SessionSupervisor do
   def init(opts) do
     children = [
       {EventLog, opts},
+      {StreamHub, opts},
       {ResourceSupervisor, opts},
       {Context, opts},
       {ToolPolicy, opts},
@@ -50,7 +59,8 @@ defmodule BeamAgent.SessionSupervisor do
     ]
 
     # The event log is the first dependency. If it fails, every downstream
-    # session process is rebuilt; if only the agent fails, only the agent restarts.
+    # session process is rebuilt. A stream hub failure keeps the log alive while
+    # rebuilding all request-owning processes below it.
     Supervisor.init(children, strategy: :rest_for_one)
   end
 end

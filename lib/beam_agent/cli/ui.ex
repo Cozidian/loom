@@ -78,6 +78,54 @@ defmodule BeamAgent.CLI.UI do
     blank()
   end
 
+  def begin_live_turn do
+    Process.put({__MODULE__, :live}, %{response_open?: false})
+    begin_wait()
+  end
+
+  def live_event(%{type: :text_delta, delta: delta}) when is_binary(delta) and delta != "" do
+    state = live_state()
+
+    state =
+      if state.response_open? do
+        state
+      else
+        end_wait()
+        blank()
+        line([:bright, @success, "◆", :reset, :bright, " assistant"])
+        IO.write("  ")
+        %{state | response_open?: true}
+      end
+
+    IO.write(indent_delta(delta))
+    Process.put({__MODULE__, :live}, state)
+  end
+
+  def live_event(%{type: :response_finished}) do
+    close_live_response()
+    begin_wait()
+  end
+
+  def live_event(%{type: :response_failed}) do
+    close_live_response()
+  end
+
+  def live_event(%{type: :durable_event, event: %{"type" => type} = event})
+      when type in ["tool_called", "tool_result"] do
+    close_live_response()
+    end_wait()
+    live_tool_event(event)
+    begin_wait()
+  end
+
+  def live_event(_event), do: :ok
+
+  def end_live_turn do
+    close_live_response()
+    end_wait()
+    Process.delete({__MODULE__, :live})
+  end
+
   def tool_trace(events) do
     relevant = Enum.filter(events, &(&1["type"] in ["tool_called", "tool_result"]))
 
@@ -115,6 +163,7 @@ defmodule BeamAgent.CLI.UI do
     blank()
     line([:bright, "Session"])
     field("provider", config["provider"])
+    field("profile", config["profile"])
     field("model", config["model"] || "built-in")
     field("session", session_id)
     field("workspace", config["workspace_root"])
@@ -188,10 +237,17 @@ defmodule BeamAgent.CLI.UI do
   end
 
   defp provider_label(config) do
-    case config["model"] do
-      model when is_binary(model) and model != "" -> "#{config["provider"]}/#{model}"
-      _ -> config["provider"]
-    end
+    provider =
+      case config["model"] do
+        model when is_binary(model) and model != "" -> "#{config["provider"]}/#{model}"
+        _ -> config["provider"]
+      end
+
+    profile = config["profile"]
+
+    if is_binary(profile) and profile != config["provider"],
+      do: "#{profile}  ·  #{provider}",
+      else: provider
   end
 
   defp short_session("session-" <> suffix), do: "session " <> String.slice(suffix, 0, 8)
@@ -216,6 +272,29 @@ defmodule BeamAgent.CLI.UI do
   end
 
   defp compact(value), do: inspect(value, limit: 8, printable_limit: 160)
+
+  defp live_tool_event(%{"type" => "tool_called", "data" => data}) do
+    arguments = format_arguments(data["arguments"] || %{})
+    line([:yellow, "◇", :reset, :faint, " tool  ", :reset, data["name"], arguments])
+  end
+
+  defp live_tool_event(%{"type" => "tool_result", "data" => data}) do
+    marker = if data["is_error"], do: [:red, "!"], else: [@success, "↳"]
+    line(["  ", marker, :reset, :faint, "  ", compact(data["content"])])
+  end
+
+  defp close_live_response do
+    state = live_state()
+
+    if state.response_open? do
+      IO.write("\n\n")
+      Process.put({__MODULE__, :live}, %{state | response_open?: false})
+    end
+  end
+
+  defp live_state, do: Process.get({__MODULE__, :live}, %{response_open?: false})
+
+  defp indent_delta(delta), do: String.replace(delta, "\n", "\n  ")
 
   defp block(content) do
     content

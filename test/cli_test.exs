@@ -23,7 +23,8 @@ defmodule BeamAgent.CLITest do
     assert status == 0
     assert output =~ "Configuration saved"
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
-    assert config["provider"] == "echo"
+    assert config["active_profile"] == "echo"
+    assert get_in(config, ["profiles", "echo", "provider"]) == "echo"
     assert config["data_dir"] == context.data_dir
     assert config["max_steps"] == 5
     assert config["timeout_ms"] == 4_000
@@ -46,7 +47,7 @@ defmodule BeamAgent.CLITest do
     assert output =~ "Session data directory"
 
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
-    assert config["provider"] == "echo"
+    assert config["active_profile"] == "echo"
     assert config["data_dir"] == context.data_dir
     assert config["max_steps"] == 9
     assert config["timeout_ms"] == 7_000
@@ -106,7 +107,7 @@ defmodule BeamAgent.CLITest do
     assert output =~ "Configuration saved"
     assert output =~ "Type a message · /help commands"
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
-    assert config["provider"] == "echo"
+    assert config["active_profile"] == "echo"
   end
 
   test "interactive new command rotates to a fresh durable session", context do
@@ -298,10 +299,35 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 3
-    assert Map.has_key?(migrated, "model")
-    assert Map.has_key?(migrated, "base_url")
-    assert Map.has_key?(migrated, "api_key_env")
+    assert migrated["version"] == 4
+    assert migrated["active_profile"] == "echo"
+    assert get_in(migrated, ["profiles", "echo", "provider"]) == "echo"
+    assert Map.has_key?(migrated["profiles"]["echo"], "model")
+  end
+
+  test "version 3 single-provider configuration becomes one active profile", context do
+    legacy = %{
+      "version" => 3,
+      "provider" => "ollama",
+      "model" => "qwen3:8b",
+      "base_url" => "http://127.0.0.1:11434",
+      "api_key_env" => nil,
+      "approval_policy" => "ask",
+      "data_dir" => context.data_dir,
+      "max_steps" => 8,
+      "timeout_ms" => 30_000
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 4
+    assert migrated["active_profile"] == "ollama"
+    assert get_in(migrated, ["profiles", "ollama", "model"]) == "qwen3:8b"
+    assert {:ok, runtime} = BeamAgent.CLI.Config.runtime(migrated)
+    assert runtime["provider"] == "ollama"
+    assert runtime["profile"] == "ollama"
   end
 
   test "grok CLI alias resolves to the xAI runtime provider", context do
@@ -322,6 +348,129 @@ defmodule BeamAgent.CLITest do
     assert status == 0
     assert output =~ "provider:   grok"
     assert {:ok, :xai} = BeamAgent.CLI.Config.provider_atom("grok")
+  end
+
+  test "provider profiles can be added, listed, activated, and switched", context do
+    {0, _output} = init_cli(context)
+
+    {status, added} =
+      run_stdout([
+        "provider",
+        "add",
+        "grok-work",
+        "--config",
+        context.config_path,
+        "--provider",
+        "grok",
+        "--model",
+        "grok-test",
+        "--api-key-env",
+        "MY_XAI_KEY",
+        "--activate",
+        "--non-interactive"
+      ])
+
+    assert status == 0
+    assert added =~ "Provider profile saved: grok-work"
+    assert added =~ "Active profile is now grok-work"
+
+    assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert config["active_profile"] == "grok-work"
+    assert get_in(config, ["profiles", "grok-work", "provider"]) == "grok"
+    assert get_in(config, ["profiles", "grok-work", "api_key_env"]) == "MY_XAI_KEY"
+    refute File.read!(context.config_path) =~ "xai-secret"
+
+    {:ok, stat} = File.stat(context.config_path)
+    assert Bitwise.band(stat.mode, 0o777) == 0o600
+
+    {0, listed} = run_stdout(["provider", "list", "--config", context.config_path])
+    assert listed =~ "  echo  echo"
+    assert listed =~ "* grok-work  grok  grok-test"
+
+    {0, switched} =
+      run_stdout(["provider", "use", "echo", "--config", context.config_path])
+
+    assert switched =~ "Active provider profile: echo"
+    assert {:ok, switched_config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert switched_config["active_profile"] == "echo"
+  end
+
+  test "guided Grok profile setup infers the adapter and safe credential variable", context do
+    {0, _output} = init_cli(context)
+
+    {status, output} =
+      run_stdout(
+        ["provider", "add", "grok", "--activate", "--config", context.config_path],
+        "grok-test\n\n\n"
+      )
+
+    assert status == 0
+    assert output =~ "Model"
+    assert output =~ "API key environment variable [XAI_API_KEY]"
+    assert output =~ "Active profile is now grok"
+
+    assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert config["active_profile"] == "grok"
+    assert get_in(config, ["profiles", "grok", "provider"]) == "grok"
+    assert get_in(config, ["profiles", "grok", "model"]) == "grok-test"
+    assert get_in(config, ["profiles", "grok", "api_key_env"]) == "XAI_API_KEY"
+  end
+
+  test "a named profile can be selected for one run without changing the active profile",
+       context do
+    {0, _output} = init_cli(context)
+
+    {0, _added} =
+      run_stdout([
+        "provider",
+        "add",
+        "alternate",
+        "--config",
+        context.config_path,
+        "--provider",
+        "echo",
+        "--non-interactive"
+      ])
+
+    {0, output} =
+      run_stdout([
+        "run",
+        "hello",
+        "--config",
+        context.config_path,
+        "--profile",
+        "alternate"
+      ])
+
+    assert output =~ "alternate  ·  echo"
+    assert output =~ "echo(1): hello"
+    assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert config["active_profile"] == "echo"
+  end
+
+  test "provider profiles reject accidental overwrite and unknown selection", context do
+    {0, _output} = init_cli(context)
+
+    {status, duplicate} =
+      run_stderr([
+        "provider",
+        "add",
+        "echo",
+        "--config",
+        context.config_path,
+        "--non-interactive"
+      ])
+
+    assert status == 1
+    assert duplicate =~ "already exists"
+    assert duplicate =~ "--force"
+
+    {status, unknown} =
+      run_stderr(["provider", "use", "missing", "--config", context.config_path])
+
+    assert status == 1
+    assert unknown =~ "was not found"
+    assert unknown =~ "provider list"
   end
 
   defp init_cli(context) do

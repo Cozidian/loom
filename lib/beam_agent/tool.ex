@@ -10,6 +10,7 @@ defmodule BeamAgent.Tool do
           required(:session_id) => String.t(),
           required(:parent_session_id) => String.t() | nil,
           required(:provider) => atom(),
+          required(:provider_profile) => String.t() | nil,
           required(:provider_options) => keyword(),
           required(:strategy) => module(),
           required(:max_steps) => pos_integer(),

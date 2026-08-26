@@ -17,6 +17,31 @@ defmodule BeamAgent.HTTPClient.Httpc do
   end
 
   @impl true
+  def post_json_stream(url, headers, body, options, initial_state, chunk_fun) do
+    request = {
+      String.to_charlist(url),
+      encode_headers(headers),
+      ~c"application/json",
+      JSON.encode!(body)
+    }
+
+    timeout = Keyword.get(options, :timeout_ms, 30_000)
+
+    http_options = [
+      timeout: timeout,
+      connect_timeout: min(timeout, 10_000),
+      ssl: ssl_options(url)
+    ]
+
+    case :httpc.request(:post, request, http_options, sync: false, stream: :self) do
+      {:ok, request_id} -> await_stream(request_id, timeout, initial_state, chunk_fun)
+      {:error, reason} -> {:error, {:transport_error, reason}}
+    end
+  rescue
+    error -> {:error, {:request_encode_failed, Exception.message(error)}}
+  end
+
+  @impl true
   def get_json(url, headers, options) do
     request = {String.to_charlist(url), encode_headers(headers)}
     request(:get, request, url, options)
@@ -70,4 +95,54 @@ defmodule BeamAgent.HTTPClient.Httpc do
     do: binary_part(body, 0, 1_000) <> "..."
 
   defp truncate(body), do: body
+
+  defp await_stream(request_id, timeout, state, chunk_fun) do
+    receive do
+      {:http, {^request_id, :stream_start, _headers}} ->
+        receive_stream(request_id, timeout, state, chunk_fun)
+
+      {:http, {^request_id, {{_version, status, _reason}, _headers, body}}} ->
+        decode_response(status, body)
+
+      {:http, {^request_id, {:error, reason}}} ->
+        {:error, {:transport_error, reason}}
+    after
+      timeout ->
+        :httpc.cancel_request(request_id)
+        {:error, :request_timeout}
+    end
+  end
+
+  defp receive_stream(request_id, timeout, state, chunk_fun) do
+    receive do
+      {:http, {^request_id, :stream, body_part}} ->
+        case safely_emit(chunk_fun, body_part, state) do
+          {:ok, next_state} ->
+            receive_stream(request_id, timeout, next_state, chunk_fun)
+
+          {:error, reason} ->
+            :httpc.cancel_request(request_id)
+            {:error, reason}
+        end
+
+      {:http, {^request_id, :stream_end, _headers}} ->
+        {:ok, 200, :streamed, state}
+
+      {:http, {^request_id, {:error, reason}}} ->
+        {:error, {:transport_error, reason}}
+    after
+      timeout ->
+        :httpc.cancel_request(request_id)
+        {:error, :request_timeout}
+    end
+  end
+
+  defp safely_emit(chunk_fun, body_part, state) do
+    case chunk_fun.(body_part, state) do
+      {:ok, next_state} -> {:ok, next_state}
+      other -> {:error, {:invalid_stream_callback_return, other}}
+    end
+  rescue
+    error -> {:error, {:stream_callback_failed, Exception.message(error)}}
+  end
 end

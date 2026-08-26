@@ -18,6 +18,8 @@ It includes:
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
+- live, provider-native response streaming with session-scoped subscribers;
+- batched durable stream checkpoints without an `fsync` per token;
 - synchronous append-only JSONL events and crash reconstruction;
 - `:rest_for_one` recovery from durable-state dependency loss.
 
@@ -38,7 +40,8 @@ with `./beam_agent init`.
 
 Configuration is stored at `~/.config/beam_agent/config.json` by default with
 mode `0600`; set `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another
-location.
+location. It can contain multiple named provider profiles, but only
+environment-variable names—never credential values.
 
 For automated setup with the deterministic echo provider:
 
@@ -70,6 +73,7 @@ The CLI also exposes durable-session and capability discovery:
 ./beam_agent sessions
 ./beam_agent resume SESSION_ID
 ./beam_agent providers
+./beam_agent provider list
 ./beam_agent tools
 ./beam_agent config show
 ./beam_agent help
@@ -79,8 +83,10 @@ Inside chat, type `/help` to discover the small interactive command set. The
 most useful commands are `/new`, `/sessions`, `/status`, `/skills`, `/reload`,
 `/events`, `/clear`, and `/exit`. Provider/model and a shortened durable session ID remain visible in
 the header; tool calls and tool results are shown separately from the final
-assistant response. The interface uses ANSI styling when the terminal supports
-it and remains plain text in redirected output and tests.
+assistant response. Ollama, OpenAI, xAI/Grok, and Anthropic responses render as
+they arrive; deterministic or custom non-streaming providers still render their
+final response through the same CLI. The interface uses ANSI styling when the
+terminal supports it and remains plain text in redirected output and tests.
 
 ## Work in a repository
 
@@ -158,14 +164,15 @@ The harness can extend itself through the guarded tool path: create a new
 under the default policy. From interactive chat, `/reload` explicitly refreshes
 context after edits made outside the agent.
 
-## Configure an LLM provider
+## Configure LLM provider profiles
 
 The CLI includes native adapters for Ollama and Anthropic, plus a shared Chat
 Completions adapter for OpenAI and xAI/Grok. `demo` drives the deterministic
 tool/subagent scenario, while `echo` remains useful for testing multiple turns
 and durable resume without a model.
 
-For local use, start Ollama, pull a tool-capable model, and configure it:
+For local use, start Ollama, pull a tool-capable model, and configure the first
+profile:
 
 ```sh
 ollama serve
@@ -179,22 +186,41 @@ ollama pull qwen3:8b
 ./beam_agent run "Use the add tool to calculate 20 + 22."
 ```
 
-Cloud providers require a model name and read credentials from an environment
-variable. The config stores the variable's name, never the secret itself:
+Add cloud profiles without replacing Ollama. Cloud providers require a model
+name and read credentials from an environment variable:
 
 ```sh
 # OpenAI
 export OPENAI_API_KEY="..."
-./beam_agent init --force --provider openai --model YOUR_MODEL --non-interactive
+./beam_agent provider add openai --model YOUR_MODEL --non-interactive
 
 # Anthropic
 export ANTHROPIC_API_KEY="..."
-./beam_agent init --force --provider anthropic --model YOUR_MODEL --non-interactive
+./beam_agent provider add anthropic --model YOUR_MODEL --non-interactive
 
-# xAI / Grok (`--provider grok` is accepted as an alias)
+# xAI / Grok
 export XAI_API_KEY="..."
-./beam_agent init --force --provider xai --model YOUR_MODEL --non-interactive
+./beam_agent provider add grok --model YOUR_MODEL --activate --non-interactive
 ```
+
+Omit `--model` and `--non-interactive` for a short guided Grok setup. The CLI
+will ask for the model and offer the correct xAI endpoint and `XAI_API_KEY`
+variable as defaults; do not paste the secret itself into those prompts.
+
+List profiles, switch the persistent default, or select one for a single run:
+
+```sh
+./beam_agent provider list
+./beam_agent provider use ollama
+./beam_agent run --profile grok "Inspect this repository"
+./beam_agent doctor --profile grok
+```
+
+Profile names need not match adapters. For example, two OpenAI-compatible
+accounts can be named `work` and `personal` by supplying `--provider openai`.
+Use `provider add NAME --force ...` to deliberately replace an existing profile.
+Changing the active profile affects new sessions; it never mutates an agent
+already running inside its supervised session tree.
 
 Run `./beam_agent doctor` after configuring a provider. Ollama diagnostics check
 the server and confirm that the configured model is installed. Cloud diagnostics
@@ -206,6 +232,10 @@ Use `--base-url URL` for a compatible endpoint or proxy, and
 options can temporarily override saved settings on `run`. Provider adapters are
 ordinary `BeamAgent.LLMProvider` modules registered through the capability
 catalog, so another provider does not require changes to the agent or tool loop.
+Streaming is an optional provider callback, so existing provider modules remain
+compatible. The built-in real adapters use native wire formats: NDJSON for
+Ollama, Chat Completions SSE for OpenAI/xAI, and typed Messages SSE blocks for
+Anthropic.
 
 ## Run the demonstration
 

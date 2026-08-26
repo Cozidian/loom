@@ -47,6 +47,7 @@ defmodule BeamAgent.Agent do
         session_id: session_id,
         parent_session_id: Keyword.get(opts, :parent_session_id),
         provider: provider,
+        provider_profile: Keyword.get(opts, :provider_profile),
         provider_module: provider_module,
         provider_options: Keyword.get(opts, :provider_options, []),
         strategy: strategy,
@@ -62,7 +63,10 @@ defmodule BeamAgent.Agent do
       {:ok, _} =
         EventLog.append(session_id, :agent_started, %{
           "pid" => inspect(self()),
-          "recovered" => Enum.any?(existing, &(&1["type"] == "agent_started"))
+          "recovered" => Enum.any?(existing, &(&1["type"] == "agent_started")),
+          "provider" => to_string(provider),
+          "provider_profile" => Keyword.get(opts, :provider_profile),
+          "model" => state.provider_options[:model]
         })
 
       {:ok, state}

@@ -29,6 +29,16 @@ defmodule BeamAgent.Providers.OpenAI do
   end
 
   @impl true
+  def stream(messages, tools, options, emit) do
+    options =
+      options
+      |> Keyword.put_new(:base_url, configuration().default_base_url)
+      |> Keyword.put_new(:default_api_key_env, configuration().default_api_key_env)
+
+    OpenAICompatible.stream(messages, tools, options, emit)
+  end
+
+  @impl true
   def healthcheck(options) do
     options = Keyword.put_new(options, :base_url, configuration().default_base_url)
 

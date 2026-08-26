@@ -6,6 +6,7 @@ defmodule BeamAgent.CLI do
 
   @version Mix.Project.config()[:version]
   @run_switches [
+    profile: :string,
     provider: :string,
     data_dir: :string,
     max_steps: :integer,
@@ -53,6 +54,9 @@ defmodule BeamAgent.CLI do
 
       ["providers" | rest] ->
         providers_command(rest)
+
+      ["provider" | rest] ->
+        provider_command(config_path, rest)
 
       ["tools" | rest] ->
         tools_command(rest)
@@ -108,6 +112,7 @@ defmodule BeamAgent.CLI do
   defp init_command(config_path, args) do
     switches = [
       provider: :string,
+      profile: :string,
       data_dir: :string,
       max_steps: :integer,
       timeout: :integer,
@@ -142,14 +147,18 @@ defmodule BeamAgent.CLI do
 
     provider =
       opts[:provider] ||
-        choose_provider(interactive, defaults["provider"])
+        choose_provider(interactive, defaults["active_profile"])
 
-    with {:ok, provider_config} <- BeamAgent.Providers.fetch(provider) do
-      build_provider_config(opts, defaults, provider, provider_config, interactive)
+    profile_name = opts[:profile] || provider
+
+    with {:ok, provider_config} <- BeamAgent.Providers.fetch(provider),
+         {:ok, profile} <- build_profile(opts, provider, provider_config, interactive),
+         {:ok, globals} <- build_globals(opts, defaults, interactive) do
+      Config.new(profile_name, profile, globals)
     end
   end
 
-  defp build_provider_config(opts, defaults, provider, provider_config, interactive) do
+  defp build_profile(opts, provider, provider_config, interactive) do
     model =
       if provider_config[:model_required] do
         opts[:model] ||
@@ -172,6 +181,10 @@ defmodule BeamAgent.CLI do
           )
       end
 
+    Config.profile(provider, model, base_url, api_key_env)
+  end
+
+  defp build_globals(opts, defaults, interactive) do
     data_dir =
       opts[:data_dir] || maybe_prompt(interactive, "Session data directory", defaults["data_dir"])
 
@@ -199,30 +212,23 @@ defmodule BeamAgent.CLI do
           defaults["approval_policy"]
         )
 
-    config = %{
-      "version" => defaults["version"],
-      "provider" => provider,
-      "model" => model,
-      "base_url" => base_url,
-      "api_key_env" => api_key_env,
+    globals = %{
       "approval_policy" => approval_policy,
       "data_dir" => Path.expand(data_dir),
       "max_steps" => parse_integer(max_steps),
       "timeout_ms" => parse_integer(timeout)
     }
 
-    case Config.validate(config) do
-      :ok -> {:ok, config}
-      {:error, reason} -> {:error, reason}
-    end
+    {:ok, globals}
   end
 
   defp run_command(config_path, args, require_existing? \\ false) do
     with {:ok, opts, prompt_parts} <- parse(args, @run_switches),
-         {:ok, config} <- Config.load(config_path),
+         {:ok, stored_config} <- Config.load(config_path),
+         {:ok, config} <- Config.runtime(stored_config, opts[:profile]),
          config <- Config.merge_overrides(config, opts),
          config <- Map.put(config, "workspace_root", Path.expand(opts[:workspace] || File.cwd!())),
-         :ok <- Config.validate(config),
+         :ok <- Config.validate_runtime(config),
          :ok <- require_existing_session(opts[:session], config, require_existing?),
          {:ok, provider} <- Config.provider_atom(config["provider"]),
          :ok <- ensure_application_started(),
@@ -252,6 +258,7 @@ defmodule BeamAgent.CLI do
     BeamAgent.start_session(
       provider: provider,
       provider_options: Config.provider_options(config),
+      provider_profile: config["profile"],
       data_dir: config["data_dir"],
       max_steps: config["max_steps"],
       workspace_root: config["workspace_root"],
@@ -269,6 +276,7 @@ defmodule BeamAgent.CLI do
         BeamAgent.resume_session(session_id,
           provider: provider,
           provider_options: Config.provider_options(config),
+          provider_profile: config["profile"],
           data_dir: config["data_dir"],
           max_steps: config["max_steps"],
           workspace_root: config["workspace_root"],
@@ -350,25 +358,26 @@ defmodule BeamAgent.CLI do
 
   defp ask_and_print(session_id, prompt, config) do
     event_count = event_count(session_id)
-    UI.begin_wait()
+    UI.begin_live_turn()
 
     result =
-      TurnRunner.run(
+      TurnRunner.run_live(
         session_id,
         prompt,
         config["timeout_ms"] + 2_000,
-        &UI.approval/1
+        &UI.approval/1,
+        &UI.live_event/1
       )
 
-    UI.end_wait()
+    UI.end_live_turn()
 
     case result do
-      {:ok, answer} ->
-        render_new_tool_events(session_id, event_count)
-        UI.assistant(answer)
+      {:ok, answer, meta} ->
+        unless meta.live_tool_events?, do: render_new_tool_events(session_id, event_count)
+        unless meta.streamed_text?, do: UI.assistant(answer)
         0
 
-      {:error, reason} ->
+      {:error, reason, _meta} ->
         error(reason)
     end
   end
@@ -452,14 +461,16 @@ defmodule BeamAgent.CLI do
   end
 
   defp doctor_command(config_path, args) do
-    with {:ok, _opts, []} <- parse(args, []),
-         {:ok, config} <- Config.load(config_path),
+    with {:ok, opts, []} <- parse(args, profile: :string),
+         {:ok, stored_config} <- Config.load(config_path),
+         {:ok, config} <- Config.runtime(stored_config, opts[:profile]),
          :ok <- ensure_application_started(),
          {:ok, provider} <- Config.provider_atom(config["provider"]),
          {:ok, module} <- BeamAgent.CapabilityCatalog.provider(provider),
          {:ok, detail} <- provider_healthcheck(module, Config.provider_options(config)),
          :ok <- File.mkdir_p(config["data_dir"]) do
       output("ok  config    #{config_path}")
+      output("ok  profile   #{config["profile"]}")
       output("ok  provider  #{config["provider"]}: #{detail}")
       output("ok  data      #{config["data_dir"]}")
       output("ok  runtime   Elixir #{System.version()} / OTP #{System.otp_release()}")
@@ -469,6 +480,107 @@ defmodule BeamAgent.CLI do
 
       {:error, reason} ->
         error(reason)
+    end
+  end
+
+  defp provider_command(_config_path, [flag]) when flag in ["--help", "-h"],
+    do: provider_help()
+
+  defp provider_command(config_path, ["list" | rest]),
+    do: provider_list_command(config_path, rest)
+
+  defp provider_command(config_path, ["use", name | rest]),
+    do: provider_use_command(config_path, name, rest)
+
+  defp provider_command(config_path, ["add", name | rest]),
+    do: provider_add_command(config_path, name, rest)
+
+  defp provider_command(_config_path, []), do: provider_help()
+
+  defp provider_command(_config_path, _args),
+    do: usage_error("expected `provider add NAME`, `provider list`, or `provider use NAME`")
+
+  defp provider_list_command(config_path, args) do
+    with {:ok, _opts, []} <- parse(args, []),
+         {:ok, config} <- Config.load(config_path) do
+      Enum.each(Config.profiles(config), fn {name, profile} ->
+        marker = if name == config["active_profile"], do: "*", else: " "
+        model = if profile["model"], do: "  #{profile["model"]}", else: ""
+        output("#{marker} #{name}  #{profile["provider"]}#{model}")
+      end)
+
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp provider_use_command(config_path, name, args) do
+    with {:ok, _opts, []} <- parse(args, []),
+         {:ok, config} <- Config.load(config_path),
+         {:ok, config} <- Config.use_profile(config, name),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      UI.success("Active provider profile: #{name}")
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp provider_add_command(config_path, name, args) do
+    switches = [
+      provider: :string,
+      model: :string,
+      base_url: :string,
+      api_key_env: :string,
+      activate: :boolean,
+      force: :boolean,
+      non_interactive: :boolean
+    ]
+
+    with {:ok, opts, []} <- parse(args, switches),
+         {:ok, config} <- Config.load(config_path),
+         {:ok, active} <- Config.runtime(config),
+         interactive = opts[:non_interactive] != true,
+         {:ok, provider} <-
+           resolve_profile_provider(opts[:provider], name, active["provider"], interactive),
+         {:ok, provider_config} <- BeamAgent.Providers.fetch(provider),
+         {:ok, profile} <- build_profile(opts, provider, provider_config, interactive),
+         {:ok, config} <-
+           Config.put_profile(config, name, profile,
+             force: opts[:force] == true,
+             activate: opts[:activate] == true
+           ),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      UI.success("Provider profile saved: #{name}")
+      if opts[:activate] == true, do: UI.notice("Active profile is now #{name}")
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp resolve_profile_provider(provider, _name, _default, _interactive)
+       when is_binary(provider),
+       do: {:ok, provider}
+
+  defp resolve_profile_provider(nil, name, default, interactive) do
+    case BeamAgent.Providers.fetch(name) do
+      {:ok, _provider} -> {:ok, name}
+      {:error, _reason} when interactive -> {:ok, choose_provider(true, default)}
+      {:error, _reason} -> {:error, {:provider_required, name}}
     end
   end
 
@@ -593,11 +705,21 @@ defmodule BeamAgent.CLI do
   end
 
   defp output_config(config) do
-    output("provider:   #{config["provider"]}")
-    if config["model"], do: output("model:      #{config["model"]}")
-    if config["base_url"], do: output("base_url:   #{config["base_url"]}")
-    if config["api_key_env"], do: output("api_key:    environment #{config["api_key_env"]}")
-    if config["workspace_root"], do: output("workspace:  #{config["workspace_root"]}")
+    {:ok, active} = Config.runtime(config)
+    output("active:     #{config["active_profile"]}")
+    output("provider:   #{active["provider"]}")
+    if active["model"], do: output("model:      #{active["model"]}")
+    if active["base_url"], do: output("base_url:   #{active["base_url"]}")
+
+    if active["api_key_env"],
+      do: output("api_key:    environment #{active["api_key_env"]}")
+
+    Enum.each(Config.profiles(config), fn {name, profile} ->
+      marker = if name == config["active_profile"], do: "*", else: "-"
+      model = if profile["model"], do: "/#{profile["model"]}", else: ""
+      output("profile:    #{marker} #{name}  #{profile["provider"]}#{model}")
+    end)
+
     output("approval:   #{config["approval_policy"]}")
     output("data_dir:   #{config["data_dir"]}")
     output("max_steps:  #{config["max_steps"]}")
@@ -701,6 +823,9 @@ defmodule BeamAgent.CLI do
     Setup and inspect:
       beam_agent init                        configure a provider
       beam_agent doctor                      check the active provider
+      beam_agent provider list               list configured provider profiles
+      beam_agent provider add NAME           add a provider profile
+      beam_agent provider use NAME           change the active profile
       beam_agent sessions                    list durable sessions
       beam_agent providers                   list available providers
       beam_agent tools                       list model-callable tools
@@ -711,6 +836,7 @@ defmodule BeamAgent.CLI do
     Common options:
       --provider NAME                        demo, echo, ollama, openai,
                                              anthropic, xai, or grok
+      --profile NAME                         configured profile for this run
       --model MODEL                          model used for this session
       --config PATH                          use another configuration file
       --base-url URL                         override the provider endpoint
@@ -732,6 +858,7 @@ defmodule BeamAgent.CLI do
       beam_agent init [options]
 
       --provider NAME        demo, echo, ollama, openai, anthropic, xai, or grok
+      --profile NAME         name for the initial provider profile
       --model MODEL          required for real LLM providers
       --base-url URL         provider endpoint or compatible proxy
       --api-key-env NAME     environment variable containing the credential
@@ -741,6 +868,27 @@ defmodule BeamAgent.CLI do
       --timeout MS           provider request timeout
       --non-interactive      do not prompt; validate supplied/default values
       --force                replace an existing configuration
+    """)
+  end
+
+  defp provider_help do
+    output("""
+    Manage provider profiles
+
+      beam_agent provider list
+      beam_agent provider add NAME [options]
+      beam_agent provider use NAME
+
+      --provider ADAPTER     ollama, openai, anthropic, xai, grok, demo, or echo
+      --model MODEL          required for real LLM providers
+      --base-url URL         provider endpoint or compatible proxy
+      --api-key-env NAME     environment variable containing the credential
+      --activate             make the new profile active
+      --non-interactive      validate supplied/default values without prompts
+      --force                replace a profile with the same name
+
+    Secrets are never written to the config; only environment-variable names are stored.
+    Use `--profile NAME` on run or doctor to select a profile without changing the active one.
     """)
   end
 
@@ -817,6 +965,38 @@ defmodule BeamAgent.CLI do
 
   defp error({:session_not_found, session_id}) do
     IO.puts(:stderr, "error: durable session #{inspect(session_id)} was not found")
+    1
+  end
+
+  defp error({:unknown_profile, name}) do
+    IO.puts(
+      :stderr,
+      "error: provider profile #{inspect(name)} was not found; run `beam_agent provider list`"
+    )
+
+    1
+  end
+
+  defp error({:profile_exists, name}) do
+    IO.puts(
+      :stderr,
+      "error: provider profile #{inspect(name)} already exists; use --force to replace it"
+    )
+
+    1
+  end
+
+  defp error({:provider_required, name}) do
+    IO.puts(
+      :stderr,
+      "error: profile #{inspect(name)} is not a provider name; supply --provider ADAPTER"
+    )
+
+    1
+  end
+
+  defp error({:invalid_profile_name, name}) do
+    IO.puts(:stderr, "error: invalid provider profile name #{inspect(name)}")
     1
   end
 

@@ -17,6 +17,28 @@ defmodule BeamAgent.ProvidersTest do
     end
 
     @impl true
+    def post_json_stream(url, headers, body, options, initial_state, chunk_fun) do
+      send(options[:test_pid], {:http_stream, url, headers, body})
+      status = Keyword.get(options, :stub_status, 200)
+
+      if status in 200..299 do
+        with {:ok, state} <-
+               Enum.reduce_while(options[:stream_chunks] || [], {:ok, initial_state}, fn chunk,
+                                                                                         {:ok,
+                                                                                          state} ->
+                 case chunk_fun.(chunk, state) do
+                   {:ok, state} -> {:cont, {:ok, state}}
+                   {:error, reason} -> {:halt, {:error, reason}}
+                 end
+               end) do
+          {:ok, status, :streamed, state}
+        end
+      else
+        {:ok, status, options[:stub_response]}
+      end
+    end
+
+    @impl true
     def get_json(url, headers, options) do
       send(options[:test_pid], {:http_get, url, headers})
       {:ok, Keyword.get(options, :stub_status, 200), options[:stub_response]}
@@ -298,4 +320,142 @@ defmodule BeamAgent.ProvidersTest do
     assert_receive {:http_post, _url, _headers, ollama_body}
     assert hd(ollama_body["messages"]) == %{"role" => "system", "content" => "project rules"}
   end
+
+  test "OpenAI streams fragmented text and function arguments into one response" do
+    chunks = [
+      "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n",
+      "\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"ad\",\"arguments\":\"{\\\"a\\\":2,\"}}]}}]}\n\n",
+      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"name\":\"d\",\"arguments\":\"\\\"b\\\":3}\"}}]}}]}\n\n",
+      "data: [DONE]\n\n"
+    ]
+
+    emit = fn event -> send(self(), {:delta, event}) end
+
+    assert {:ok,
+            %{
+              content: "Hello",
+              tool_calls: [%{id: "call-1", name: "add", arguments: %{"a" => 2, "b" => 3}}]
+            }} =
+             OpenAI.stream(
+               [%{role: :user, content: "calculate"}],
+               @tools,
+               [
+                 model: "test-model",
+                 base_url: "https://openai.example/v1",
+                 api_key: "secret",
+                 http_client: HTTPStub,
+                 test_pid: self(),
+                 stream_chunks: chunks
+               ],
+               emit
+             )
+
+    assert_receive {:delta, {:text_delta, "Hel"}}
+    assert_receive {:delta, {:text_delta, "lo"}}
+    assert_receive {:http_stream, "https://openai.example/v1/chat/completions", _headers, body}
+    assert body["stream"] == true
+  end
+
+  test "Ollama streams fragmented NDJSON and preserves final tool calls" do
+    chunks = [
+      ~s({"message":{"content":"local "},"done":false}\n{"message":{"cont),
+      ~s(ent":"answer"},"done":false}\n),
+      ~s({"message":{"content":"","tool_calls":[{"function":{"name":"add","arguments":{"a":4,"b":5}}}]},"done":true,"eval_count":2}\n)
+    ]
+
+    emit = fn event -> send(self(), {:delta, event}) end
+
+    assert {:ok, %{content: "local answer", tool_calls: [call]}} =
+             Ollama.stream(
+               [%{role: :user, content: "add"}],
+               @tools,
+               [
+                 model: "qwen3:8b",
+                 base_url: "http://ollama.example",
+                 http_client: HTTPStub,
+                 test_pid: self(),
+                 stream_chunks: chunks
+               ],
+               emit
+             )
+
+    assert call.name == "add"
+    assert call.arguments == %{"a" => 4, "b" => 5}
+    assert_receive {:delta, {:text_delta, "local "}}
+    assert_receive {:delta, {:text_delta, "answer"}}
+    assert_receive {:delta, {:usage, %{"eval_count" => 2}}}
+  end
+
+  test "Anthropic streams text and partial tool JSON across SSE chunks" do
+    events = [
+      sse("message_start", %{
+        "type" => "message_start",
+        "message" => %{"usage" => %{"input_tokens" => 3}}
+      }),
+      sse("content_block_start", %{
+        "type" => "content_block_start",
+        "index" => 0,
+        "content_block" => %{"type" => "text", "text" => ""}
+      }),
+      sse("content_block_delta", %{
+        "type" => "content_block_delta",
+        "index" => 0,
+        "delta" => %{"type" => "text_delta", "text" => "Checking."}
+      }),
+      sse("content_block_start", %{
+        "type" => "content_block_start",
+        "index" => 1,
+        "content_block" => %{
+          "type" => "tool_use",
+          "id" => "toolu-1",
+          "name" => "add",
+          "input" => %{}
+        }
+      }),
+      sse("content_block_delta", %{
+        "type" => "content_block_delta",
+        "index" => 1,
+        "delta" => %{"type" => "input_json_delta", "partial_json" => ~s({"a":2,)}
+      }),
+      sse("content_block_delta", %{
+        "type" => "content_block_delta",
+        "index" => 1,
+        "delta" => %{"type" => "input_json_delta", "partial_json" => ~s("b":3})}
+      }),
+      sse("message_delta", %{
+        "type" => "message_delta",
+        "delta" => %{"stop_reason" => "tool_use"},
+        "usage" => %{"output_tokens" => 4}
+      }),
+      sse("message_stop", %{"type" => "message_stop"})
+    ]
+
+    wire = Enum.join(events)
+    chunks = [binary_part(wire, 0, 37), binary_part(wire, 37, byte_size(wire) - 37)]
+    emit = fn event -> send(self(), {:delta, event}) end
+
+    assert {:ok,
+            %{
+              content: "Checking.",
+              tool_calls: [%{id: "toolu-1", name: "add", arguments: %{"a" => 2, "b" => 3}}]
+            }} =
+             Anthropic.stream(
+               [%{role: :user, content: "add"}],
+               @tools,
+               [
+                 model: "claude-test",
+                 base_url: "https://anthropic.example",
+                 api_key: "secret",
+                 http_client: HTTPStub,
+                 test_pid: self(),
+                 stream_chunks: chunks
+               ],
+               emit
+             )
+
+    assert_receive {:delta, {:text_delta, "Checking."}}
+    assert_receive {:delta, {:tool_call_delta, %{"index" => 1, "arguments" => ~s({"a":2,)}}}
+  end
+
+  defp sse(event, payload), do: "event: #{event}\ndata: #{JSON.encode!(payload)}\n\n"
 end

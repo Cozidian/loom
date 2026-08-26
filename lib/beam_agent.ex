@@ -7,7 +7,7 @@ defmodule BeamAgent do
   """
 
   alias BeamAgent.{Agent, Names, SessionSupervisor, Workspace}
-  alias BeamAgent.Session.{Context, EventLog, ToolPolicy}
+  alias BeamAgent.Session.{Context, EventLog, StreamHub, ToolPolicy}
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
@@ -45,6 +45,12 @@ defmodule BeamAgent do
 
   def ask(session_id, prompt, timeout \\ 30_000), do: Agent.ask(session_id, prompt, timeout)
   def cancel(session_id), do: Agent.cancel(session_id)
+  def subscribe(session_id, subscriber \\ self()), do: StreamHub.subscribe(session_id, subscriber)
+
+  def unsubscribe(session_id, subscriber \\ self()),
+    do: StreamHub.unsubscribe(session_id, subscriber)
+
+  def sync_stream(session_id), do: StreamHub.sync(session_id)
 
   def respond_approval(session_id, approval_id, decision),
     do: ToolPolicy.respond(session_id, approval_id, decision)
@@ -56,6 +62,7 @@ defmodule BeamAgent do
   def event_log_path(session_id), do: EventLog.path(session_id)
   def agent_pid(session_id), do: Names.pid(:agent, session_id)
   def event_log_pid(session_id), do: Names.pid(:event_log, session_id)
+  def stream_hub_pid(session_id), do: Names.pid(:stream_hub, session_id)
   def tool_policy_pid(session_id), do: Names.pid(:tool_policy, session_id)
   def context_pid(session_id), do: Names.pid(:context, session_id)
 

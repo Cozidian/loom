@@ -3,6 +3,7 @@ defmodule BeamAgent.Providers.Ollama do
   @behaviour BeamAgent.LLMProvider
 
   alias BeamAgent.Providers.Support
+  alias BeamAgent.Stream.NDJSONDecoder
 
   @impl true
   def id, do: :ollama
@@ -43,6 +44,37 @@ defmodule BeamAgent.Providers.Ollama do
            ),
          {:ok, response} <- Support.accept(status, response) do
       parse_response(response)
+    end
+  end
+
+  @impl true
+  def stream(messages, tools, options, emit) do
+    options =
+      options
+      |> Keyword.put_new(:model, configuration().default_model)
+      |> Keyword.put_new(:base_url, configuration().default_base_url)
+
+    with {:ok, model} <- Support.require_option(options, :model),
+         {:ok, base_url} <- Support.require_option(options, :base_url),
+         body <- %{
+           "model" => model,
+           "messages" => format_messages(messages, options),
+           "tools" => Enum.map(tools, &Support.tool_schema/1),
+           "stream" => true
+         },
+         client <- Support.http_client(options),
+         :ok <- ensure_streaming_client(client),
+         initial <- %{decoder: NDJSONDecoder.new(), content: [], tool_calls: [], done: false},
+         result <-
+           client.post_json_stream(
+             Support.endpoint(base_url, "/api/chat"),
+             [{"content-type", "application/json"}],
+             body,
+             options,
+             initial,
+             &consume_stream_chunk(&1, &2, emit)
+           ) do
+      finish_stream(result, emit)
     end
   end
 
@@ -160,4 +192,100 @@ defmodule BeamAgent.Providers.Ollama do
   defp normalize_content(content) when is_binary(content), do: content
   defp normalize_content(nil), do: nil
   defp normalize_content(other), do: inspect(other)
+
+  defp ensure_streaming_client(client) do
+    if Code.ensure_loaded?(client) and function_exported?(client, :post_json_stream, 6),
+      do: :ok,
+      else: {:error, {:streaming_not_supported, client}}
+  end
+
+  defp consume_stream_chunk(chunk, state, emit) do
+    {lines, decoder} = NDJSONDecoder.feed(state.decoder, chunk)
+
+    with {:ok, state} <- consume_lines(lines, %{state | decoder: decoder}, emit) do
+      {:ok, state}
+    end
+  end
+
+  defp consume_lines(lines, state, emit) do
+    Enum.reduce_while(lines, {:ok, state}, fn line, {:ok, acc} ->
+      case JSON.decode(line) do
+        {:ok, payload} when is_map(payload) ->
+          case consume_payload(payload, acc, emit) do
+            {:ok, next} -> {:cont, {:ok, next}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        {:ok, other} ->
+          {:halt, {:error, {:invalid_stream_event, other}}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_stream_json, reason, line}}}
+      end
+    end)
+  end
+
+  defp consume_payload(%{"error" => error}, _state, _emit),
+    do: {:error, {:provider_stream_error, error}}
+
+  defp consume_payload(payload, state, emit) do
+    message = payload["message"] || %{}
+
+    state =
+      case message["content"] do
+        delta when is_binary(delta) and delta != "" ->
+          emit.({:text_delta, delta})
+          %{state | content: state.content ++ [delta]}
+
+        _ ->
+          state
+      end
+
+    state =
+      case message["tool_calls"] do
+        calls when is_list(calls) and calls != [] ->
+          Enum.each(calls, &emit.({:tool_call_delta, &1}))
+          %{state | tool_calls: calls}
+
+        _ ->
+          state
+      end
+
+    if payload["done"] do
+      usage =
+        Map.take(payload, [
+          "total_duration",
+          "load_duration",
+          "prompt_eval_count",
+          "prompt_eval_duration",
+          "eval_count",
+          "eval_duration"
+        ])
+
+      if usage != %{}, do: emit.({:usage, usage})
+      {:ok, %{state | done: true}}
+    else
+      {:ok, state}
+    end
+  end
+
+  defp finish_stream({:ok, status, :streamed, state}, emit) when status in 200..299 do
+    {lines, _decoder} = NDJSONDecoder.finish(state.decoder)
+
+    with {:ok, state} <- consume_lines(lines, %{state | decoder: ""}, emit) do
+      parse_response(%{
+        "done" => state.done,
+        "message" => %{
+          "content" => IO.iodata_to_binary(state.content),
+          "tool_calls" => state.tool_calls
+        }
+      })
+    end
+  end
+
+  defp finish_stream({:ok, status, response}, _emit) do
+    with {:ok, response} <- Support.accept(status, response), do: parse_response(response)
+  end
+
+  defp finish_stream({:error, reason}, _emit), do: {:error, reason}
 end

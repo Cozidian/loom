@@ -3,7 +3,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   @behaviour BeamAgent.AgentStrategy
 
   alias BeamAgent.{CapabilityCatalog, ToolRunner}
-  alias BeamAgent.Session.{Context, EventLog}
+  alias BeamAgent.Session.{Context, EventLog, StreamHub}
 
   @impl true
   def run(context, prompt) do
@@ -27,7 +27,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "step" => step_number
            }),
          {:ok, messages} <- EventLog.messages(context.session_id),
-         {:ok, response} <- call_provider(context, messages),
+         {:ok, response} <- call_provider(context, messages, turn, step_number),
          :ok <- validate_response(response),
          {:ok, _} <-
            EventLog.append(context.session_id, :assistant_message, %{
@@ -54,7 +54,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp step(context, turn, _step_number), do: fail_turn(context, turn, :max_steps_exceeded)
 
-  defp call_provider(context, messages) do
+  defp call_provider(context, messages, turn, step) do
     with {:ok, project_context} <- Context.snapshot(context.session_id) do
       options =
         context.provider_options
@@ -62,7 +62,56 @@ defmodule BeamAgent.Strategies.ToolLoop do
         |> Keyword.put(:parent_session_id, context.parent_session_id)
         |> Keyword.put(:system_prompt, project_context.system_prompt)
 
-      context.provider_module.complete(messages, CapabilityCatalog.tool_schemas(), options)
+      if function_exported?(context.provider_module, :stream, 4) do
+        call_streaming_provider(context, messages, options, turn, step)
+      else
+        context.provider_module.complete(messages, CapabilityCatalog.tool_schemas(), options)
+      end
+    end
+  end
+
+  defp call_streaming_provider(context, messages, options, turn, step) do
+    metadata = %{
+      "turn" => turn,
+      "step" => step,
+      "provider" => to_string(context.provider),
+      "provider_profile" => context.provider_profile,
+      "model" => options[:model]
+    }
+
+    with {:ok, response_id} <- StreamHub.begin_response(context.session_id, metadata) do
+      emit = &StreamHub.emit(context.session_id, response_id, &1)
+
+      result =
+        try do
+          context.provider_module.stream(
+            messages,
+            CapabilityCatalog.tool_schemas(),
+            options,
+            emit
+          )
+        rescue
+          error -> {:error, {:provider_exception, Exception.message(error)}}
+        catch
+          kind, reason -> {:error, {:provider_throw, kind, reason}}
+        end
+
+      case result do
+        {:ok, response} ->
+          case StreamHub.finish_response(context.session_id, response_id) do
+            :ok -> {:ok, response}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, reason} ->
+          _ = StreamHub.fail_response(context.session_id, response_id, reason)
+          {:error, reason}
+
+        other ->
+          reason = {:invalid_provider_return, other}
+          _ = StreamHub.fail_response(context.session_id, response_id, reason)
+          {:error, reason}
+      end
     end
   end
 
@@ -123,6 +172,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :session_id,
       :parent_session_id,
       :provider,
+      :provider_profile,
       :provider_options,
       :strategy,
       :max_steps,

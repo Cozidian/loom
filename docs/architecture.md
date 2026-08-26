@@ -25,6 +25,7 @@ Primary references:
 | LLM adapter registry | Stateless `BeamAgent.LLMProvider` modules published in `Registry` |
 | Tool runtime registry | Stateless `BeamAgent.Tool` modules published in `Registry` |
 | Session event source of truth | Session-owned append-only JSONL `EventLog` process |
+| Live event fan-out | Session-owned, subscriber-monitoring `StreamHub` process |
 | In-process subagent provider | Dynamically supervised child session subtree |
 | Scoped/stateful capability | A process under the session's `ResourceSupervisor` |
 | Dependency disposal/reload | Links plus `:rest_for_one` restart ordering |
@@ -38,6 +39,7 @@ BeamAgent.Supervisor
 └── BeamAgent.SessionRootSupervisor (DynamicSupervisor)
     └── SessionSupervisor (one per root session, :rest_for_one)
         ├── EventLog (GenServer, append-only JSONL)
+        ├── StreamHub (GenServer, live fan-out and checkpoint batches)
         ├── ResourceSupervisor (DynamicSupervisor)
         ├── Context (GenServer, project instructions and skill snapshot)
         ├── ToolPolicy (GenServer, approvals and pending callers)
@@ -50,6 +52,16 @@ The event log comes first because every model-visible fact depends on it. If the
 agent crashes, only the agent restarts and reconstructs messages by replaying the
 log. If the event log process dies, `:rest_for_one` rebuilds all downstream
 session processes after the log has reopened and validated its file.
+
+`StreamHub` is directly below the log. It monitors terminal or future web
+subscribers and removes them when their processes disappear. Provider deltas are
+broadcast immediately as normalized text, tool-call, and usage events. They are
+not individually persisted: the hub groups them for 250 milliseconds or 32
+events, then writes one `model_response_checkpoint`. A response also has durable
+started and finished/failed events, while `assistant_message` remains the
+authoritative model-history record. If the hub crashes, `:rest_for_one` rebuilds
+all request-owning processes below it; startup marks a previously started but
+unfinished response as failed instead of pretending it completed.
 
 `ToolPolicy` owns one session's allow/ask/deny decisions and outstanding
 approval calls. It monitors both the CLI approval handler and every waiting turn
@@ -119,17 +131,22 @@ lifecycle is kept in processes and supervisors. Tool execution receives an
 explicit immutable context. Stateful resources belong under a session supervisor
 instead of hiding inside a module singleton.
 
-The JSONL log is synchronous and calls `fsync` after every event. This is a small
-correctness-first implementation, not a high-throughput persistence backend. A
-production adapter could batch writes behind the same process/API while retaining
-sequence validation and append-only semantics.
+The JSONL log is synchronous and calls `fsync` after every durable event. Live
+model deltas bypass that path and become batched checkpoint events, avoiding an
+`fsync` per token. This remains a small correctness-first implementation, not a
+high-throughput persistence backend. A production adapter could batch durable
+writes behind the same process/API while retaining sequence validation and
+append-only semantics.
 
 ## CLI boundary
 
 `BeamAgent.CLI` is an escript entry point over the public harness API. Its JSON
-configuration contains deployment inputs—provider and model, API base URL,
-credential environment-variable name, data directory, loop limit, and
-timeout—but no secrets or runtime state. Starting or resuming a session still
+configuration contains named provider profiles—adapter and model, API base URL,
+and credential environment-variable name—plus global data directory and runtime
+limits, but no secrets or live process state. Config version 4 migrates the old
+single-provider block into one active profile. The CLI resolves exactly one
+profile before starting or resuming a session; changing the stored active profile
+does not mutate an already running agent. Starting or resuming still
 goes through `BeamAgent`, capability resolution still goes through the Registry,
 and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI
@@ -137,18 +154,28 @@ becoming a second orchestration core.
 
 The terminal presentation is similarly isolated in `BeamAgent.CLI.UI`. It adds
 ANSI-aware headers, conversational roles, compact tool activity, setup guidance,
-and slash-command discovery without owning sessions or interpreting model
-protocols. Running the executable with no arguments is the human path: it opens
-chat and performs guided setup first when configuration is absent. Explicit
-subcommands remain stable for scripts and diagnostics.
+slash-command discovery, and live delta rendering without owning sessions or
+interpreting model protocols. `TurnRunner` subscribes for exactly one turn and
+continues serving approval requests from the same mailbox. Tool activity is
+rendered from durable events as it happens, and a streamed final answer is not
+printed a second time. Running the executable with no arguments is the human
+path: it opens chat and performs guided setup first when configuration is absent.
+Explicit subcommands remain stable for scripts and diagnostics.
 
 ## Provider boundary
 
-All providers implement the same stateless `BeamAgent.LLMProvider` behaviour:
-the tool loop supplies normalized conversation history and tool schemas, and the
-adapter returns normalized text plus zero or more tool calls. Transport lives
-behind `BeamAgent.HTTPClient`, which keeps protocol tests independent of a live
-service and leaves room for another HTTP implementation.
+All providers implement the same stateless `BeamAgent.LLMProvider` behaviour.
+The tool loop supplies normalized conversation history and tool schemas; the
+adapter returns normalized text plus zero or more tool calls. Providers may also
+implement `stream/4`, emitting normalized text, partial tool-call, and usage
+events while assembling that same final response. Transport lives behind
+`BeamAgent.HTTPClient`, whose asynchronous streaming callback is implemented by
+OTP `:httpc`; protocol tests remain independent of a live service and another
+HTTP implementation can replace it.
+
+Profile identity is passed into the session options and recorded on each
+`agent_started` event alongside the resolved adapter and model. Child agents
+inherit that resolved profile rather than consulting mutable global config.
 
 | CLI provider | API protocol | Authentication |
 | --- | --- | --- |

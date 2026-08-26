@@ -27,6 +27,7 @@ defmodule BeamAgent.Tools.SpawnSubagent do
   def execute(%{"prompt" => prompt}, context) when is_binary(prompt) and prompt != "" do
     opts = [
       provider: context.provider,
+      provider_profile: context.provider_profile,
       provider_options: context.provider_options,
       strategy: context.strategy,
       max_steps: context.max_steps,
