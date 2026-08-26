@@ -102,6 +102,8 @@ defmodule BeamAgent.CLI.UI do
     command("/new", "start a fresh session")
     command("/sessions", "list durable sessions")
     command("/status", "show provider, model, session, and event log")
+    command("/skills", "list skills discovered for this session")
+    command("/reload", "reload project instructions and skill metadata")
     command("/events", "show the current event count and log path")
     command("/clear", "clear the terminal and redraw the session")
     command("/help", "show this command list")
@@ -109,12 +111,17 @@ defmodule BeamAgent.CLI.UI do
     blank()
   end
 
-  def status(config, session_id, event_path) do
+  def status(config, session_id, event_path, context) do
     blank()
     line([:bright, "Session"])
     field("provider", config["provider"])
     field("model", config["model"] || "built-in")
     field("session", session_id)
+    field("workspace", config["workspace_root"])
+    field("approval", config["approval_policy"])
+    field("instructions", length(context.instructions))
+    field("skills", length(context.skills))
+    field("context", String.slice(context.fingerprint, 0, 12))
     field("events", event_path)
     blank()
   end
@@ -122,6 +129,28 @@ defmodule BeamAgent.CLI.UI do
   def notice(message), do: line([:faint, message])
   def success(message), do: line([@success, "✓ ", :reset, message])
   def warning(message), do: line([:yellow, "! ", :reset, message])
+
+  def approval(request) do
+    end_wait()
+    blank()
+    line([:yellow, "◆", :reset, :bright, " approval required"])
+    field("tool", request.tool)
+    field("access", request.access)
+    field("arguments", compact(JSON.encode!(request.arguments)))
+
+    decision =
+      case IO.gets(format([:bright, @accent, "Allow once?", :reset, " [y/N]: "])) do
+        input when is_binary(input) ->
+          if String.downcase(String.trim(input)) in ["y", "yes"], do: :allow_once, else: :deny
+
+        _ ->
+          :deny
+      end
+
+    if decision == :allow_once, do: success("Approved once"), else: warning("Denied")
+    begin_wait()
+    decision
+  end
 
   def begin_wait do
     if ansi?(), do: IO.write(format([:faint, "  ◌ thinking…", :reset]))

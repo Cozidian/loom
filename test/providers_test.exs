@@ -240,4 +240,62 @@ defmodule BeamAgent.ProvidersTest do
                stub_response: response
              )
   end
+
+  test "provider adapters preserve the project context in their native system channel" do
+    openai_response = %{
+      "choices" => [%{"message" => %{"content" => "ok", "tool_calls" => []}}]
+    }
+
+    assert {:ok, _response} =
+             OpenAI.complete([%{role: :user, content: "hi"}], [],
+               model: "test-model",
+               base_url: "https://openai.example/v1",
+               api_key: "secret",
+               system_prompt: "project rules",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: openai_response
+             )
+
+    assert_receive {:http_post, _url, _headers, openai_body}
+    assert hd(openai_body["messages"]) == %{"role" => "system", "content" => "project rules"}
+
+    anthropic_response = %{
+      "stop_reason" => "end_turn",
+      "content" => [%{"type" => "text", "text" => "ok"}]
+    }
+
+    assert {:ok, _response} =
+             Anthropic.complete([%{role: :user, content: "hi"}], [],
+               model: "claude-test",
+               base_url: "https://anthropic.example",
+               api_key: "secret",
+               system_prompt: "project rules",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: anthropic_response
+             )
+
+    assert_receive {:http_post, _url, _headers, anthropic_body}
+    assert anthropic_body["system"] == "project rules"
+    assert hd(anthropic_body["messages"])["role"] == "user"
+
+    ollama_response = %{
+      "done" => true,
+      "message" => %{"role" => "assistant", "content" => "ok", "tool_calls" => []}
+    }
+
+    assert {:ok, _response} =
+             Ollama.complete([%{role: :user, content: "hi"}], [],
+               model: "qwen3:8b",
+               base_url: "http://ollama.example",
+               system_prompt: "project rules",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: ollama_response
+             )
+
+    assert_receive {:http_post, _url, _headers, ollama_body}
+    assert hd(ollama_body["messages"]) == %{"role" => "system", "content" => "project rules"}
+  end
 end

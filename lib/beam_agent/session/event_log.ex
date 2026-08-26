@@ -45,15 +45,7 @@ defmodule BeamAgent.Session.EventLog do
          {:ok, events} <- load(path),
          {:ok, io} <- File.open(path, [:append, :binary, :utf8]) do
       state = %{session_id: session_id, path: path, io: io, events: events}
-
-      if events == [] do
-        case persist(state, :session_started, %{"parent_session_id" => parent_session_id}) do
-          {:ok, _event, state} -> {:ok, state}
-          {:error, reason} -> {:stop, reason}
-        end
-      else
-        {:ok, state}
-      end
+      initialize_log(state, parent_session_id, Keyword.fetch!(opts, :workspace_root))
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -130,6 +122,51 @@ defmodule BeamAgent.Session.EventLog do
     end
   end
 
+  defp initialize_log(%{events: []} = state, parent_session_id, workspace_root) do
+    case persist(state, :session_started, %{
+           "parent_session_id" => parent_session_id,
+           "workspace_root" => workspace_root
+         }) do
+      {:ok, _event, state} -> {:ok, state}
+      {:error, reason} -> close_and_stop(state, reason)
+    end
+  end
+
+  defp initialize_log(state, _parent_session_id, workspace_root) do
+    case bound_workspace(state.events) do
+      nil ->
+        case persist(state, :workspace_bound, %{
+               "workspace_root" => workspace_root,
+               "reason" => "legacy_session"
+             }) do
+          {:ok, _event, state} -> {:ok, state}
+          {:error, reason} -> close_and_stop(state, reason)
+        end
+
+      ^workspace_root ->
+        {:ok, state}
+
+      existing ->
+        close_and_stop(state, {:workspace_mismatch, existing, workspace_root})
+    end
+  end
+
+  defp bound_workspace(events) do
+    Enum.find_value(events, fn
+      %{"type" => type, "data" => %{"workspace_root" => root}}
+      when type in ["session_started", "workspace_bound"] and is_binary(root) ->
+        root
+
+      _event ->
+        nil
+    end)
+  end
+
+  defp close_and_stop(state, reason) do
+    _ = File.close(state.io)
+    {:stop, reason}
+  end
+
   defp to_message(%{"type" => "user_message", "data" => data}) do
     [%{role: :user, content: data["content"]}]
   end
@@ -151,7 +188,8 @@ defmodule BeamAgent.Session.EventLog do
         tool_call_id: data["tool_call_id"],
         name: data["name"],
         content: data["content"],
-        is_error: data["is_error"] || false
+        is_error: data["is_error"] || false,
+        error: data["error"]
       }
     ]
   end

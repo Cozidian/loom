@@ -2,14 +2,19 @@ defmodule BeamAgent.Strategies.ToolLoop do
   @moduledoc "Default sequential, bounded, multi-step model/tool strategy."
   @behaviour BeamAgent.AgentStrategy
 
-  alias BeamAgent.CapabilityCatalog
-  alias BeamAgent.Session.EventLog
+  alias BeamAgent.{CapabilityCatalog, ToolRunner}
+  alias BeamAgent.Session.{Context, EventLog}
 
   @impl true
   def run(context, prompt) do
     turn = count_events(context.session_id, "turn_started") + 1
 
-    with {:ok, _} <- EventLog.append(context.session_id, :turn_started, %{"turn" => turn}),
+    with {:ok, project_context} <- Context.snapshot(context.session_id),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :turn_started, %{
+             "turn" => turn,
+             "context_fingerprint" => project_context.fingerprint
+           }),
          {:ok, _} <- EventLog.append(context.session_id, :user_message, %{"content" => prompt}) do
       step(context, turn, 1)
     end
@@ -50,12 +55,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp step(context, turn, _step_number), do: fail_turn(context, turn, :max_steps_exceeded)
 
   defp call_provider(context, messages) do
-    options =
-      context.provider_options
-      |> Keyword.put(:session_id, context.session_id)
-      |> Keyword.put(:parent_session_id, context.parent_session_id)
+    with {:ok, project_context} <- Context.snapshot(context.session_id) do
+      options =
+        context.provider_options
+        |> Keyword.put(:session_id, context.session_id)
+        |> Keyword.put(:parent_session_id, context.parent_session_id)
+        |> Keyword.put(:system_prompt, project_context.system_prompt)
 
-    context.provider_module.complete(messages, CapabilityCatalog.tool_schemas(), options)
+      context.provider_module.complete(messages, CapabilityCatalog.tool_schemas(), options)
+    end
   end
 
   defp validate_response(%{content: content, tool_calls: calls})
@@ -76,14 +84,16 @@ defmodule BeamAgent.Strategies.ToolLoop do
                "arguments" => call.arguments
              }),
            result <- execute_tool(call, context),
+           {content, error} <- format_result(result),
            {:ok, _} <-
              EventLog.append(context.session_id, :tool_result, %{
                "turn" => turn,
                "step" => step,
                "tool_call_id" => call.id,
                "name" => call.name,
-               "content" => format_result(result),
-               "is_error" => match?({:error, _}, result)
+               "content" => content,
+               "is_error" => match?({:error, _}, result),
+               "error" => error
              }) do
         {:cont, :ok}
       else
@@ -101,13 +111,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp execute_tool(call, context) do
     case CapabilityCatalog.tool(call.name) do
       {:ok, module} ->
-        try do
-          module.execute(call.arguments, tool_context(context))
-        rescue
-          error -> {:error, {:tool_exception, Exception.message(error)}}
-        catch
-          kind, reason -> {:error, {:tool_throw, kind, reason}}
-        end
+        ToolRunner.execute(module, call.arguments, tool_context(context))
 
       {:error, reason} ->
         {:error, reason}
@@ -122,14 +126,38 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :provider_options,
       :strategy,
       :max_steps,
-      :data_dir
+      :data_dir,
+      :workspace_root,
+      :approval_policy,
+      :approval_handler
     ])
   end
 
-  defp format_result({:ok, result}) when is_binary(result), do: result
-  defp format_result({:ok, result}), do: inspect(result)
-  defp format_result({:error, reason}), do: "ERROR: " <> inspect(reason)
-  defp format_result(other), do: "ERROR: invalid tool return " <> inspect(other)
+  defp format_result({:ok, result}) when is_binary(result), do: {result, nil}
+  defp format_result({:ok, result}), do: {inspect(result), nil}
+
+  defp format_result({:error, reason}) do
+    {"ERROR: " <> inspect(reason), error_envelope(reason)}
+  end
+
+  defp format_result(other) do
+    {"ERROR: invalid tool return " <> inspect(other),
+     %{"code" => "invalid_tool_return", "detail" => inspect(other)}}
+  end
+
+  defp error_envelope(reason) when is_atom(reason),
+    do: %{"code" => to_string(reason), "detail" => inspect(reason)}
+
+  defp error_envelope(reason) when is_tuple(reason) and tuple_size(reason) > 0 do
+    code = elem(reason, 0)
+
+    %{
+      "code" => if(is_atom(code), do: to_string(code), else: "tool_error"),
+      "detail" => inspect(reason)
+    }
+  end
+
+  defp error_envelope(reason), do: %{"code" => "tool_error", "detail" => inspect(reason)}
 
   defp finish(context, turn, step, answer) do
     with {:ok, _} <-

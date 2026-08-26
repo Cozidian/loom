@@ -39,6 +39,8 @@ BeamAgent.Supervisor
     └── SessionSupervisor (one per root session, :rest_for_one)
         ├── EventLog (GenServer, append-only JSONL)
         ├── ResourceSupervisor (DynamicSupervisor)
+        ├── Context (GenServer, project instructions and skill snapshot)
+        ├── ToolPolicy (GenServer, approvals and pending callers)
         ├── SubagentSupervisor (DynamicSupervisor)
         │   └── SessionSupervisor (one per child, recursively)
         └── Agent (GenServer)
@@ -49,11 +51,65 @@ agent crashes, only the agent restarts and reconstructs messages by replaying th
 log. If the event log process dies, `:rest_for_one` rebuilds all downstream
 session processes after the log has reopened and validated its file.
 
+`ToolPolicy` owns one session's allow/ask/deny decisions and outstanding
+approval calls. It monitors both the CLI approval handler and every waiting turn
+worker: losing the handler fails pending calls closed, while losing a caller
+removes its approval instead of leaking it. Under `:rest_for_one`, policy loss
+restarts the dependent subagent supervisor and agent but keeps the event log and
+resource supervisor alive.
+
+`Context` owns one immutable runtime snapshot of root project instructions and
+skill metadata. Every load records content hashes and an aggregate fingerprint
+in the event log. A context crash reloads current workspace files and, through
+`:rest_for_one`, rebuilds policy, subagent ownership, and the agent against that
+new snapshot. An explicit `reload_context` performs the same refresh without a
+crash and is approval-gated when selected by the model.
+
 The agent delegates a turn to a task owned by its session `ResourceSupervisor`,
 then links to and monitors that task. This keeps the agent mailbox responsive to
 status and cancellation requests. Cancellation terminates the worker, records a
 durable cancellation event, and replies to the original caller; an agent crash
 also takes its in-flight worker down rather than leaving orphan work behind.
+
+## Workspace and tool execution
+
+Every session receives one canonical, immutable workspace root. Model paths must
+be relative; lexical traversal and symlink resolution are both checked before a
+tool sees an absolute path. Child sessions inherit the root rather than resolving
+their own ambient current directory. The root is bound into the durable event
+log and validated on resume; older logs acquire a one-time `workspace_bound`
+event so they cannot silently move on later resumes.
+
+```text
+assistant tool call
+  → global capability lookup
+  → access classification (:read/:write/:execute/:delegate)
+  → session ToolPolicy (allow/ask/deny)
+  → tool body in the supervised turn worker
+  → normalized content plus typed error envelope
+  → durable tool_result event
+  → next model step
+```
+
+Before each provider step, the strategy reads the current supervised context
+snapshot. OpenAI-compatible and Ollama adapters prepend it as a `system` message;
+Anthropic sends it through the top-level `system` field. Instruction bodies are
+eager because they define project authority. Skill bodies are lazy: only a
+bounded name/description catalog enters the system prompt, while `read_skill`
+returns the complete selected `SKILL.md` and records `skill_activated`.
+
+The catalog still owns trusted, stateless tool modules. Runtime authority is
+session-scoped: read tools are allowed by default, mutations and commands follow
+the configured risky-tool policy, and approvals grant exactly one pending call.
+The CLI does not execute approvals inside the model-call task; it owns the human
+mailbox, answers `ToolPolicy`, and continues awaiting the supervised turn.
+
+File edits use observed-state concurrency rather than blind overwrite:
+`read_file` returns a SHA-256 version and `edit_file` must present it while also
+matching exactly one old-text occurrence. Creates use exclusive file creation.
+Commands use explicit cwd, timeout, output limits, and an enforcing platform
+sandbox. A missing sandbox backend is an error, not an automatic unsandboxed
+fallback.
 
 ## Deliberate non-port
 

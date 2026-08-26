@@ -29,7 +29,7 @@ defmodule BeamAgent.Providers.Ollama do
          {:ok, base_url} <- Support.require_option(options, :base_url),
          body <- %{
            "model" => model,
-           "messages" => Enum.map(messages, &message/1),
+           "messages" => format_messages(messages, options),
            "tools" => Enum.map(tools, &Support.tool_schema/1),
            "stream" => false
          },
@@ -84,6 +84,18 @@ defmodule BeamAgent.Providers.Ollama do
       "tool_name" => message.name,
       "content" => message.content
     }
+  end
+
+  defp format_messages(messages, options) do
+    formatted = Enum.map(messages, &message/1)
+
+    case Keyword.get(options, :system_prompt) do
+      prompt when is_binary(prompt) and prompt != "" ->
+        [%{"role" => "system", "content" => prompt} | formatted]
+
+      _ ->
+        formatted
+    end
   end
 
   defp maybe_put_tool_calls(message, []), do: message

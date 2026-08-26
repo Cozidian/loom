@@ -83,6 +83,21 @@ defmodule BeamAgentTest do
     assert {:ok, "echo(2): after log crash"} = BeamAgent.ask(id, "after log crash")
   end
 
+  test "tool-policy dependency loss rebuilds the agent while preserving durable history" do
+    {:ok, id} = BeamAgent.start_session(data_dir: data_dir(), provider: :echo)
+    assert {:ok, "echo(1): before policy crash"} = BeamAgent.ask(id, "before policy crash")
+    {:ok, old_policy} = BeamAgent.tool_policy_pid(id)
+    {:ok, old_agent} = BeamAgent.agent_pid(id)
+
+    Process.exit(old_policy, :kill)
+    new_policy = wait_for_new_pid(:tool_policy, id, old_policy)
+    new_agent = wait_for_new_pid(:agent, id, old_agent)
+
+    assert new_policy != old_policy
+    assert new_agent != old_agent
+    assert {:ok, "echo(2): after policy crash"} = BeamAgent.ask(id, "after policy crash")
+  end
+
   test "a stopped session can resume from its append-only log" do
     root = data_dir()
     id = "durable-resume"
@@ -104,6 +119,10 @@ defmodule BeamAgentTest do
     assert BeamAgent.CapabilityCatalog.provider(:demo) == {:ok, BeamAgent.Providers.Demo}
     assert BeamAgent.CapabilityCatalog.tool("add") == {:ok, BeamAgent.Tools.Add}
     assert "spawn_subagent" in Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
+    assert "read_file" in Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
+    assert "edit_file" in Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
+    assert "run_command" in Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
+    assert "read_skill" in Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
   end
 
   test "an in-flight turn is cancellable through the agent mailbox" do

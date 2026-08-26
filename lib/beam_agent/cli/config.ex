@@ -3,7 +3,7 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 2
+  @version 3
 
   def path do
     System.get_env("BEAM_AGENT_CONFIG") ||
@@ -17,6 +17,7 @@ defmodule BeamAgent.CLI.Config do
       "model" => nil,
       "base_url" => nil,
       "api_key_env" => nil,
+      "approval_policy" => "ask",
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "max_steps" => 8,
       "timeout_ms" => 30_000
@@ -70,6 +71,7 @@ defmodule BeamAgent.CLI.Config do
     |> maybe_put("model", opts[:model])
     |> maybe_put("base_url", opts[:base_url])
     |> maybe_put("api_key_env", opts[:api_key_env])
+    |> maybe_put("approval_policy", opts[:approval])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
     |> maybe_put("max_steps", opts[:max_steps])
     |> maybe_put("timeout_ms", opts[:timeout])
@@ -97,14 +99,15 @@ defmodule BeamAgent.CLI.Config do
     end
   end
 
-  defp migrate(%{"version" => 1} = config) do
+  defp migrate(%{"version" => version} = config) when version in [1, 2] do
     with {:ok, provider} <- Providers.fetch(config["provider"]) do
       {:ok,
        config
        |> Map.put("version", @version)
        |> Map.put_new("model", provider[:default_model])
        |> Map.put_new("base_url", provider[:default_base_url])
-       |> Map.put_new("api_key_env", provider[:default_api_key_env])}
+       |> Map.put_new("api_key_env", provider[:default_api_key_env])
+       |> Map.put_new("approval_policy", "ask")}
     end
   end
 
@@ -132,7 +135,8 @@ defmodule BeamAgent.CLI.Config do
              config["api_key_env"],
              "api_key_env"
            ),
-         :ok <- validate_url(config["base_url"]) do
+         :ok <- validate_url(config["base_url"]),
+         :ok <- validate_approval_policy(config["approval_policy"]) do
       :ok
     end
   end
@@ -152,6 +156,9 @@ defmodule BeamAgent.CLI.Config do
   end
 
   defp validate_url(_url), do: {:error, {:invalid_config_value, "base_url"}}
+
+  defp validate_approval_policy(policy) when policy in ["ask", "allow", "deny"], do: :ok
+  defp validate_approval_policy(_policy), do: {:error, {:invalid_config_value, "approval_policy"}}
 
   defp maybe_put(config, _key, nil), do: config
   defp maybe_put(config, key, value), do: Map.put(config, key, value)

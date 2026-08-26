@@ -1,7 +1,8 @@
 defmodule BeamAgent.CLI do
   @moduledoc "Command-line entry point for configuring and running BeamAgent."
 
-  alias BeamAgent.CLI.{Config, UI}
+  alias BeamAgent.{ProjectContext, Workspace}
+  alias BeamAgent.CLI.{Config, TurnRunner, UI}
 
   @version Mix.Project.config()[:version]
   @run_switches [
@@ -12,7 +13,9 @@ defmodule BeamAgent.CLI do
     session: :string,
     model: :string,
     base_url: :string,
-    api_key_env: :string
+    api_key_env: :string,
+    workspace: :string,
+    approval: :string
   ]
 
   def main(args) do
@@ -54,6 +57,9 @@ defmodule BeamAgent.CLI do
       ["tools" | rest] ->
         tools_command(rest)
 
+      ["skills" | rest] ->
+        skills_command(rest)
+
       ["sessions" | rest] ->
         sessions_command(config_path, rest)
 
@@ -74,6 +80,9 @@ defmodule BeamAgent.CLI do
 
       ["--version"] ->
         output("beam_agent #{@version}")
+
+      ["--" <> _option | _rest] ->
+        run_command(config_path, args)
 
       [unknown | _rest] ->
         usage_error("unknown command #{inspect(unknown)}")
@@ -105,6 +114,7 @@ defmodule BeamAgent.CLI do
       model: :string,
       base_url: :string,
       api_key_env: :string,
+      approval: :string,
       force: :boolean,
       non_interactive: :boolean
     ]
@@ -181,12 +191,21 @@ defmodule BeamAgent.CLI do
           Integer.to_string(defaults["timeout_ms"])
         )
 
+    approval_policy =
+      opts[:approval] ||
+        maybe_prompt(
+          interactive,
+          "Risky tool policy (ask/deny/allow)",
+          defaults["approval_policy"]
+        )
+
     config = %{
       "version" => defaults["version"],
       "provider" => provider,
       "model" => model,
       "base_url" => base_url,
       "api_key_env" => api_key_env,
+      "approval_policy" => approval_policy,
       "data_dir" => Path.expand(data_dir),
       "max_steps" => parse_integer(max_steps),
       "timeout_ms" => parse_integer(timeout)
@@ -202,6 +221,7 @@ defmodule BeamAgent.CLI do
     with {:ok, opts, prompt_parts} <- parse(args, @run_switches),
          {:ok, config} <- Config.load(config_path),
          config <- Config.merge_overrides(config, opts),
+         config <- Map.put(config, "workspace_root", Path.expand(opts[:workspace] || File.cwd!())),
          :ok <- Config.validate(config),
          :ok <- require_existing_session(opts[:session], config, require_existing?),
          {:ok, provider} <- Config.provider_atom(config["provider"]),
@@ -233,7 +253,10 @@ defmodule BeamAgent.CLI do
       provider: provider,
       provider_options: Config.provider_options(config),
       data_dir: config["data_dir"],
-      max_steps: config["max_steps"]
+      max_steps: config["max_steps"],
+      workspace_root: config["workspace_root"],
+      approval_policy: String.to_existing_atom(config["approval_policy"]),
+      approval_handler: self()
     )
   end
 
@@ -247,7 +270,10 @@ defmodule BeamAgent.CLI do
           provider: provider,
           provider_options: Config.provider_options(config),
           data_dir: config["data_dir"],
-          max_steps: config["max_steps"]
+          max_steps: config["max_steps"],
+          workspace_root: config["workspace_root"],
+          approval_policy: String.to_existing_atom(config["approval_policy"]),
+          approval_handler: self()
         )
     end
   end
@@ -287,6 +313,14 @@ defmodule BeamAgent.CLI do
             print_status(session_id, config)
             chat_loop(session_id, config)
 
+          "/skills" ->
+            print_session_skills(session_id)
+            chat_loop(session_id, config)
+
+          "/reload" ->
+            reload_session_context(session_id)
+            chat_loop(session_id, config)
+
           "/sessions" ->
             print_sessions(config)
             chat_loop(session_id, config)
@@ -317,7 +351,15 @@ defmodule BeamAgent.CLI do
   defp ask_and_print(session_id, prompt, config) do
     event_count = event_count(session_id)
     UI.begin_wait()
-    result = BeamAgent.ask(session_id, prompt, config["timeout_ms"] + 2_000)
+
+    result =
+      TurnRunner.run(
+        session_id,
+        prompt,
+        config["timeout_ms"] + 2_000,
+        &UI.approval/1
+      )
+
     UI.end_wait()
 
     case result do
@@ -369,9 +411,43 @@ defmodule BeamAgent.CLI do
   end
 
   defp print_status(session_id, config) do
-    case BeamAgent.event_log_path(session_id) do
-      {:ok, path} -> UI.status(config, session_id, path)
+    with {:ok, path} <- BeamAgent.event_log_path(session_id),
+         {:ok, context} <- BeamAgent.context_snapshot(session_id) do
+      UI.status(config, session_id, path, context)
+    else
       {:error, reason} -> error(reason)
+    end
+  end
+
+  defp print_session_skills(session_id) do
+    case BeamAgent.skills(session_id) do
+      {:ok, []} ->
+        UI.notice("No project skills discovered")
+        0
+
+      {:ok, skills} ->
+        IO.puts("")
+        output("Skills")
+        Enum.each(skills, &output("  #{&1.name}  #{&1.description}"))
+        IO.puts("")
+        0
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp reload_session_context(session_id) do
+    case BeamAgent.reload_context(session_id) do
+      {:ok, summary} ->
+        UI.success(
+          "Context reloaded · #{summary.instruction_count} instructions · #{summary.skill_count} skills"
+        )
+
+        0
+
+      {:error, reason} ->
+        error(reason)
     end
   end
 
@@ -439,6 +515,32 @@ defmodule BeamAgent.CLI do
     end
   end
 
+  defp skills_command(args) do
+    with {:ok, opts, []} <- parse(args, workspace: :string),
+         {:ok, workspace} <- Workspace.canonical_root(opts[:workspace] || File.cwd!()),
+         {:ok, context} <- ProjectContext.load(workspace) do
+      if context.skills == [] do
+        UI.notice("No project skills discovered in #{workspace}")
+      else
+        Enum.each(context.skills, fn skill ->
+          output("#{skill.name}\t#{skill.path}\t#{skill.description}")
+        end)
+      end
+
+      Enum.each(context.warnings, fn warning ->
+        UI.warning("#{warning.path}: #{warning.reason}")
+      end)
+
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
   defp sessions_command(config_path, args) do
     with {:ok, _opts, []} <- parse(args, []),
          {:ok, config} <- Config.load(config_path) do
@@ -495,6 +597,8 @@ defmodule BeamAgent.CLI do
     if config["model"], do: output("model:      #{config["model"]}")
     if config["base_url"], do: output("base_url:   #{config["base_url"]}")
     if config["api_key_env"], do: output("api_key:    environment #{config["api_key_env"]}")
+    if config["workspace_root"], do: output("workspace:  #{config["workspace_root"]}")
+    output("approval:   #{config["approval_policy"]}")
     output("data_dir:   #{config["data_dir"]}")
     output("max_steps:  #{config["max_steps"]}")
     output("timeout_ms: #{config["timeout_ms"]}")
@@ -600,6 +704,7 @@ defmodule BeamAgent.CLI do
       beam_agent sessions                    list durable sessions
       beam_agent providers                   list available providers
       beam_agent tools                       list model-callable tools
+      beam_agent skills                      list project skills in this workspace
       beam_agent config show                 show active configuration
       beam_agent config path                 show configuration path
 
@@ -610,6 +715,8 @@ defmodule BeamAgent.CLI do
       --config PATH                          use another configuration file
       --base-url URL                         override the provider endpoint
       --api-key-env VARIABLE                 credential environment variable
+      --workspace PATH                       root visible to file and command tools
+      --approval ask|allow|deny              risky tool policy
       --max-steps N                          tool-loop limit
       --timeout MILLISECONDS                 provider request timeout
 
@@ -628,6 +735,7 @@ defmodule BeamAgent.CLI do
       --model MODEL          required for real LLM providers
       --base-url URL         provider endpoint or compatible proxy
       --api-key-env NAME     environment variable containing the credential
+      --approval POLICY      ask, deny, or allow risky tools
       --data-dir PATH        durable session directory
       --max-steps N          maximum tool-loop steps
       --timeout MS           provider request timeout

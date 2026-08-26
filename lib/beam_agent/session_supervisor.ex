@@ -3,7 +3,7 @@ defmodule BeamAgent.SessionSupervisor do
   use Supervisor
 
   alias BeamAgent.Names
-  alias BeamAgent.Session.{EventLog, ResourceSupervisor, SubagentSupervisor}
+  alias BeamAgent.Session.{Context, EventLog, ResourceSupervisor, SubagentSupervisor, ToolPolicy}
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -43,6 +43,8 @@ defmodule BeamAgent.SessionSupervisor do
     children = [
       {EventLog, opts},
       {ResourceSupervisor, opts},
+      {Context, opts},
+      {ToolPolicy, opts},
       {SubagentSupervisor, opts},
       {BeamAgent.Agent, opts}
     ]

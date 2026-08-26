@@ -3,7 +3,7 @@ defmodule BeamAgent.Agent do
   use GenServer
 
   alias BeamAgent.{CapabilityCatalog, Names}
-  alias BeamAgent.Session.EventLog
+  alias BeamAgent.Session.{Context, EventLog}
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -39,7 +39,8 @@ defmodule BeamAgent.Agent do
     max_steps = Keyword.get(opts, :max_steps, Application.fetch_env!(:beam_agent, :max_steps))
 
     with {:ok, provider_module} <- CapabilityCatalog.provider(provider),
-         :ok <- validate_strategy(strategy) do
+         :ok <- validate_strategy(strategy),
+         {:ok, _project_context} <- Context.snapshot(session_id) do
       {:ok, existing} = EventLog.events(session_id)
 
       state = %{
@@ -50,6 +51,9 @@ defmodule BeamAgent.Agent do
         provider_options: Keyword.get(opts, :provider_options, []),
         strategy: strategy,
         data_dir: data_dir,
+        workspace_root: Keyword.fetch!(opts, :workspace_root),
+        approval_policy: Keyword.get(opts, :approval_policy, :ask),
+        approval_handler: Keyword.get(opts, :approval_handler),
         max_steps: max_steps,
         status: :idle,
         current_turn: nil
@@ -58,7 +62,7 @@ defmodule BeamAgent.Agent do
       {:ok, _} =
         EventLog.append(session_id, :agent_started, %{
           "pid" => inspect(self()),
-          "recovered" => length(existing) > 1
+          "recovered" => Enum.any?(existing, &(&1["type"] == "agent_started"))
         })
 
       {:ok, state}

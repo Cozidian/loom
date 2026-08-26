@@ -21,13 +21,19 @@ defmodule BeamAgent.Tools.SpawnSubagent do
   end
 
   @impl true
+  def access, do: :delegate
+
+  @impl true
   def execute(%{"prompt" => prompt}, context) when is_binary(prompt) and prompt != "" do
     opts = [
       provider: context.provider,
       provider_options: context.provider_options,
       strategy: context.strategy,
       max_steps: context.max_steps,
-      data_dir: context.data_dir
+      data_dir: context.data_dir,
+      workspace_root: context.workspace_root,
+      approval_policy: context.approval_policy,
+      approval_handler: context.approval_handler
     ]
 
     with {:ok, child_id} <- BeamAgent.spawn_subagent(context.session_id, opts),

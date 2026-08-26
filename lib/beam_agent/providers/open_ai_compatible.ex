@@ -7,7 +7,7 @@ defmodule BeamAgent.Providers.OpenAICompatible do
     with {:ok, model} <- Support.require_option(options, :model),
          {:ok, base_url} <- Support.require_option(options, :base_url),
          {:ok, headers} <- headers(options),
-         body <- request_body(model, messages, tools),
+         body <- request_body(model, messages, tools, options),
          client <- Support.http_client(options),
          {:ok, status, response} <-
            client.post_json(
@@ -37,13 +37,25 @@ defmodule BeamAgent.Providers.OpenAICompatible do
     end
   end
 
-  defp request_body(model, messages, tools) do
+  defp request_body(model, messages, tools, options) do
     %{
       "model" => model,
-      "messages" => Enum.map(messages, &message/1),
+      "messages" => format_messages(messages, options),
       "tools" => Enum.map(tools, &Support.tool_schema/1),
       "stream" => false
     }
+  end
+
+  defp format_messages(messages, options) do
+    formatted = Enum.map(messages, &message/1)
+
+    case Keyword.get(options, :system_prompt) do
+      prompt when is_binary(prompt) and prompt != "" ->
+        [%{"role" => "system", "content" => prompt} | formatted]
+
+      _ ->
+        formatted
+    end
   end
 
   defp message(%{role: :user, content: content}) do

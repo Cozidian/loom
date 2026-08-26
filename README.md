@@ -12,6 +12,10 @@ It includes:
 - replaceable LLM-provider, tool, and agent-strategy behaviours;
 - a Registry-backed capability catalog;
 - a bounded multi-step tool-calling loop;
+- an immutable, canonical workspace per session;
+- supervised project instructions and lazily activated `SKILL.md` workflows;
+- session-owned allow/ask/deny policy with monitored one-shot approvals;
+- guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
 - synchronous append-only JSONL events and crash reconstruction;
@@ -72,11 +76,87 @@ The CLI also exposes durable-session and capability discovery:
 ```
 
 Inside chat, type `/help` to discover the small interactive command set. The
-most useful commands are `/new`, `/sessions`, `/status`, `/events`, `/clear`,
-and `/exit`. Provider/model and a shortened durable session ID remain visible in
+most useful commands are `/new`, `/sessions`, `/status`, `/skills`, `/reload`,
+`/events`, `/clear`, and `/exit`. Provider/model and a shortened durable session ID remain visible in
 the header; tool calls and tool results are shown separately from the final
 assistant response. The interface uses ANSI styling when the terminal supports
 it and remains plain text in redirected output and tests.
+
+## Work in a repository
+
+The directory where `beam_agent` starts is the immutable workspace for the new
+session. Use `--workspace PATH` to select another root:
+
+```sh
+./beam_agent --workspace ~/code/my-project
+```
+
+Every real LLM sees the same model-callable coding tools:
+
+- `list_files`, `read_file`, and `search_files` run without approval;
+- `list_skills` and `read_skill` discover and lazily activate project workflows;
+- `create_file` refuses to overwrite an existing path;
+- `edit_file` requires the SHA-256 returned by `read_file` and rejects stale or
+  ambiguous edits;
+- `run_command` has bounded time/output and runs with network denied and writes
+  restricted to the workspace and temporary directories;
+- `reload_context` refreshes changed instruction and skill files after approval;
+- `spawn_subagent` delegates into another supervised session with the same
+  workspace and policy.
+
+Paths must be workspace-relative. Canonical path and symlink checks reject
+escapes outside the root. Tool requests, approvals, denials, typed failures, and
+results are appended to the session JSONL log.
+
+The default risky-tool policy is `ask`, producing an interactive, one-shot
+approval before file mutations or commands execute. It can be configured during
+setup or overridden for one run:
+
+```sh
+./beam_agent --approval deny       # read-only tools plus delegation
+./beam_agent --approval ask        # recommended interactive default
+./beam_agent --approval allow      # no prompts for writes or commands
+```
+
+`allow` is intentionally explicit because it grants model-selected writes and
+commands. Command confinement currently has a macOS Seatbelt backend; other
+platforms fail closed with `sandbox_unavailable` until an enforcing backend is
+added. Run `./beam_agent tools` to inspect the active tool catalog.
+
+## Project instructions and skills
+
+At session start, BeamAgent loads root-level project instructions in this
+deterministic order when present:
+
+1. `AGENTS.md`
+2. `CLAUDE.md`
+3. `BEAM_AGENT.md`
+
+Instruction contents are placed in the provider's native system channel.
+BeamAgent discovers skills one directory below these roots, in precedence order:
+
+1. `.beam_agent/skills/*/SKILL.md`
+2. `.agents/skills/*/SKILL.md`
+3. `.claude/skills/*/SKILL.md`
+4. `skills/*/SKILL.md`
+
+Only skill names and descriptions enter the initial system context. The model
+must call `read_skill` to activate and receive a complete matching `SKILL.md`;
+that activation is recorded in the durable event log. Duplicate names keep the
+first skill from the precedence list and produce a context warning. Invalid,
+oversized, or workspace-escaping entries are excluded with warnings.
+
+Inspect skills without starting a session:
+
+```sh
+./beam_agent skills --workspace .
+```
+
+The harness can extend itself through the guarded tool path: create a new
+`.beam_agent/skills/NAME/SKILL.md`, then call `reload_context`, then
+`read_skill`. Model-selected creation and reload both require one-shot approval
+under the default policy. From interactive chat, `/reload` explicitly refreshes
+context after edits made outside the agent.
 
 ## Configure an LLM provider
 
@@ -143,7 +223,12 @@ behaviour remains available for a real model adapter.
 
 ```elixir
 {:ok, session_id} =
-  BeamAgent.start_session(provider: :echo, data_dir: "/var/lib/my-agent/sessions")
+  BeamAgent.start_session(
+    provider: :echo,
+    data_dir: "/var/lib/my-agent/sessions",
+    workspace_root: "/srv/my-project",
+    approval_policy: :deny
+  )
 
 {:ok, answer} = BeamAgent.ask(session_id, "hello")
 {:ok, events} = BeamAgent.events(session_id)

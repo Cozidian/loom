@@ -18,6 +18,9 @@ defmodule BeamAgent.Tools.Add do
   end
 
   @impl true
+  def access, do: :trusted
+
+  @impl true
   def execute(%{"a" => a, "b" => b}, _context) when is_number(a) and is_number(b),
     do: {:ok, a + b}
 

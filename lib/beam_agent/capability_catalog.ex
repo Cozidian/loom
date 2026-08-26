@@ -9,7 +9,19 @@ defmodule BeamAgent.CapabilityCatalog do
 
   alias BeamAgent.Names
 
-  @default_tools [BeamAgent.Tools.Add, BeamAgent.Tools.SpawnSubagent]
+  @default_tools [
+    BeamAgent.Tools.Add,
+    BeamAgent.Tools.ListFiles,
+    BeamAgent.Tools.ReadFile,
+    BeamAgent.Tools.SearchFiles,
+    BeamAgent.Tools.ListSkills,
+    BeamAgent.Tools.ReadSkill,
+    BeamAgent.Tools.ReloadContext,
+    BeamAgent.Tools.CreateFile,
+    BeamAgent.Tools.EditFile,
+    BeamAgent.Tools.RunCommand,
+    BeamAgent.Tools.SpawnSubagent
+  ]
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 

@@ -13,11 +13,17 @@ defmodule BeamAgent.Tool do
           required(:provider_options) => keyword(),
           required(:strategy) => module(),
           required(:max_steps) => pos_integer(),
-          required(:data_dir) => String.t()
+          required(:data_dir) => String.t(),
+          required(:workspace_root) => String.t(),
+          required(:approval_policy) => :ask | :allow | :deny,
+          required(:approval_handler) => pid() | nil
         }
 
   @callback name() :: String.t()
   @callback description() :: String.t()
   @callback input_schema() :: map()
+  @callback access() :: :trusted | :read | :write | :execute | :delegate
   @callback execute(map(), context()) :: {:ok, term()} | {:error, term()}
+
+  @optional_callbacks access: 0
 end

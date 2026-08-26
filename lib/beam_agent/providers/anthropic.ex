@@ -56,12 +56,17 @@ defmodule BeamAgent.Providers.Anthropic do
   end
 
   defp request_body(model, messages, tools, options) do
-    %{
+    body = %{
       "model" => model,
       "max_tokens" => Keyword.get(options, :max_tokens, 4_096),
       "messages" => format_messages(messages),
       "tools" => Enum.map(tools, &tool_schema/1)
     }
+
+    case Keyword.get(options, :system_prompt) do
+      prompt when is_binary(prompt) and prompt != "" -> Map.put(body, "system", prompt)
+      _ -> body
+    end
   end
 
   defp tool_schema(tool) do

@@ -27,6 +27,7 @@ defmodule BeamAgent.CLITest do
     assert config["data_dir"] == context.data_dir
     assert config["max_steps"] == 5
     assert config["timeout_ms"] == 4_000
+    assert config["approval_policy"] == "ask"
 
     {:ok, stat} = File.stat(context.config_path)
     assert Bitwise.band(stat.mode, 0o777) == 0o600
@@ -78,7 +79,7 @@ defmodule BeamAgent.CLITest do
     {status, output} =
       run_stdout(
         ["run", "--config", context.config_path],
-        "hello\n/status\n/help\n/nope\n/events\n/exit\n"
+        "hello\n/status\n/skills\n/reload\n/help\n/nope\n/events\n/exit\n"
       )
 
     assert status == 0
@@ -87,6 +88,8 @@ defmodule BeamAgent.CLITest do
     assert output =~ "Type a message · /help commands"
     assert output =~ "◆ assistant"
     assert output =~ "echo(1): hello"
+    assert output =~ "No project skills discovered"
+    assert output =~ "Context reloaded"
     assert output =~ "provider  echo"
     assert output =~ "/new"
     assert output =~ "Unknown command /nope"
@@ -126,6 +129,27 @@ defmodule BeamAgent.CLITest do
     assert run_help =~ "Chat with beam agent"
   end
 
+  test "approval UI makes the requested authority and arguments explicit" do
+    request = %{
+      tool: "create_file",
+      access: :write,
+      arguments: %{"path" => "notes.txt"}
+    }
+
+    parent = self()
+
+    output =
+      capture_io("yes\n", fn ->
+        send(parent, {:approval_decision, BeamAgent.CLI.UI.approval(request)})
+      end)
+
+    assert_receive {:approval_decision, :allow_once}
+    assert output =~ "approval required"
+    assert output =~ "create_file"
+    assert output =~ "notes.txt"
+    assert output =~ "Approved once"
+  end
+
   test "doctor and capability discovery expose the runnable configuration", context do
     {0, _output} = init_cli(context)
 
@@ -144,6 +168,45 @@ defmodule BeamAgent.CLITest do
     {0, tools} = run_stdout(["tools"])
     assert tools =~ "add\tAdd two numbers."
     assert tools =~ "spawn_subagent"
+  end
+
+  test "top-level runtime flags open the interactive command", context do
+    {0, _output} = init_cli(context)
+
+    parent = self()
+
+    output =
+      capture_io("/status\n/exit\n", fn ->
+        status =
+          BeamAgent.CLI.run([
+            "--config",
+            context.config_path,
+            "--workspace",
+            context.root
+          ])
+
+        send(parent, {:top_level_status, status})
+      end)
+
+    assert_receive {:top_level_status, 0}
+    assert output =~ context.root
+  end
+
+  test "skills command discovers project skill metadata without configuration", context do
+    skill_dir = Path.join(context.root, ".agents/skills/review")
+    File.mkdir_p!(skill_dir)
+
+    File.write!(
+      Path.join(skill_dir, "SKILL.md"),
+      "---\nname: review\ndescription: Review repository changes.\n---\n\nRead the diff.\n"
+    )
+
+    {status, output} = run_stdout(["skills", "--workspace", context.root])
+
+    assert status == 0
+    assert output =~ "review"
+    assert output =~ ".agents/skills/review/SKILL.md"
+    assert output =~ "Review repository changes."
   end
 
   test "run fails with an actionable message before initialization", context do
@@ -235,7 +298,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 2
+    assert migrated["version"] == 3
     assert Map.has_key?(migrated, "model")
     assert Map.has_key?(migrated, "base_url")
     assert Map.has_key?(migrated, "api_key_env")

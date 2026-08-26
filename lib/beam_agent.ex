@@ -6,15 +6,23 @@ defmodule BeamAgent do
   source of truth is an append-only event log.
   """
 
-  alias BeamAgent.{Agent, Names, SessionSupervisor}
-  alias BeamAgent.Session.EventLog
+  alias BeamAgent.{Agent, Names, SessionSupervisor, Workspace}
+  alias BeamAgent.Session.{Context, EventLog, ToolPolicy}
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
 
-    with :ok <- validate_session_id(id) do
+    workspace_root = Keyword.get(opts, :workspace_root, File.cwd!())
+
+    with :ok <- validate_session_id(id),
+         {:ok, workspace_root} <- Workspace.canonical_root(workspace_root) do
       data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
-      child_opts = opts |> Keyword.put(:session_id, id) |> Keyword.put(:data_dir, data_dir)
+
+      child_opts =
+        opts
+        |> Keyword.put(:session_id, id)
+        |> Keyword.put(:data_dir, data_dir)
+        |> Keyword.put(:workspace_root, workspace_root)
 
       case DynamicSupervisor.start_child(
              BeamAgent.SessionRootSupervisor,
@@ -37,10 +45,19 @@ defmodule BeamAgent do
 
   def ask(session_id, prompt, timeout \\ 30_000), do: Agent.ask(session_id, prompt, timeout)
   def cancel(session_id), do: Agent.cancel(session_id)
+
+  def respond_approval(session_id, approval_id, decision),
+    do: ToolPolicy.respond(session_id, approval_id, decision)
+
   def events(session_id), do: EventLog.events(session_id)
+  def context_snapshot(session_id), do: Context.snapshot(session_id)
+  def skills(session_id), do: Context.skills(session_id)
+  def reload_context(session_id), do: Context.reload(session_id)
   def event_log_path(session_id), do: EventLog.path(session_id)
   def agent_pid(session_id), do: Names.pid(:agent, session_id)
   def event_log_pid(session_id), do: Names.pid(:event_log, session_id)
+  def tool_policy_pid(session_id), do: Names.pid(:tool_policy, session_id)
+  def context_pid(session_id), do: Names.pid(:context, session_id)
 
   def stop_session(session_id) do
     with {:ok, pid} <- Names.pid(:session_supervisor, session_id) do
