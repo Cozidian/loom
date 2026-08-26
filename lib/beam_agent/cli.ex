@@ -1,7 +1,7 @@
 defmodule BeamAgent.CLI do
   @moduledoc "Command-line entry point for configuring and running BeamAgent."
 
-  alias BeamAgent.CLI.Config
+  alias BeamAgent.CLI.{Config, UI}
 
   @version Mix.Project.config()[:version]
   @run_switches [
@@ -25,7 +25,16 @@ defmodule BeamAgent.CLI do
 
     case args do
       [] ->
-        run_command(config_path, [])
+        default_command(config_path)
+
+      ["init", flag] when flag in ["--help", "-h"] ->
+        init_help()
+
+      ["run", flag] when flag in ["--help", "-h"] ->
+        run_help()
+
+      ["resume", flag] when flag in ["--help", "-h"] ->
+        resume_help()
 
       ["run" | rest] ->
         run_command(config_path, rest)
@@ -71,6 +80,22 @@ defmodule BeamAgent.CLI do
     end
   end
 
+  defp default_command(config_path) do
+    case Config.load(config_path) do
+      {:ok, _config} ->
+        run_command(config_path, [])
+
+      {:error, {:not_initialized, ^config_path}} ->
+        case init_command(config_path, []) do
+          0 -> run_command(config_path, [])
+          status -> status
+        end
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
   defp init_command(config_path, args) do
     switches = [
       provider: :string,
@@ -86,9 +111,11 @@ defmodule BeamAgent.CLI do
 
     with {:ok, opts, []} <- parse(args, switches),
          :ok <- ensure_replacement_allowed(config_path, opts[:force]),
+         :ok <- maybe_show_setup_header(opts),
          {:ok, config} <- build_config(opts),
          {:ok, ^config_path} <- Config.write(config, config_path) do
-      output("Configuration written to #{config_path}")
+      UI.success("Configuration saved")
+      UI.notice(config_path)
       output_config(config)
     else
       {:ok, _opts, positional} ->
@@ -105,11 +132,7 @@ defmodule BeamAgent.CLI do
 
     provider =
       opts[:provider] ||
-        maybe_prompt(
-          interactive,
-          "Provider (#{Enum.join(Config.supported_providers(), "/")})",
-          defaults["provider"]
-        )
+        choose_provider(interactive, defaults["provider"])
 
     with {:ok, provider_config} <- BeamAgent.Providers.fetch(provider) do
       build_provider_config(opts, defaults, provider, provider_config, interactive)
@@ -185,13 +208,13 @@ defmodule BeamAgent.CLI do
          :ok <- ensure_application_started(),
          {:ok, session_id} <- ensure_session(opts[:session], config, provider) do
       prompt = Enum.join(prompt_parts, " ")
-      output("Session #{session_id} (provider: #{config["provider"]})")
 
       if prompt == "" do
-        output("Interactive mode. Type /help for commands or /exit to quit.")
+        UI.session_header(config, session_id)
         chat_loop(session_id, config)
       else
-        ask_and_print(session_id, prompt, config["timeout_ms"])
+        UI.one_shot_header(config, session_id)
+        ask_and_print(session_id, prompt, config)
       end
     else
       {:error, reason} -> error(reason)
@@ -230,7 +253,7 @@ defmodule BeamAgent.CLI do
   end
 
   defp chat_loop(session_id, config) do
-    case IO.gets("you> ") do
+    case UI.prompt() do
       :eof ->
         0
 
@@ -249,29 +272,90 @@ defmodule BeamAgent.CLI do
             0
 
           "/help" ->
-            output("/events  show event count and log path")
-            output("/exit    stop this CLI session")
+            UI.command_help()
+            chat_loop(session_id, config)
+
+          "/" ->
+            UI.command_help()
             chat_loop(session_id, config)
 
           "/events" ->
             print_event_summary(session_id)
             chat_loop(session_id, config)
 
+          "/status" ->
+            print_status(session_id, config)
+            chat_loop(session_id, config)
+
+          "/sessions" ->
+            print_sessions(config)
+            chat_loop(session_id, config)
+
+          "/new" ->
+            start_new_chat(config, session_id)
+
+          "/clear" ->
+            UI.clear()
+            UI.session_header(config, session_id)
+            chat_loop(session_id, config)
+
+          "/model" ->
+            print_status(session_id, config)
+            chat_loop(session_id, config)
+
+          "/" <> command ->
+            UI.warning("Unknown command /#{command} · type /help")
+            chat_loop(session_id, config)
+
           prompt ->
-            _status = ask_and_print(session_id, prompt, config["timeout_ms"])
+            _status = ask_and_print(session_id, prompt, config)
             chat_loop(session_id, config)
         end
     end
   end
 
-  defp ask_and_print(session_id, prompt, timeout) do
-    case BeamAgent.ask(session_id, prompt, timeout + 2_000) do
+  defp ask_and_print(session_id, prompt, config) do
+    event_count = event_count(session_id)
+    UI.begin_wait()
+    result = BeamAgent.ask(session_id, prompt, config["timeout_ms"] + 2_000)
+    UI.end_wait()
+
+    case result do
       {:ok, answer} ->
-        output("agent> #{answer}")
+        render_new_tool_events(session_id, event_count)
+        UI.assistant(answer)
         0
 
       {:error, reason} ->
         error(reason)
+    end
+  end
+
+  defp event_count(session_id) do
+    case BeamAgent.events(session_id) do
+      {:ok, events} -> length(events)
+      _ -> 0
+    end
+  end
+
+  defp render_new_tool_events(session_id, previous_count) do
+    case BeamAgent.events(session_id) do
+      {:ok, events} -> events |> Enum.drop(previous_count) |> UI.tool_trace()
+      _ -> :ok
+    end
+  end
+
+  defp start_new_chat(config, previous_session_id) do
+    with {:ok, provider} <- Config.provider_atom(config["provider"]),
+         {:ok, session_id} <- ensure_session(nil, config, provider) do
+      _ = BeamAgent.stop_session(previous_session_id)
+      UI.notice("Started a new session")
+      UI.session_header(config, session_id)
+      chat_loop(session_id, config)
+    else
+      {:error, reason} ->
+        _ = error(reason)
+        chat_loop(previous_session_id, config)
     end
   end
 
@@ -280,6 +364,13 @@ defmodule BeamAgent.CLI do
          {:ok, path} <- BeamAgent.event_log_path(session_id) do
       output("#{length(events)} events at #{path}")
     else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp print_status(session_id, config) do
+    case BeamAgent.event_log_path(session_id) do
+      {:ok, path} -> UI.status(config, session_id, path)
       {:error, reason} -> error(reason)
     end
   end
@@ -350,21 +441,42 @@ defmodule BeamAgent.CLI do
 
   defp sessions_command(config_path, args) do
     with {:ok, _opts, []} <- parse(args, []),
-         {:ok, config} <- Config.load(config_path),
-         {:ok, entries} <- File.ls(config["data_dir"]) do
-      sessions =
-        entries
-        |> Enum.filter(&File.regular?(Path.join([config["data_dir"], &1, "events.jsonl"])))
-        |> Enum.sort()
-
-      if sessions == [], do: output("No sessions."), else: Enum.each(sessions, &output/1)
-      0
+         {:ok, config} <- Config.load(config_path) do
+      print_sessions(config)
     else
       {:error, :enoent} ->
         output("No sessions.")
 
       {:ok, _opts, positional} ->
         usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp print_sessions(config) do
+    case File.ls(config["data_dir"]) do
+      {:ok, entries} ->
+        sessions =
+          entries
+          |> Enum.filter(&File.regular?(Path.join([config["data_dir"], &1, "events.jsonl"])))
+          |> Enum.sort()
+
+        if sessions == [] do
+          UI.notice("No saved sessions")
+        else
+          IO.puts("")
+          output("Sessions")
+          Enum.each(sessions, &output("  #{&1}"))
+          IO.puts("")
+        end
+
+        0
+
+      {:error, :enoent} ->
+        UI.notice("No saved sessions")
+        0
 
       {:error, reason} ->
         error(reason)
@@ -394,6 +506,10 @@ defmodule BeamAgent.CLI do
       else: :ok
   end
 
+  defp maybe_show_setup_header(opts) do
+    if opts[:non_interactive] == true, do: :ok, else: UI.setup_header()
+  end
+
   defp ensure_application_started do
     case Application.ensure_all_started(:beam_agent) do
       {:ok, _applications} -> :ok
@@ -411,6 +527,20 @@ defmodule BeamAgent.CLI do
     else
       {:ok, "no provider-specific check"}
     end
+  end
+
+  defp choose_provider(false, default), do: default
+
+  defp choose_provider(true, default) do
+    preferred_order = ["ollama", "openai", "anthropic", "xai", "demo", "echo"]
+    configurations = BeamAgent.Providers.configurations()
+
+    providers =
+      preferred_order
+      |> Enum.filter(&Map.has_key?(configurations, &1))
+      |> Enum.map(&Map.fetch!(configurations, &1))
+
+    UI.choose_provider(providers, default)
   end
 
   defp maybe_prompt(false, _label, default), do: default
@@ -457,42 +587,75 @@ defmodule BeamAgent.CLI do
 
   defp help do
     output("""
-    BeamAgent #{@version}
+    beam agent #{@version}
 
-    Usage:
-      beam_agent init [options]              create first-run configuration
-      beam_agent run [options] [prompt]      start a session or interactive chat
-      beam_agent resume SESSION [prompt]     resume a durable session
+    Start here:
+      beam_agent                             open an interactive chat
+      beam_agent run "your prompt"           run once and exit
+      beam_agent resume SESSION              continue a saved session
+
+    Setup and inspect:
+      beam_agent init                        configure a provider
+      beam_agent doctor                      check the active provider
       beam_agent sessions                    list durable sessions
-      beam_agent doctor                      validate configuration and runtime
-      beam_agent providers                   list configured provider modules
+      beam_agent providers                   list available providers
       beam_agent tools                       list model-callable tools
       beam_agent config show                 show active configuration
       beam_agent config path                 show configuration path
 
-    Global:
-      --config PATH                          use a specific configuration file
+    Common options:
+      --provider NAME                        demo, echo, ollama, openai,
+                                             anthropic, xai, or grok
+      --model MODEL                          model used for this session
+      --config PATH                          use another configuration file
+      --base-url URL                         override the provider endpoint
+      --api-key-env VARIABLE                 credential environment variable
+      --max-steps N                          tool-loop limit
+      --timeout MILLISECONDS                 provider request timeout
 
-    Init options:
-      --provider demo|echo|ollama|openai|anthropic|xai
-      --model MODEL
-      --base-url URL
-      --api-key-env VARIABLE
-      --data-dir PATH
-      --max-steps N
-      --timeout MILLISECONDS
-      --non-interactive
-      --force
+    Running `beam_agent init` opens a guided setup. For automated setup, add
+    --non-interactive and provide provider/model flags explicitly.
+    """)
+  end
 
-    Run options:
-      --session ID
-      --provider demo|echo|ollama|openai|anthropic|xai  (`grok` aliases `xai`)
-      --model MODEL
-      --base-url URL
-      --api-key-env VARIABLE
-      --data-dir PATH
-      --max-steps N
-      --timeout MILLISECONDS
+  defp init_help do
+    output("""
+    Configure beam agent
+
+      beam_agent init [options]
+
+      --provider NAME        demo, echo, ollama, openai, anthropic, xai, or grok
+      --model MODEL          required for real LLM providers
+      --base-url URL         provider endpoint or compatible proxy
+      --api-key-env NAME     environment variable containing the credential
+      --data-dir PATH        durable session directory
+      --max-steps N          maximum tool-loop steps
+      --timeout MS           provider request timeout
+      --non-interactive      do not prompt; validate supplied/default values
+      --force                replace an existing configuration
+    """)
+  end
+
+  defp run_help do
+    output("""
+    Chat with beam agent
+
+      beam_agent run [options] [prompt]
+
+    Omit the prompt for interactive chat. Supplying one runs a single turn and
+    exits. Provider, model, endpoint, limits, and session storage can be
+    overridden with the common options shown by `beam_agent help`.
+    """)
+  end
+
+  defp resume_help do
+    output("""
+    Resume a durable session
+
+      beam_agent resume SESSION [prompt]
+
+    Use `beam_agent sessions` to find session IDs. Omit the prompt to continue
+    interactively.
     """)
   end
 

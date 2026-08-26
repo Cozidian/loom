@@ -24,13 +24,17 @@ The implementation has no third-party dependencies. It uses Elixir's built-in
 
 ```sh
 mix escript.build
-./beam_agent init
+./beam_agent
 ```
 
-`init` is the first-run wizard. It configures the provider, durable session
-directory, maximum tool-loop steps, and turn timeout. Configuration is stored at
-`~/.config/beam_agent/config.json` by default with mode `0600`; set
-`BEAM_AGENT_CONFIG` or pass `--config PATH` to use another location.
+Running `beam_agent` opens the terminal chat. On the first launch it walks
+through setup first, configuring the provider, model, durable session directory,
+maximum tool-loop steps, and turn timeout. You can also rerun the wizard later
+with `./beam_agent init`.
+
+Configuration is stored at `~/.config/beam_agent/config.json` by default with
+mode `0600`; set `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another
+location.
 
 For automated setup with the deterministic echo provider:
 
@@ -47,7 +51,7 @@ Validate the installation, then enter an interactive chat:
 
 ```sh
 ./beam_agent doctor
-./beam_agent run
+./beam_agent
 ```
 
 Or run a single prompt:
@@ -66,6 +70,13 @@ The CLI also exposes durable-session and capability discovery:
 ./beam_agent config show
 ./beam_agent help
 ```
+
+Inside chat, type `/help` to discover the small interactive command set. The
+most useful commands are `/new`, `/sessions`, `/status`, `/events`, `/clear`,
+and `/exit`. Provider/model and a shortened durable session ID remain visible in
+the header; tool calls and tool results are shown separately from the final
+assistant response. The interface uses ANSI styling when the terminal supports
+it and remains plain text in redirected output and tests.
 
 ## Configure an LLM provider
 

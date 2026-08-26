@@ -79,6 +79,13 @@ and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI
 becoming a second orchestration core.
 
+The terminal presentation is similarly isolated in `BeamAgent.CLI.UI`. It adds
+ANSI-aware headers, conversational roles, compact tool activity, setup guidance,
+and slash-command discovery without owning sessions or interpreting model
+protocols. Running the executable with no arguments is the human path: it opens
+chat and performs guided setup first when configuration is absent. Explicit
+subcommands remain stable for scripts and diagnostics.
+
 ## Provider boundary
 
 All providers implement the same stateless `BeamAgent.LLMProvider` behaviour:

@@ -21,7 +21,7 @@ defmodule BeamAgent.CLITest do
     {status, output} = init_cli(context)
 
     assert status == 0
-    assert output =~ "Configuration written"
+    assert output =~ "Configuration saved"
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
     assert config["provider"] == "echo"
     assert config["data_dir"] == context.data_dir
@@ -39,7 +39,9 @@ defmodule BeamAgent.CLITest do
       run_stdout(["init", "--config", context.config_path], input)
 
     assert status == 0
-    assert output =~ "Provider (anthropic/demo/echo/ollama/openai/xai)"
+    assert output =~ "Choose a provider"
+    assert output =~ "ollama"
+    assert output =~ "OpenAI"
     assert output =~ "Session data directory"
 
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
@@ -64,21 +66,64 @@ defmodule BeamAgent.CLITest do
     {status, output} = run_stdout(["run", "hello from cli", "--config", context.config_path])
 
     assert status == 0
-    assert output =~ "Session session-"
-    assert output =~ "agent> echo(1): hello from cli"
+    assert output =~ "beam agent  ·  echo  ·  session"
+    assert output =~ "◆ assistant"
+    assert output =~ "echo(1): hello from cli"
     assert File.ls!(context.data_dir) != []
   end
 
-  test "run without a prompt provides an interactive chat and event command", context do
+  test "interactive chat exposes session context and discoverable commands", context do
     {0, _output} = init_cli(context)
 
     {status, output} =
-      run_stdout(["run", "--config", context.config_path], "hello\n/events\n/exit\n")
+      run_stdout(
+        ["run", "--config", context.config_path],
+        "hello\n/status\n/help\n/nope\n/events\n/exit\n"
+      )
 
     assert status == 0
-    assert output =~ "Interactive mode"
-    assert output =~ "agent> echo(1): hello"
+    assert output =~ "◆ beam agent"
+    assert output =~ "echo  ·  session"
+    assert output =~ "Type a message · /help commands"
+    assert output =~ "◆ assistant"
+    assert output =~ "echo(1): hello"
+    assert output =~ "provider  echo"
+    assert output =~ "/new"
+    assert output =~ "Unknown command /nope"
     assert output =~ "events at"
+  end
+
+  test "running without configuration starts setup and then opens chat", context do
+    input = "echo\n#{context.data_dir}\n5\n4000\n"
+
+    {status, output} = run_stdout(["--config", context.config_path], input)
+
+    assert status == 0
+    assert output =~ "First-time setup"
+    assert output =~ "Configuration saved"
+    assert output =~ "Type a message · /help commands"
+    assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert config["provider"] == "echo"
+  end
+
+  test "interactive new command rotates to a fresh durable session", context do
+    {0, _output} = init_cli(context)
+
+    {status, output} =
+      run_stdout(["run", "--config", context.config_path], "/new\n/exit\n")
+
+    assert status == 0
+    assert output =~ "Started a new session"
+    assert length(File.ls!(context.data_dir)) == 2
+  end
+
+  test "command-specific help is available without configuration", context do
+    {0, init_help} = run_stdout(["init", "--help", "--config", context.config_path])
+    assert init_help =~ "Configure beam agent"
+    assert init_help =~ "--non-interactive"
+
+    {0, run_help} = run_stdout(["run", "--help", "--config", context.config_path])
+    assert run_help =~ "Chat with beam agent"
   end
 
   test "doctor and capability discovery expose the runnable configuration", context do
