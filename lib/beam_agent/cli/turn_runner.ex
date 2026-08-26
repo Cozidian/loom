@@ -11,7 +11,7 @@ defmodule BeamAgent.CLI.TurnRunner do
       end)
 
     task = %{pid: pid, monitor: Process.monitor(pid), result_ref: result_ref}
-    deadline = System.monotonic_time(:millisecond) + timeout + 1_000
+    deadline = deadline(timeout)
     await(task, deadline, approval_fun)
   end
 
@@ -34,7 +34,7 @@ defmodule BeamAgent.CLI.TurnRunner do
           session_id: session_id
         }
 
-        deadline = System.monotonic_time(:millisecond) + timeout + 1_000
+        deadline = deadline(timeout)
         meta = %{streamed_text?: false, live_tool_events?: false}
 
         case await_live(task, deadline, approval_fun, event_fun, meta) do
@@ -49,7 +49,7 @@ defmodule BeamAgent.CLI.TurnRunner do
   end
 
   defp await(task, deadline, approval_fun) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = remaining(deadline)
 
     receive do
       {ref, result} when ref == task.result_ref ->
@@ -78,7 +78,7 @@ defmodule BeamAgent.CLI.TurnRunner do
   end
 
   defp await_live(task, deadline, approval_fun, event_fun, meta) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+    remaining = remaining(deadline)
 
     receive do
       {ref, result} when ref == task.result_ref ->
@@ -161,6 +161,12 @@ defmodule BeamAgent.CLI.TurnRunner do
   end
 
   defp result_session_id(%{session_id: session_id}), do: session_id
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout + 1_000
+
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   defp flush_stream_messages do
     receive do

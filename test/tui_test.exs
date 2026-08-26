@@ -2,9 +2,7 @@ defmodule BeamAgent.CLITUITest do
   use ExUnit.Case, async: false
 
   alias BeamAgent.CLI.TUI
-  alias BeamAgent.CLI.TUI.App
-  alias TermUI.{Event, Runtime}
-  alias TermUI.Renderer.DisplayWidth
+  alias BeamAgent.CLI.TUI.Controller
 
   setup do
     root =
@@ -20,9 +18,9 @@ defmodule BeamAgent.CLITUITest do
       "model" => nil,
       "workspace_root" => workspace,
       "data_dir" => data_dir,
-      "max_steps" => 5,
-      "timeout_ms" => 2_000,
-      "approval_policy" => "ask"
+      "approval_policy" => "ask",
+      "context_window_tokens" => 32_000,
+      "compaction_threshold_percent" => 75
     }
 
     {:ok, session_id} =
@@ -37,53 +35,22 @@ defmodule BeamAgent.CLITUITest do
     %{config: config, session_id: session_id}
   end
 
-  test "the screen model edits and submits a multiline composer", context do
-    state = App.init(session_id: context.session_id, config: context.config)
-    state = %{state | controller: self()}
+  test "initial bridge payload projects durable history", context do
+    assert {:ok, "echo(1): hello"} = BeamAgent.ask(context.session_id, "hello")
 
-    {state, []} = App.update({:insert, "hello"}, state)
-    {state, []} = App.update(:newline, state)
-    {state, []} = App.update({:insert, "world"}, state)
-    assert state.input == "hello\nworld"
+    payload = TUI.initial_payload(context.session_id, context.config)
 
-    {state, []} = App.update(:enter, state)
-
-    assert_receive {_gen_cast, {:submit, "hello\nworld"}}
-    assert state.input == ""
-    assert state.status == :running
-    assert List.last(state.entries).kind == :user
-
-    assert {:msg, :newline} =
-             App.event_to_msg(Event.key("o", char: "o", modifiers: [:ctrl]), state)
+    assert payload.type == "init"
+    assert payload.session_id == context.session_id
+    assert payload.workspace == context.config["workspace_root"]
+    assert payload.profile == "echo"
+    assert payload.model == "built-in"
+    assert Enum.map(payload.entries, & &1.kind) == ["user", "assistant"]
+    assert List.last(payload.entries).content == "echo(1): hello"
+    assert is_map(payload.context_stats)
   end
 
-  test "streamed and durable assistant events do not duplicate the final answer", context do
-    state = App.init(session_id: context.session_id, config: context.config)
-
-    {state, []} =
-      App.update(
-        {:stream, %{type: :text_delta, response_id: "response-1", delta: "hello"}},
-        state
-      )
-
-    {state, []} =
-      App.update(
-        {:stream,
-         %{
-           type: :durable_event,
-           event: %{
-             "type" => "assistant_message",
-             "data" => %{"content" => "hello", "tool_calls" => []}
-           }
-         }},
-        state
-      )
-
-    assert Enum.count(state.entries, &(&1.kind == :assistant)) == 1
-    assert List.last(state.entries).content == "hello"
-  end
-
-  test "approval overlay is fail-closed and responds through the controller", context do
+  test "bridge notifications are JSON-safe and preserve approval semantics", context do
     request = %{
       approval_id: "approval-1",
       session_id: context.session_id,
@@ -92,141 +59,78 @@ defmodule BeamAgent.CLITUITest do
       arguments: %{"command" => "mix test"}
     }
 
-    state = App.init(session_id: context.session_id, config: context.config)
-    state = %{state | controller: self()}
-    {state, []} = App.update({:approval_requested, request}, state)
-    assert state.approval.choice == :deny
+    payload = TUI.notification_payload({:approval_requested, request})
+    encoded = JSON.encode!(payload)
+    assert {:ok, decoded} = JSON.decode(encoded)
+    assert decoded["type"] == "approval_requested"
+    assert decoded["approval"]["access"] == "execute"
+    assert decoded["approval"]["arguments"] == %{"command" => "mix test"}
 
-    {state, []} = App.update(:escape, state)
-    assert state.approval == nil
-    assert_receive {_gen_cast, {:decide, "approval-1", :deny}}
+    assert TUI.notification_payload({:approval_resolved, "approval-1", :deny}) == %{
+             type: "approval_resolved",
+             approval_id: "approval-1",
+             decision: "deny"
+           }
   end
 
-  test "runtime processes keyboard input and a controller completes a real echo turn", context do
-    {:ok, runtime} =
-      Runtime.start_link(
-        root: App,
-        session_id: context.session_id,
-        config: context.config,
-        skip_terminal: true,
-        render_interval: 10
-      )
-
+  test "controller completes a real echo turn through the generic client bridge", context do
     {:ok, controller} =
-      BeamAgent.CLI.TUI.Controller.start_link(
-        runtime: runtime,
+      Controller.start_link(
+        client: self(),
         session_id: context.session_id,
         config: context.config
       )
 
-    on_exit(fn ->
-      if Process.alive?(controller), do: GenServer.stop(controller)
-      if Process.alive?(runtime), do: Runtime.shutdown(runtime)
-    end)
+    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
 
-    Enum.each(String.graphemes("hello"), fn char ->
-      Runtime.send_event(runtime, Event.key(char, char: char))
-    end)
+    assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:context_stats, _stats}}
 
-    Runtime.send_event(runtime, Event.key(:enter))
+    Controller.submit(controller, "hello")
 
-    assert eventually(fn ->
-             Runtime.sync(runtime)
-             state = Runtime.get_state(runtime).root_state
+    assert_receive {:beam_agent_tui, {:turn_started, "hello"}}
 
-             state.status == :idle and
-               Enum.any?(
-                 state.entries,
-                 &(&1.kind == :assistant and &1.content == "echo(1): hello")
-               )
+    messages = collect_until_turn_finished([])
+
+    assert Enum.any?(messages, fn
+             {:stream,
+              %{
+                type: :durable_event,
+                event: %{
+                  "type" => "assistant_message",
+                  "data" => %{"content" => "echo(1): hello"}
+                }
+              }} ->
+               true
+
+             _message ->
+               false
            end)
+
+    assert Enum.any?(messages, &match?({:turn_finished, {:ok, "echo(1): hello"}}, &1))
   end
 
-  test "render tree fills the configured screen and no-tui always disables takeover", context do
-    state =
-      App.init(
-        session_id: context.session_id,
-        config: context.config,
-        width: 72,
-        height: 22
-      )
+  test "no-tui always disables takeover and an explicit Go executable is discoverable" do
+    previous = System.get_env("BEAM_AGENT_TUI_BIN")
+    executable = System.find_executable("sh")
+    System.put_env("BEAM_AGENT_TUI_BIN", executable)
 
-    tree = App.view(state)
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("BEAM_AGENT_TUI_BIN", previous),
+        else: System.delete_env("BEAM_AGENT_TUI_BIN")
+    end)
 
-    assert state.width == 72
-    assert state.height == 22
-    assert tree.type == :stack
-    assert tree.direction == :vertical
-    assert length(tree.children) == 22
     refute TUI.available?(false)
+    assert TUI.executable() == executable
   end
 
-  test "conversation rendering is top-aligned, terminal-native, and markdown-aware", context do
-    state = App.init(session_id: context.session_id, config: context.config)
-
-    state = %{
-      state
-      | width: 84,
-        height: 26,
-        entries: [
-          %{kind: :user, content: "hi", id: 1},
-          %{
-            kind: :tool,
-            name: "read_file",
-            arguments: %{"path" => "README.md"},
-            status: :done,
-            content: "# BeamAgent",
-            error?: false,
-            id: "tool-1"
-          },
-          %{
-            kind: :assistant,
-            content:
-              "I am **BeamAgent**, an OTP-native agent working with the session/supervision model.",
-            streaming?: false,
-            id: 2
-          }
-        ]
-    }
-
-    tree = App.view(state)
-    lines = Enum.map(tree.children, & &1.content)
-    rendered = Enum.join(lines, "\n")
-
-    assert Enum.find_index(lines, &String.contains?(&1, "YOU")) < 8
-    assert rendered =~ "└─ ✓  read_file  README.md"
-    assert rendered =~ "I am BeamAgent"
-    assert rendered =~ "session/supervision"
-    refute rendered =~ "**BeamAgent**"
-    assert Enum.all?(tree.children, &is_nil(&1.style.bg))
-  end
-
-  test "command selection stays inside its modal border", context do
-    state =
-      App.init(session_id: context.session_id, config: context.config, width: 120, height: 24)
-
-    {state, []} = App.update(:toggle_palette, state)
-    lines = App.view(state).children
-    top_index = Enum.find_index(lines, &String.contains?(&1.content, "Command palette"))
-    top = Enum.at(lines, top_index)
-    selected = Enum.at(lines, top_index + 1)
-
-    assert DisplayWidth.width(String.trim_trailing(selected.content)) ==
-             DisplayWidth.width(String.trim_trailing(top.content))
-
-    refute :reverse in selected.style.attrs
-    assert selected.content |> String.trim_trailing() |> String.ends_with?("│")
-  end
-
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_fun, 0), do: false
-
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(10)
-      eventually(fun, attempts - 1)
+  defp collect_until_turn_finished(messages) do
+    receive do
+      {:beam_agent_tui, {:turn_finished, _result} = message} -> Enum.reverse([message | messages])
+      {:beam_agent_tui, message} -> collect_until_turn_finished([message | messages])
+    after
+      2_000 -> flunk("timed out waiting for the TUI controller turn")
     end
   end
 end

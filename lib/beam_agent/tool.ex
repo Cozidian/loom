@@ -13,7 +13,6 @@ defmodule BeamAgent.Tool do
           required(:provider_profile) => String.t() | nil,
           required(:provider_options) => keyword(),
           required(:strategy) => module(),
-          required(:max_steps) => pos_integer(),
           required(:data_dir) => String.t(),
           required(:workspace_root) => String.t(),
           required(:approval_policy) => :ask | :allow | :deny,

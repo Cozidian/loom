@@ -43,7 +43,7 @@ defmodule BeamAgent do
     SessionSupervisor.spawn_subagent(parent_session_id, opts)
   end
 
-  def ask(session_id, prompt, timeout \\ 30_000), do: Agent.ask(session_id, prompt, timeout)
+  def ask(session_id, prompt, timeout \\ :infinity), do: Agent.ask(session_id, prompt, timeout)
   def cancel(session_id), do: Agent.cancel(session_id)
   def subscribe(session_id, subscriber \\ self()), do: StreamHub.subscribe(session_id, subscriber)
 

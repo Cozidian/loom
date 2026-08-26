@@ -14,6 +14,34 @@ defmodule BeamAgentTest do
     end
   end
 
+  defmodule LongToolLoopProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :long_tool_loop_test
+
+    @impl true
+    def complete(messages, _tools, _options) do
+      completed_steps = Enum.count(messages, &(&1.role == :tool))
+
+      if completed_steps < 12 do
+        {:ok,
+         %{
+           content: nil,
+           tool_calls: [
+             %{
+               id: "long-loop-#{completed_steps}",
+               name: "add",
+               arguments: %{"a" => completed_steps, "b" => 1}
+             }
+           ]
+         }}
+      else
+        {:ok, %{content: "finished after #{completed_steps} tool steps", tool_calls: []}}
+      end
+    end
+  end
+
   defp data_dir do
     path = Path.join(System.tmp_dir!(), "beam-agent-test-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(path) end)
@@ -46,6 +74,16 @@ defmodule BeamAgentTest do
     assert {:ok, child_events} = BeamAgent.events(child_id)
     assert hd(child_events)["data"]["parent_session_id"] == id
     assert Enum.any?(child_events, &(&1["type"] == "assistant_message"))
+  end
+
+  test "tool loops continue until the provider finishes rather than hitting a step ceiling" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(LongToolLoopProvider)
+    {:ok, id} = BeamAgent.start_session(data_dir: data_dir(), provider: :long_tool_loop_test)
+
+    assert {:ok, "finished after 12 tool steps"} = BeamAgent.ask(id, "keep investigating")
+    assert {:ok, events} = BeamAgent.events(id)
+    assert Enum.count(events, &(&1["type"] == "tool_called")) == 12
+    refute Enum.any?(events, &(&1["data"]["reason"] == ":max_steps_exceeded"))
   end
 
   test "restarts a crashed agent and reconstructs model history from durable events" do

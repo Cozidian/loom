@@ -153,28 +153,36 @@ append-only semantics.
 `BeamAgent.CLI` is an escript entry point over the public harness API. Its JSON
 configuration contains named provider profiles—adapter and model, API base URL,
 and credential environment-variable name—plus global data directory and runtime
-limits, but no secrets or live process state. Config version 5 adds context
-window and compaction-threshold settings while continuing to migrate the old
-single-provider block into one active profile. The CLI resolves exactly one
-profile before starting or resuming a session; changing the stored active profile
-does not mutate an already running agent. Starting or resuming still
+limits, but no secrets or live process state. Config version 7 removes the LLM
+transport deadline after version 6 removed the arbitrary tool-loop step ceiling;
+older configurations retain their context-window settings during migration. The
+CLI resolves exactly one profile before starting or resuming a session; changing
+the stored active profile does not mutate an already running agent. Starting or
+resuming still
 goes through `BeamAgent`, capability resolution still goes through the Registry,
 and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI
 becoming a second orchestration core.
 
-Terminal presentation is isolated from the runtime in two adapters. On a real
-TTY, `BeamAgent.CLI.TUI.App` owns only Elm-style screen state and rendering while
-`BeamAgent.CLI.TUI.Controller` owns subscriptions, the active turn task,
-cancellation, approvals, and session rebinding. It consumes the same live stream
-and durable event APIs as any future view; it does not interpret provider
-protocols or own conversation state. The line-oriented `BeamAgent.CLI.UI` and
-`TurnRunner` remain the fallback for `--no-tui`, redirected streams, tests, and
-one-shot prompts. Tool activity is rendered from durable events as it happens,
-and a streamed final answer is not printed a second time in either path. Running
-the executable with no arguments is the human path: it opens chat and performs
-guided setup first when configuration is absent. Explicit subcommands remain
-stable for scripts and diagnostics.
+Terminal presentation is isolated from the runtime across a process boundary.
+On a real TTY, the Go `beam_agent_tui` client owns Bubble Tea screen state,
+keyboard input, the textarea, viewport, command palette, and Lip Gloss
+rendering. `BeamAgent.CLI.TUI` exchanges length-framed JSON packets with that
+client while `BeamAgent.CLI.TUI.Controller` owns subscriptions, the active turn
+task, cancellation, approvals, and session rebinding. Go retains stdin and
+stdout for terminal presentation while Erlang's port driver reserves file
+descriptors 3 and 4 for the private protocol; the view explicitly leaves mouse
+reporting disabled.
+
+The bridge consumes the same live stream and durable event APIs as any future
+view; it does not interpret provider protocols or own conversation state. The
+line-oriented `BeamAgent.CLI.UI` and `TurnRunner` remain the fallback for
+`--no-tui`, redirected streams, tests, and one-shot prompts. Tool activity is
+rendered from durable events as it happens, and a streamed final answer is not
+printed a second time in either path. Running the executable with no arguments
+is the human path: it opens chat and performs guided setup first when
+configuration is absent. Explicit subcommands remain stable for scripts and
+diagnostics.
 
 ## Provider boundary
 

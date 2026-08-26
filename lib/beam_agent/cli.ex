@@ -9,8 +9,6 @@ defmodule BeamAgent.CLI do
     profile: :string,
     provider: :string,
     data_dir: :string,
-    max_steps: :integer,
-    timeout: :integer,
     session: :string,
     model: :string,
     base_url: :string,
@@ -117,8 +115,6 @@ defmodule BeamAgent.CLI do
       provider: :string,
       profile: :string,
       data_dir: :string,
-      max_steps: :integer,
-      timeout: :integer,
       model: :string,
       base_url: :string,
       api_key_env: :string,
@@ -193,22 +189,6 @@ defmodule BeamAgent.CLI do
     data_dir =
       opts[:data_dir] || maybe_prompt(interactive, "Session data directory", defaults["data_dir"])
 
-    max_steps =
-      opts[:max_steps] ||
-        maybe_prompt(
-          interactive,
-          "Maximum tool-loop steps",
-          Integer.to_string(defaults["max_steps"])
-        )
-
-    timeout =
-      opts[:timeout] ||
-        maybe_prompt(
-          interactive,
-          "Turn timeout in milliseconds",
-          Integer.to_string(defaults["timeout_ms"])
-        )
-
     approval_policy =
       opts[:approval] ||
         maybe_prompt(
@@ -236,8 +216,6 @@ defmodule BeamAgent.CLI do
     globals = %{
       "approval_policy" => approval_policy,
       "data_dir" => Path.expand(data_dir),
-      "max_steps" => parse_integer(max_steps),
-      "timeout_ms" => parse_integer(timeout),
       "context_window_tokens" => parse_integer(context_window),
       "compaction_threshold_percent" => parse_integer(compact_at)
     }
@@ -270,7 +248,7 @@ defmodule BeamAgent.CLI do
         end
       else
         UI.one_shot_header(config, session_id)
-        ask_and_print(session_id, prompt, config)
+        ask_and_print(session_id, prompt)
       end
     else
       {:error, reason} -> error(reason)
@@ -290,7 +268,6 @@ defmodule BeamAgent.CLI do
       provider_options: Config.provider_options(config),
       provider_profile: config["profile"],
       data_dir: config["data_dir"],
-      max_steps: config["max_steps"],
       context_window_tokens: config["context_window_tokens"],
       compaction_threshold_percent: config["compaction_threshold_percent"],
       workspace_root: config["workspace_root"],
@@ -310,7 +287,6 @@ defmodule BeamAgent.CLI do
           provider_options: Config.provider_options(config),
           provider_profile: config["profile"],
           data_dir: config["data_dir"],
-          max_steps: config["max_steps"],
           context_window_tokens: config["context_window_tokens"],
           compaction_threshold_percent: config["compaction_threshold_percent"],
           workspace_root: config["workspace_root"],
@@ -388,13 +364,13 @@ defmodule BeamAgent.CLI do
             chat_loop(session_id, config)
 
           prompt ->
-            _status = ask_and_print(session_id, prompt, config)
+            _status = ask_and_print(session_id, prompt)
             chat_loop(session_id, config)
         end
     end
   end
 
-  defp ask_and_print(session_id, prompt, config) do
+  defp ask_and_print(session_id, prompt) do
     event_count = event_count(session_id)
     UI.begin_live_turn()
 
@@ -402,7 +378,7 @@ defmodule BeamAgent.CLI do
       TurnRunner.run_live(
         session_id,
         prompt,
-        config["timeout_ms"] + 2_000,
+        :infinity,
         &UI.approval/1,
         &UI.live_event/1
       )
@@ -782,8 +758,6 @@ defmodule BeamAgent.CLI do
 
     output("approval:   #{config["approval_policy"]}")
     output("data_dir:   #{config["data_dir"]}")
-    output("max_steps:  #{config["max_steps"]}")
-    output("timeout_ms: #{config["timeout_ms"]}")
     output("context:    #{config["context_window_tokens"]} tokens")
     output("compact_at: #{config["compaction_threshold_percent"]}%")
   end
@@ -905,8 +879,6 @@ defmodule BeamAgent.CLI do
       --api-key-env VARIABLE                 credential environment variable
       --workspace PATH                       root visible to file and command tools
       --approval ask|allow|deny              risky tool policy
-      --max-steps N                          tool-loop limit
-      --timeout MILLISECONDS                 provider request timeout
       --context-window TOKENS                estimated model context capacity
       --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
@@ -929,8 +901,6 @@ defmodule BeamAgent.CLI do
       --api-key-env NAME     environment variable containing the credential
       --approval POLICY      ask, deny, or allow risky tools
       --data-dir PATH        durable session directory
-      --max-steps N          maximum tool-loop steps
-      --timeout MS           provider request timeout
       --context-window N     estimated model context capacity in tokens
       --compact-at PERCENT   automatic compaction threshold (50-95)
       --non-interactive      do not prompt; validate supplied/default values

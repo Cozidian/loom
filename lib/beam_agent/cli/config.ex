@@ -3,13 +3,11 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 5
+  @version 7
   @profile_keys ["provider", "model", "base_url", "api_key_env"]
   @global_keys [
     "approval_policy",
     "data_dir",
-    "max_steps",
-    "timeout_ms",
     "context_window_tokens",
     "compaction_threshold_percent"
   ]
@@ -33,8 +31,6 @@ defmodule BeamAgent.CLI.Config do
       },
       "approval_policy" => "ask",
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
-      "max_steps" => 8,
-      "timeout_ms" => 30_000,
       "context_window_tokens" => 32_000,
       "compaction_threshold_percent" => 75
     }
@@ -160,8 +156,6 @@ defmodule BeamAgent.CLI.Config do
     |> maybe_put("api_key_env", opts[:api_key_env])
     |> maybe_put("approval_policy", opts[:approval])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
-    |> maybe_put("max_steps", opts[:max_steps])
-    |> maybe_put("timeout_ms", opts[:timeout])
     |> maybe_put("context_window_tokens", opts[:context_window])
     |> maybe_put("compaction_threshold_percent", opts[:compact_at])
   end
@@ -175,7 +169,6 @@ defmodule BeamAgent.CLI.Config do
       model: config["model"],
       base_url: config["base_url"],
       api_key_env: config["api_key_env"],
-      timeout_ms: config["timeout_ms"],
       profile: config["profile"]
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -234,14 +227,22 @@ defmodule BeamAgent.CLI.Config do
   defp migrate(%{"version" => 4} = config) do
     defaults = defaults()
 
-    {:ok,
-     config
-     |> Map.put("version", @version)
-     |> Map.put_new("context_window_tokens", defaults["context_window_tokens"])
-     |> Map.put_new(
-       "compaction_threshold_percent",
-       defaults["compaction_threshold_percent"]
-     )}
+    config
+    |> Map.put("version", 5)
+    |> Map.put_new("context_window_tokens", defaults["context_window_tokens"])
+    |> Map.put_new(
+      "compaction_threshold_percent",
+      defaults["compaction_threshold_percent"]
+    )
+    |> migrate()
+  end
+
+  defp migrate(%{"version" => 5} = config) do
+    config |> Map.put("version", 6) |> Map.delete("max_steps") |> migrate()
+  end
+
+  defp migrate(%{"version" => 6} = config) do
+    {:ok, config |> Map.put("version", @version) |> Map.delete("timeout_ms")}
   end
 
   defp migrate(config), do: {:ok, config}
@@ -282,8 +283,6 @@ defmodule BeamAgent.CLI.Config do
 
   defp validate_globals(config) do
     with :ok <- require_directory(config["data_dir"]),
-         :ok <- require_integer(config["max_steps"], "max_steps", 1, 100),
-         :ok <- require_integer(config["timeout_ms"], "timeout_ms", 100, 3_600_000),
          :ok <-
            require_integer(
              config["context_window_tokens"],

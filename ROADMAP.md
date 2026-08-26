@@ -11,7 +11,7 @@ evidence, while later items can change as we learn from real use.
 
 BeamAgent already has durable supervised sessions, multiple LLM provider
 profiles, guarded coding tools, project skills, subagents, live streaming,
-approvals, and both full-screen and line-oriented terminal clients.
+approvals, a Charm-based Go TUI, and a line-oriented terminal client.
 
 ## Work order
 

@@ -26,8 +26,8 @@ defmodule BeamAgent.CLITest do
     assert config["active_profile"] == "echo"
     assert get_in(config, ["profiles", "echo", "provider"]) == "echo"
     assert config["data_dir"] == context.data_dir
-    assert config["max_steps"] == 5
-    assert config["timeout_ms"] == 4_000
+    refute Map.has_key?(config, "max_steps")
+    refute Map.has_key?(config, "timeout_ms")
     assert config["approval_policy"] == "ask"
     assert config["context_window_tokens"] == 32_000
     assert config["compaction_threshold_percent"] == 75
@@ -37,7 +37,7 @@ defmodule BeamAgent.CLITest do
   end
 
   test "interactive init prompts for every first-run setting", context do
-    input = "echo\n#{context.data_dir}\n9\n7000\n"
+    input = "echo\n#{context.data_dir}\n"
 
     {status, output} =
       run_stdout(["init", "--config", context.config_path], input)
@@ -51,8 +51,7 @@ defmodule BeamAgent.CLITest do
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
     assert config["active_profile"] == "echo"
     assert config["data_dir"] == context.data_dir
-    assert config["max_steps"] == 9
-    assert config["timeout_ms"] == 7_000
+    refute Map.has_key?(config, "timeout_ms")
   end
 
   test "init refuses to overwrite configuration unless force is explicit", context do
@@ -102,7 +101,7 @@ defmodule BeamAgent.CLITest do
   end
 
   test "running without configuration starts setup and then opens chat", context do
-    input = "echo\n#{context.data_dir}\n5\n4000\n"
+    input = "echo\n#{context.data_dir}\n"
 
     {status, output} = run_stdout(["--config", context.config_path], input)
 
@@ -304,7 +303,9 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 5
+    assert migrated["version"] == 7
+    refute Map.has_key?(migrated, "max_steps")
+    refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "echo"
     assert get_in(migrated, ["profiles", "echo", "provider"]) == "echo"
     assert Map.has_key?(migrated["profiles"]["echo"], "model")
@@ -329,7 +330,9 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 5
+    assert migrated["version"] == 7
+    refute Map.has_key?(migrated, "max_steps")
+    refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "ollama"
     assert get_in(migrated, ["profiles", "ollama", "model"]) == "qwen3:8b"
     assert {:ok, runtime} = BeamAgent.CLI.Config.runtime(migrated)
@@ -359,9 +362,67 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 5
+    assert migrated["version"] == 7
+    refute Map.has_key?(migrated, "max_steps")
+    refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["context_window_tokens"] == 32_000
     assert migrated["compaction_threshold_percent"] == 75
+  end
+
+  test "version 5 configuration drops the retired tool-loop ceiling", context do
+    legacy = %{
+      "version" => 5,
+      "active_profile" => "echo",
+      "profiles" => %{
+        "echo" => %{
+          "provider" => "echo",
+          "model" => nil,
+          "base_url" => nil,
+          "api_key_env" => nil
+        }
+      },
+      "approval_policy" => "ask",
+      "data_dir" => context.data_dir,
+      "max_steps" => 8,
+      "timeout_ms" => 30_000,
+      "context_window_tokens" => 32_000,
+      "compaction_threshold_percent" => 75
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 7
+    refute Map.has_key?(migrated, "max_steps")
+    refute Map.has_key?(migrated, "timeout_ms")
+  end
+
+  test "version 6 configuration drops the retired provider timeout", context do
+    legacy = %{
+      "version" => 6,
+      "active_profile" => "echo",
+      "profiles" => %{
+        "echo" => %{
+          "provider" => "echo",
+          "model" => nil,
+          "base_url" => nil,
+          "api_key_env" => nil
+        }
+      },
+      "approval_policy" => "ask",
+      "data_dir" => context.data_dir,
+      "timeout_ms" => 30_000,
+      "context_window_tokens" => 32_000,
+      "compaction_threshold_percent" => 75
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 7
+    refute Map.has_key?(migrated, "timeout_ms")
   end
 
   test "grok CLI alias resolves to the xAI runtime provider", context do
@@ -516,10 +577,6 @@ defmodule BeamAgent.CLITest do
       "echo",
       "--data-dir",
       context.data_dir,
-      "--max-steps",
-      "5",
-      "--timeout",
-      "4000",
       "--non-interactive"
     ])
   end

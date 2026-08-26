@@ -30,7 +30,6 @@ defmodule BeamAgent.Tools.SpawnSubagent do
       provider_profile: context.provider_profile,
       provider_options: context.provider_options,
       strategy: context.strategy,
-      max_steps: context.max_steps,
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
       approval_policy: context.approval_policy,

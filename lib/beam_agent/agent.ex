@@ -10,7 +10,7 @@ defmodule BeamAgent.Agent do
     GenServer.start_link(__MODULE__, opts, name: Names.via(:agent, id))
   end
 
-  def ask(session_id, prompt, timeout \\ 30_000) do
+  def ask(session_id, prompt, timeout \\ :infinity) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, {:ask, prompt}, timeout)
     end
@@ -42,7 +42,6 @@ defmodule BeamAgent.Agent do
     provider = Keyword.get(opts, :provider, Application.fetch_env!(:beam_agent, :provider))
     strategy = Keyword.get(opts, :strategy, Application.fetch_env!(:beam_agent, :strategy))
     data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
-    max_steps = Keyword.get(opts, :max_steps, Application.fetch_env!(:beam_agent, :max_steps))
 
     with {:ok, provider_module} <- CapabilityCatalog.provider(provider),
          :ok <- validate_strategy(strategy),
@@ -61,7 +60,6 @@ defmodule BeamAgent.Agent do
         workspace_root: Keyword.fetch!(opts, :workspace_root),
         approval_policy: Keyword.get(opts, :approval_policy, :ask),
         approval_handler: Keyword.get(opts, :approval_handler),
-        max_steps: max_steps,
         context_window_tokens: Keyword.get(opts, :context_window_tokens, 32_000),
         compaction_threshold_percent: Keyword.get(opts, :compaction_threshold_percent, 75),
         status: :idle,

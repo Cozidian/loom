@@ -11,7 +11,7 @@ It includes:
 - mailbox-owning agent processes;
 - replaceable LLM-provider, tool, and agent-strategy behaviours;
 - a Registry-backed capability catalog;
-- a bounded multi-step tool-calling loop;
+- a cancellable multi-step tool-calling loop without an arbitrary step ceiling;
 - an immutable, canonical workspace per session;
 - supervised project instructions and lazily activated `SKILL.md` workflows;
 - session-owned allow/ask/deny policy with monitored one-shot approvals;
@@ -25,19 +25,25 @@ It includes:
 - `:rest_for_one` recovery from durable-state dependency loss.
 
 The runtime uses Elixir's built-in `JSON` module and OTP's `:httpc` client for
-provider calls. The full-screen terminal interface is built on TermUI.
+provider calls. The full-screen terminal interface is a small Go client built
+with Charm's Bubble Tea, Bubbles, and Lip Gloss libraries.
 
 ## Build and configure the CLI
 
 ```sh
-mix escript.build
+mix beam_agent.build
 ./beam_agent
 ```
 
+The build requires Elixir/OTP and Go. It produces sibling `beam_agent` and
+`beam_agent_tui` executables; keep them together when moving the CLI. Set
+`BEAM_AGENT_TUI_BIN` to an explicit Go frontend path when packaging them in
+different locations. `mix escript.build` still builds only the Elixir CLI.
+
 Running `beam_agent` opens the terminal chat. On the first launch it walks
 through setup first, configuring the provider, model, durable session directory,
-maximum tool-loop steps, turn timeout, model context window, and compaction
-threshold. You can also rerun the wizard later with `./beam_agent init`.
+model context window, and compaction threshold. You can also rerun the wizard
+later with `./beam_agent init`.
 
 Configuration is stored at `~/.config/beam_agent/config.json` by default with
 mode `0600`; set `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another
@@ -50,8 +56,6 @@ For automated setup with the deterministic echo provider:
 ./beam_agent init \
   --provider echo \
   --data-dir ~/.local/share/beam_agent/sessions \
-  --max-steps 8 \
-  --timeout 30000 \
   --non-interactive
 ```
 
@@ -81,6 +85,9 @@ The CLI also exposes durable-session and capability discovery:
 ```
 
 Interactive chat opens a full-screen TUI when a capable terminal is attached.
+Go owns the terminal and disables mouse reporting; Elixir continues to own the
+session, provider stream, tools, cancellation, and approvals through a framed
+local bridge.
 It keeps the workspace, active profile/model, durable session, turn state,
 streaming response, tool activity, and approval requests visible without
 scrolling the shell. Press `Ctrl+P` for the command palette, `Ctrl+O` to add a
@@ -101,6 +108,10 @@ the append-only log; only the next model projection is compacted. `/status`
 shows the estimate and `/compact` requests compaction immediately. Override the
 configured defaults for one run with `--context-window TOKENS` and
 `--compact-at PERCENT`.
+
+LLM requests and multi-step turns have no fixed deadline. They continue until
+the provider finishes, a real transport error occurs, or the user cancels with
+`Ctrl+C`. Tool-specific limits, such as sandboxed command timeouts, remain.
 
 See [ROADMAP.md](ROADMAP.md) for the current product work order.
 

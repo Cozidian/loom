@@ -17,7 +17,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   @impl true
   def init(opts) do
     state = %{
-      runtime: Keyword.fetch!(opts, :runtime),
+      client: Keyword.fetch!(opts, :client),
       session_id: Keyword.fetch!(opts, :session_id),
       config: Keyword.fetch!(opts, :config),
       current: nil,
@@ -38,10 +38,9 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_cast({:submit, prompt}, %{current: nil} = state) when is_binary(prompt) do
     owner = self()
     result_ref = make_ref()
-    timeout = state.config["timeout_ms"] + 2_000
 
     case Task.start(fn ->
-           send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt, timeout)})
+           send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt, :infinity)})
          end) do
       {:ok, pid} ->
         current = %{pid: pid, monitor: Process.monitor(pid), result_ref: result_ref}
@@ -292,7 +291,6 @@ defmodule BeamAgent.CLI.TUI.Controller do
       provider_options: Config.provider_options(config),
       provider_profile: config["profile"],
       data_dir: config["data_dir"],
-      max_steps: config["max_steps"],
       context_window_tokens: config["context_window_tokens"] || 32_000,
       compaction_threshold_percent: config["compaction_threshold_percent"] || 75,
       workspace_root: config["workspace_root"],
@@ -308,6 +306,10 @@ defmodule BeamAgent.CLI.TUI.Controller do
     end
   end
 
-  defp notify(state, message), do: TermUI.Runtime.send_message(state.runtime, :root, message)
+  defp notify(state, message) do
+    send(state.client, {:beam_agent_tui, message})
+    :ok
+  end
+
   defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
 end

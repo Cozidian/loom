@@ -1,5 +1,5 @@
 defmodule BeamAgent.Strategies.ToolLoop do
-  @moduledoc "Default sequential, bounded, multi-step model/tool strategy."
+  @moduledoc "Default sequential, cancellable, multi-step model/tool strategy."
   @behaviour BeamAgent.AgentStrategy
 
   alias BeamAgent.{CapabilityCatalog, ToolRunner}
@@ -20,7 +20,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp step(context, turn, step_number) when step_number <= context.max_steps do
+  defp step(context, turn, step_number) do
     with {:ok, _} <-
            EventLog.append(context.session_id, :step_started, %{
              "turn" => turn,
@@ -68,8 +68,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
       {:error, reason} -> fail_turn(context, turn, reason)
     end
   end
-
-  defp step(context, turn, _step_number), do: fail_turn(context, turn, :max_steps_exceeded)
 
   defp call_provider(context, messages, system_prompt, tool_schemas, turn, step) do
     options =
@@ -190,7 +188,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :provider_profile,
       :provider_options,
       :strategy,
-      :max_steps,
       :data_dir,
       :workspace_root,
       :approval_policy,

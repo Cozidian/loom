@@ -20,8 +20,6 @@ defmodule BeamAgent.MixProject do
   end
 
   defp deps do
-    [
-      {:term_ui, "~> 0.2.0"}
-    ]
+    []
   end
 end

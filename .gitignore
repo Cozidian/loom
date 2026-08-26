@@ -4,5 +4,6 @@
 /doc/
 /.elixir_ls/
 /beam_agent
+/beam_agent_tui
 erl_crash.dump
 *.ez

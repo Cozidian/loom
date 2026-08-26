@@ -17,7 +17,7 @@ defmodule BeamAgent.HTTPClient.Httpc do
   end
 
   @impl true
-  def post_json_stream(url, headers, body, options, initial_state, chunk_fun) do
+  def post_json_stream(url, headers, body, _options, initial_state, chunk_fun) do
     request = {
       String.to_charlist(url),
       encode_headers(headers),
@@ -25,16 +25,10 @@ defmodule BeamAgent.HTTPClient.Httpc do
       JSON.encode!(body)
     }
 
-    timeout = Keyword.get(options, :timeout_ms, 30_000)
-
-    http_options = [
-      timeout: timeout,
-      connect_timeout: min(timeout, 10_000),
-      ssl: ssl_options(url)
-    ]
+    http_options = [ssl: ssl_options(url)]
 
     case :httpc.request(:post, request, http_options, sync: false, stream: :self) do
-      {:ok, request_id} -> await_stream(request_id, timeout, initial_state, chunk_fun)
+      {:ok, request_id} -> await_stream(request_id, initial_state, chunk_fun)
       {:error, reason} -> {:error, {:transport_error, reason}}
     end
   rescue
@@ -47,14 +41,8 @@ defmodule BeamAgent.HTTPClient.Httpc do
     request(:get, request, url, options)
   end
 
-  defp request(method, request, url, options) do
-    timeout = Keyword.get(options, :timeout_ms, 30_000)
-
-    http_options = [
-      timeout: timeout,
-      connect_timeout: min(timeout, 10_000),
-      ssl: ssl_options(url)
-    ]
+  defp request(method, request, url, _options) do
+    http_options = [ssl: ssl_options(url)]
 
     case :httpc.request(method, request, http_options, body_format: :binary) do
       {:ok, {{_version, status, _reason}, _headers, body}} ->
@@ -96,29 +84,25 @@ defmodule BeamAgent.HTTPClient.Httpc do
 
   defp truncate(body), do: body
 
-  defp await_stream(request_id, timeout, state, chunk_fun) do
+  defp await_stream(request_id, state, chunk_fun) do
     receive do
       {:http, {^request_id, :stream_start, _headers}} ->
-        receive_stream(request_id, timeout, state, chunk_fun)
+        receive_stream(request_id, state, chunk_fun)
 
       {:http, {^request_id, {{_version, status, _reason}, _headers, body}}} ->
         decode_response(status, body)
 
       {:http, {^request_id, {:error, reason}}} ->
         {:error, {:transport_error, reason}}
-    after
-      timeout ->
-        :httpc.cancel_request(request_id)
-        {:error, :request_timeout}
     end
   end
 
-  defp receive_stream(request_id, timeout, state, chunk_fun) do
+  defp receive_stream(request_id, state, chunk_fun) do
     receive do
       {:http, {^request_id, :stream, body_part}} ->
         case safely_emit(chunk_fun, body_part, state) do
           {:ok, next_state} ->
-            receive_stream(request_id, timeout, next_state, chunk_fun)
+            receive_stream(request_id, next_state, chunk_fun)
 
           {:error, reason} ->
             :httpc.cancel_request(request_id)
@@ -130,10 +114,6 @@ defmodule BeamAgent.HTTPClient.Httpc do
 
       {:http, {^request_id, {:error, reason}}} ->
         {:error, {:transport_error, reason}}
-    after
-      timeout ->
-        :httpc.cancel_request(request_id)
-        {:error, :request_timeout}
     end
   end
 
