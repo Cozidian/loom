@@ -9,7 +9,6 @@ defmodule BeamAgent.CapabilityCatalog do
 
   alias BeamAgent.Names
 
-  @default_providers [BeamAgent.Providers.Demo, BeamAgent.Providers.Echo]
   @default_tools [BeamAgent.Tools.Add, BeamAgent.Tools.SpawnSubagent]
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -46,7 +45,7 @@ defmodule BeamAgent.CapabilityCatalog do
 
   @impl true
   def init(opts) do
-    providers = Keyword.get(opts, :providers, @default_providers)
+    providers = Keyword.get(opts, :providers, BeamAgent.Providers.modules())
     tools = Keyword.get(opts, :tools, @default_tools)
 
     with {:ok, state} <- register_all(%{providers: %{}, tools: %{}}, :provider, providers),

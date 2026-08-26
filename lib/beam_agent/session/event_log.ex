@@ -150,7 +150,8 @@ defmodule BeamAgent.Session.EventLog do
         role: :tool,
         tool_call_id: data["tool_call_id"],
         name: data["name"],
-        content: data["content"]
+        content: data["content"],
+        is_error: data["is_error"] || false
       }
     ]
   end

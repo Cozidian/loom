@@ -71,9 +71,32 @@ sequence validation and append-only semantics.
 ## CLI boundary
 
 `BeamAgent.CLI` is an escript entry point over the public harness API. Its JSON
-configuration contains deployment inputs—provider name, data directory, loop
-limit, and timeout—but no runtime state. Starting or resuming a session still
+configuration contains deployment inputs—provider and model, API base URL,
+credential environment-variable name, data directory, loop limit, and
+timeout—but no secrets or runtime state. Starting or resuming a session still
 goes through `BeamAgent`, capability resolution still goes through the Registry,
 and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI
 becoming a second orchestration core.
+
+## Provider boundary
+
+All providers implement the same stateless `BeamAgent.LLMProvider` behaviour:
+the tool loop supplies normalized conversation history and tool schemas, and the
+adapter returns normalized text plus zero or more tool calls. Transport lives
+behind `BeamAgent.HTTPClient`, which keeps protocol tests independent of a live
+service and leaves room for another HTTP implementation.
+
+| CLI provider | API protocol | Authentication |
+| --- | --- | --- |
+| `ollama` | Native [`/api/chat`](https://docs.ollama.com/api/chat) tool calling | None by default |
+| `openai` | [OpenAI Chat Completions](https://developers.openai.com/api/reference/cli/resources/chat/subresources/completions) function tools | Bearer token from `OPENAI_API_KEY` |
+| `anthropic` | Native [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) content blocks and tool results | `x-api-key` from `ANTHROPIC_API_KEY` |
+| `xai` / `grok` | [xAI Chat Completions](https://docs.x.ai/developers/rest-api-reference/inference/chat) function tools | Bearer token from `XAI_API_KEY` |
+
+Ollama and Anthropic use native adapters because their tool-history formats are
+materially different. OpenAI and xAI share the Chat Completions wire adapter,
+but keep separate provider modules and defaults. This is the smallest common
+cross-provider seam today; a native OpenAI Responses adapter can be added behind
+the same behaviour without changing sessions, persistence, CLI orchestration, or
+tools.

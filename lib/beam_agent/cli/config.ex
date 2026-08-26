@@ -1,8 +1,9 @@
 defmodule BeamAgent.CLI.Config do
   @moduledoc false
 
-  @version 1
-  @providers ~w(demo echo)
+  alias BeamAgent.Providers
+
+  @version 2
 
   def path do
     System.get_env("BEAM_AGENT_CONFIG") ||
@@ -13,17 +14,21 @@ defmodule BeamAgent.CLI.Config do
     %{
       "version" => @version,
       "provider" => "demo",
+      "model" => nil,
+      "base_url" => nil,
+      "api_key_env" => nil,
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "max_steps" => 8,
       "timeout_ms" => 30_000
     }
   end
 
-  def supported_providers, do: @providers
+  def supported_providers, do: Providers.names()
 
   def load(config_path \\ path()) do
     with {:ok, contents} <- File.read(config_path),
          {:ok, config} <- decode(contents),
+         {:ok, config} <- migrate(config),
          :ok <- validate(config) do
       {:ok, config}
     else
@@ -48,10 +53,11 @@ defmodule BeamAgent.CLI.Config do
 
   def validate(config) when is_map(config) do
     with :ok <- require_version(config["version"]),
-         :ok <- require_provider(config["provider"]),
+         {:ok, provider} <- Providers.fetch(config["provider"]),
          :ok <- require_directory(config["data_dir"]),
          :ok <- require_integer(config["max_steps"], "max_steps", 1, 100),
-         :ok <- require_integer(config["timeout_ms"], "timeout_ms", 100, 3_600_000) do
+         :ok <- require_integer(config["timeout_ms"], "timeout_ms", 100, 3_600_000),
+         :ok <- validate_provider_options(config, provider) do
       :ok
     end
   end
@@ -61,14 +67,27 @@ defmodule BeamAgent.CLI.Config do
   def merge_overrides(config, opts) do
     config
     |> maybe_put("provider", opts[:provider])
+    |> maybe_put("model", opts[:model])
+    |> maybe_put("base_url", opts[:base_url])
+    |> maybe_put("api_key_env", opts[:api_key_env])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
     |> maybe_put("max_steps", opts[:max_steps])
     |> maybe_put("timeout_ms", opts[:timeout])
   end
 
-  def provider_atom("demo"), do: {:ok, :demo}
-  def provider_atom("echo"), do: {:ok, :echo}
-  def provider_atom(other), do: {:error, {:unsupported_provider, other}}
+  def provider_atom(name) do
+    with {:ok, provider} <- Providers.fetch(name), do: {:ok, provider.id}
+  end
+
+  def provider_options(config) do
+    [
+      model: config["model"],
+      base_url: config["base_url"],
+      api_key_env: config["api_key_env"],
+      timeout_ms: config["timeout_ms"]
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
 
   defp decode(contents) do
     case JSON.decode(contents) do
@@ -78,11 +97,21 @@ defmodule BeamAgent.CLI.Config do
     end
   end
 
+  defp migrate(%{"version" => 1} = config) do
+    with {:ok, provider} <- Providers.fetch(config["provider"]) do
+      {:ok,
+       config
+       |> Map.put("version", @version)
+       |> Map.put_new("model", provider[:default_model])
+       |> Map.put_new("base_url", provider[:default_base_url])
+       |> Map.put_new("api_key_env", provider[:default_api_key_env])}
+    end
+  end
+
+  defp migrate(config), do: {:ok, config}
+
   defp require_version(@version), do: :ok
   defp require_version(other), do: {:error, {:unsupported_config_version, other}}
-
-  defp require_provider(provider) when provider in @providers, do: :ok
-  defp require_provider(provider), do: {:error, {:unsupported_provider, provider}}
 
   defp require_directory(path) when is_binary(path) and path != "", do: :ok
   defp require_directory(_path), do: {:error, {:invalid_config_value, "data_dir"}}
@@ -93,6 +122,36 @@ defmodule BeamAgent.CLI.Config do
 
   defp require_integer(_value, name, _min, _max),
     do: {:error, {:invalid_config_value, name}}
+
+  defp validate_provider_options(config, provider) do
+    with :ok <- require_when(provider[:model_required], config["model"], "model"),
+         :ok <- require_when(provider[:default_base_url] != nil, config["base_url"], "base_url"),
+         :ok <-
+           require_when(
+             provider[:default_api_key_env] != nil,
+             config["api_key_env"],
+             "api_key_env"
+           ),
+         :ok <- validate_url(config["base_url"]) do
+      :ok
+    end
+  end
+
+  defp require_when(true, value, name) when not is_binary(value) or value == "",
+    do: {:error, {:invalid_config_value, name}}
+
+  defp require_when(_required, _value, _name), do: :ok
+
+  defp validate_url(nil), do: :ok
+
+  defp validate_url(url) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) -> :ok
+      _ -> {:error, {:invalid_config_value, "base_url"}}
+    end
+  end
+
+  defp validate_url(_url), do: {:error, {:invalid_config_value, "base_url"}}
 
   defp maybe_put(config, _key, nil), do: config
   defp maybe_put(config, key, value), do: Map.put(config, key, value)

@@ -6,6 +6,14 @@ defmodule BeamAgent.Providers.Demo do
   def id, do: :demo
 
   @impl true
+  def configuration do
+    %{name: "demo", label: "Deterministic tool/subagent demo"}
+  end
+
+  @impl true
+  def healthcheck(_options), do: {:ok, "deterministic in-process provider"}
+
+  @impl true
   def complete(messages, _tools, options) do
     if options[:parent_session_id] do
       prompt = messages |> Enum.reverse() |> Enum.find(&(&1.role == :user))

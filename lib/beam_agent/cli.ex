@@ -9,7 +9,10 @@ defmodule BeamAgent.CLI do
     data_dir: :string,
     max_steps: :integer,
     timeout: :integer,
-    session: :string
+    session: :string,
+    model: :string,
+    base_url: :string,
+    api_key_env: :string
   ]
 
   def main(args) do
@@ -74,6 +77,9 @@ defmodule BeamAgent.CLI do
       data_dir: :string,
       max_steps: :integer,
       timeout: :integer,
+      model: :string,
+      base_url: :string,
+      api_key_env: :string,
       force: :boolean,
       non_interactive: :boolean
     ]
@@ -105,6 +111,34 @@ defmodule BeamAgent.CLI do
           defaults["provider"]
         )
 
+    with {:ok, provider_config} <- BeamAgent.Providers.fetch(provider) do
+      build_provider_config(opts, defaults, provider, provider_config, interactive)
+    end
+  end
+
+  defp build_provider_config(opts, defaults, provider, provider_config, interactive) do
+    model =
+      if provider_config[:model_required] do
+        opts[:model] ||
+          maybe_prompt(interactive, "Model", provider_config[:default_model])
+      end
+
+    base_url =
+      if provider_config[:default_base_url] do
+        opts[:base_url] ||
+          maybe_prompt(interactive, "API base URL", provider_config.default_base_url)
+      end
+
+    api_key_env =
+      if provider_config[:default_api_key_env] do
+        opts[:api_key_env] ||
+          maybe_prompt(
+            interactive,
+            "API key environment variable",
+            provider_config.default_api_key_env
+          )
+      end
+
     data_dir =
       opts[:data_dir] || maybe_prompt(interactive, "Session data directory", defaults["data_dir"])
 
@@ -127,6 +161,9 @@ defmodule BeamAgent.CLI do
     config = %{
       "version" => defaults["version"],
       "provider" => provider,
+      "model" => model,
+      "base_url" => base_url,
+      "api_key_env" => api_key_env,
       "data_dir" => Path.expand(data_dir),
       "max_steps" => parse_integer(max_steps),
       "timeout_ms" => parse_integer(timeout)
@@ -171,6 +208,7 @@ defmodule BeamAgent.CLI do
   defp ensure_session(nil, config, provider) do
     BeamAgent.start_session(
       provider: provider,
+      provider_options: Config.provider_options(config),
       data_dir: config["data_dir"],
       max_steps: config["max_steps"]
     )
@@ -184,6 +222,7 @@ defmodule BeamAgent.CLI do
       {:error, :not_found} ->
         BeamAgent.resume_session(session_id,
           provider: provider,
+          provider_options: Config.provider_options(config),
           data_dir: config["data_dir"],
           max_steps: config["max_steps"]
         )
@@ -226,7 +265,7 @@ defmodule BeamAgent.CLI do
   end
 
   defp ask_and_print(session_id, prompt, timeout) do
-    case BeamAgent.ask(session_id, prompt, timeout) do
+    case BeamAgent.ask(session_id, prompt, timeout + 2_000) do
       {:ok, answer} ->
         output("agent> #{answer}")
         0
@@ -250,10 +289,11 @@ defmodule BeamAgent.CLI do
          {:ok, config} <- Config.load(config_path),
          :ok <- ensure_application_started(),
          {:ok, provider} <- Config.provider_atom(config["provider"]),
-         {:ok, _module} <- BeamAgent.CapabilityCatalog.provider(provider),
+         {:ok, module} <- BeamAgent.CapabilityCatalog.provider(provider),
+         {:ok, detail} <- provider_healthcheck(module, Config.provider_options(config)),
          :ok <- File.mkdir_p(config["data_dir"]) do
       output("ok  config    #{config_path}")
-      output("ok  provider  #{config["provider"]}")
+      output("ok  provider  #{config["provider"]}: #{detail}")
       output("ok  data      #{config["data_dir"]}")
       output("ok  runtime   Elixir #{System.version()} / OTP #{System.otp_release()}")
     else
@@ -270,7 +310,16 @@ defmodule BeamAgent.CLI do
          :ok <- ensure_application_started() do
       BeamAgent.CapabilityCatalog.providers()
       |> Enum.sort_by(& &1.id())
-      |> Enum.each(fn module -> output("#{module.id()}\t#{inspect(module)}") end)
+      |> Enum.each(fn module ->
+        config =
+          if function_exported?(module, :configuration, 0) do
+            module.configuration()
+          else
+            %{name: to_string(module.id()), label: "custom provider"}
+          end
+
+        output("#{config.name}\t#{config.label}\t#{inspect(module)}")
+      end)
 
       0
     else
@@ -331,6 +380,9 @@ defmodule BeamAgent.CLI do
 
   defp output_config(config) do
     output("provider:   #{config["provider"]}")
+    if config["model"], do: output("model:      #{config["model"]}")
+    if config["base_url"], do: output("base_url:   #{config["base_url"]}")
+    if config["api_key_env"], do: output("api_key:    environment #{config["api_key_env"]}")
     output("data_dir:   #{config["data_dir"]}")
     output("max_steps:  #{config["max_steps"]}")
     output("timeout_ms: #{config["timeout_ms"]}")
@@ -349,10 +401,24 @@ defmodule BeamAgent.CLI do
     end
   end
 
+  defp provider_healthcheck(module, options) do
+    if function_exported?(module, :healthcheck, 1) do
+      case module.healthcheck(options) do
+        :ok -> {:ok, "ready"}
+        {:ok, detail} -> {:ok, detail}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:ok, "no provider-specific check"}
+    end
+  end
+
   defp maybe_prompt(false, _label, default), do: default
 
   defp maybe_prompt(true, label, default) do
-    case IO.gets("#{label} [#{default}]: ") do
+    suffix = if default, do: " [#{default}]", else: ""
+
+    case IO.gets("#{label}#{suffix}: ") do
       :eof -> default
       input -> if String.trim(input) == "", do: default, else: String.trim(input)
     end
@@ -408,7 +474,10 @@ defmodule BeamAgent.CLI do
       --config PATH                          use a specific configuration file
 
     Init options:
-      --provider demo|echo
+      --provider demo|echo|ollama|openai|anthropic|xai
+      --model MODEL
+      --base-url URL
+      --api-key-env VARIABLE
       --data-dir PATH
       --max-steps N
       --timeout MILLISECONDS
@@ -417,7 +486,10 @@ defmodule BeamAgent.CLI do
 
     Run options:
       --session ID
-      --provider demo|echo
+      --provider demo|echo|ollama|openai|anthropic|xai  (`grok` aliases `xai`)
+      --model MODEL
+      --base-url URL
+      --api-key-env VARIABLE
       --data-dir PATH
       --max-steps N
       --timeout MILLISECONDS
@@ -450,6 +522,20 @@ defmodule BeamAgent.CLI do
 
   defp error({:invalid_config_value, name}) do
     IO.puts(:stderr, "error: invalid configuration value for #{name}")
+    1
+  end
+
+  defp error({:missing_api_key, env}) do
+    IO.puts(:stderr, "error: environment variable #{env} is not set")
+    1
+  end
+
+  defp error({:ollama_model_not_found, model, installed}) do
+    IO.puts(
+      :stderr,
+      "error: Ollama model #{inspect(model)} is not installed; available: #{Enum.join(installed, ", ")}"
+    )
+
     1
   end
 

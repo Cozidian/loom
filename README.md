@@ -17,8 +17,8 @@ It includes:
 - synchronous append-only JSONL events and crash reconstruction;
 - `:rest_for_one` recovery from durable-state dependency loss.
 
-The implementation has no third-party dependencies and uses Elixir's built-in
-`JSON` module.
+The implementation has no third-party dependencies. It uses Elixir's built-in
+`JSON` module and OTP's `:httpc` client for provider calls.
 
 ## Build and configure the CLI
 
@@ -32,7 +32,7 @@ directory, maximum tool-loop steps, and turn timeout. Configuration is stored at
 `~/.config/beam_agent/config.json` by default with mode `0600`; set
 `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another location.
 
-For automated setup:
+For automated setup with the deterministic echo provider:
 
 ```sh
 ./beam_agent init \
@@ -67,10 +67,54 @@ The CLI also exposes durable-session and capability discovery:
 ./beam_agent help
 ```
 
-The initial executable exposes the harness's two built-in providers: `demo`
-drives the deterministic tool/subagent scenario, while `echo` is useful for
-testing multiple turns and durable resume. A network model adapter remains a
-separate `BeamAgent.LLMProvider` implementation rather than CLI-specific logic.
+## Configure an LLM provider
+
+The CLI includes native adapters for Ollama and Anthropic, plus a shared Chat
+Completions adapter for OpenAI and xAI/Grok. `demo` drives the deterministic
+tool/subagent scenario, while `echo` remains useful for testing multiple turns
+and durable resume without a model.
+
+For local use, start Ollama, pull a tool-capable model, and configure it:
+
+```sh
+ollama serve
+ollama pull qwen3:8b
+
+./beam_agent init --force \
+  --provider ollama \
+  --model qwen3:8b \
+  --non-interactive
+./beam_agent doctor
+./beam_agent run "Use the add tool to calculate 20 + 22."
+```
+
+Cloud providers require a model name and read credentials from an environment
+variable. The config stores the variable's name, never the secret itself:
+
+```sh
+# OpenAI
+export OPENAI_API_KEY="..."
+./beam_agent init --force --provider openai --model YOUR_MODEL --non-interactive
+
+# Anthropic
+export ANTHROPIC_API_KEY="..."
+./beam_agent init --force --provider anthropic --model YOUR_MODEL --non-interactive
+
+# xAI / Grok (`--provider grok` is accepted as an alias)
+export XAI_API_KEY="..."
+./beam_agent init --force --provider xai --model YOUR_MODEL --non-interactive
+```
+
+Run `./beam_agent doctor` after configuring a provider. Ollama diagnostics check
+the server and confirm that the configured model is installed. Cloud diagnostics
+validate the required model and credential; the first request validates remote
+connectivity.
+
+Use `--base-url URL` for a compatible endpoint or proxy, and
+`--api-key-env VARIABLE` to select a different credential variable. The same
+options can temporarily override saved settings on `run`. Provider adapters are
+ordinary `BeamAgent.LLMProvider` modules registered through the capability
+catalog, so another provider does not require changes to the agent or tool loop.
 
 ## Run the demonstration
 

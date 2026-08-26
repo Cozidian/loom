@@ -11,7 +11,8 @@ defmodule BeamAgent.LLMProvider do
           optional(:content) => String.t() | nil,
           optional(:tool_calls) => [map()],
           optional(:tool_call_id) => String.t(),
-          optional(:name) => String.t()
+          optional(:name) => String.t(),
+          optional(:is_error) => boolean()
         }
 
   @type response :: %{
@@ -21,4 +22,8 @@ defmodule BeamAgent.LLMProvider do
 
   @callback id() :: atom()
   @callback complete([message()], [map()], keyword()) :: {:ok, response()} | {:error, term()}
+  @callback configuration() :: map()
+  @callback healthcheck(keyword()) :: :ok | {:ok, String.t()} | {:error, term()}
+
+  @optional_callbacks configuration: 0, healthcheck: 1
 end

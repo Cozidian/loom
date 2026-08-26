@@ -39,7 +39,7 @@ defmodule BeamAgent.CLITest do
       run_stdout(["init", "--config", context.config_path], input)
 
     assert status == 0
-    assert output =~ "Provider (demo/echo)"
+    assert output =~ "Provider (anthropic/demo/echo/ollama/openai/xai)"
     assert output =~ "Session data directory"
 
     assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
@@ -89,8 +89,12 @@ defmodule BeamAgent.CLITest do
     assert doctor =~ "ok  runtime"
 
     {0, providers} = run_stdout(["providers"])
-    assert providers =~ "demo\tBeamAgent.Providers.Demo"
-    assert providers =~ "echo\tBeamAgent.Providers.Echo"
+    assert providers =~ "demo\tDeterministic tool/subagent demo\tBeamAgent.Providers.Demo"
+    assert providers =~ "echo\tDeterministic echo provider\tBeamAgent.Providers.Echo"
+    assert providers =~ "ollama\tOllama (local)\tBeamAgent.Providers.Ollama"
+    assert providers =~ "openai\tOpenAI\tBeamAgent.Providers.OpenAI"
+    assert providers =~ "anthropic\tAnthropic Claude\tBeamAgent.Providers.Anthropic"
+    assert providers =~ "xai\txAI (Grok)\tBeamAgent.Providers.XAI"
 
     {0, tools} = run_stdout(["tools"])
     assert tools =~ "add\tAdd two numbers."
@@ -114,6 +118,102 @@ defmodule BeamAgent.CLITest do
 
     assert status == 1
     assert output =~ "durable session \"missing-session\" was not found"
+  end
+
+  test "init configures Ollama model and endpoint without credentials", context do
+    {status, output} =
+      run_stdout([
+        "init",
+        "--config",
+        context.config_path,
+        "--provider",
+        "ollama",
+        "--model",
+        "qwen3:8b",
+        "--data-dir",
+        context.data_dir,
+        "--non-interactive"
+      ])
+
+    assert status == 0
+    assert output =~ "provider:   ollama"
+    assert output =~ "model:      qwen3:8b"
+    assert output =~ "base_url:   http://127.0.0.1:11434"
+    refute output =~ "api_key"
+  end
+
+  test "cloud providers require a model and store only an API-key environment name", context do
+    {status, missing_model} =
+      run_stderr([
+        "init",
+        "--config",
+        context.config_path,
+        "--provider",
+        "openai",
+        "--non-interactive"
+      ])
+
+    assert status == 1
+    assert missing_model =~ "invalid configuration value for model"
+
+    {status, output} =
+      run_stdout([
+        "init",
+        "--config",
+        context.config_path,
+        "--provider",
+        "openai",
+        "--model",
+        "test-model",
+        "--api-key-env",
+        "MY_OPENAI_KEY",
+        "--data-dir",
+        context.data_dir,
+        "--non-interactive"
+      ])
+
+    assert status == 0
+    assert output =~ "api_key:    environment MY_OPENAI_KEY"
+    refute File.read!(context.config_path) =~ "sk-"
+  end
+
+  test "version 1 configurations migrate when loaded", context do
+    legacy = %{
+      "version" => 1,
+      "provider" => "echo",
+      "data_dir" => context.data_dir,
+      "max_steps" => 5,
+      "timeout_ms" => 4_000
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 2
+    assert Map.has_key?(migrated, "model")
+    assert Map.has_key?(migrated, "base_url")
+    assert Map.has_key?(migrated, "api_key_env")
+  end
+
+  test "grok CLI alias resolves to the xAI runtime provider", context do
+    {status, output} =
+      run_stdout([
+        "init",
+        "--config",
+        context.config_path,
+        "--provider",
+        "grok",
+        "--model",
+        "grok-test",
+        "--data-dir",
+        context.data_dir,
+        "--non-interactive"
+      ])
+
+    assert status == 0
+    assert output =~ "provider:   grok"
+    assert {:ok, :xai} = BeamAgent.CLI.Config.provider_atom("grok")
   end
 
   defp init_cli(context) do
