@@ -42,6 +42,7 @@ BeamAgent.Supervisor
         ├── StreamHub (GenServer, live fan-out and checkpoint batches)
         ├── ResourceSupervisor (DynamicSupervisor)
         ├── Context (GenServer, project instructions and skill snapshot)
+        ├── ConversationContext (GenServer, budgeted model projection)
         ├── ToolPolicy (GenServer, approvals and pending callers)
         ├── SubagentSupervisor (DynamicSupervisor)
         │   └── SessionSupervisor (one per child, recursively)
@@ -76,6 +77,15 @@ in the event log. A context crash reloads current workspace files and, through
 `:rest_for_one`, rebuilds policy, subagent ownership, and the agent against that
 new snapshot. An explicit `reload_context` performs the same refresh without a
 crash and is approval-gated when selected by the model.
+
+`ConversationContext` reconstructs the next model request from the canonical
+event log and estimates its size, including the system prompt and tool schemas.
+At the configured threshold it asks the active provider to summarize the oldest
+completed turns, then appends started/completed compaction events. The summary
+is therefore a durable projection checkpoint, not a rewrite of history. Turn
+boundaries keep tool calls paired with their results; a summary failure is
+recorded and the full projection is used. The token estimate is deliberately
+provider-neutral and approximate rather than presented as exact billing usage.
 
 The agent delegates a turn to a task owned by its session `ResourceSupervisor`,
 then links to and monitors that task. This keeps the agent mailbox responsive to
@@ -143,7 +153,8 @@ append-only semantics.
 `BeamAgent.CLI` is an escript entry point over the public harness API. Its JSON
 configuration contains named provider profiles—adapter and model, API base URL,
 and credential environment-variable name—plus global data directory and runtime
-limits, but no secrets or live process state. Config version 4 migrates the old
+limits, but no secrets or live process state. Config version 5 adds context
+window and compaction-threshold settings while continuing to migrate the old
 single-provider block into one active profile. The CLI resolves exactly one
 profile before starting or resuming a session; changing the stored active profile
 does not mutate an already running agent. Starting or resuming still

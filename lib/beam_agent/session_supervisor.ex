@@ -5,6 +5,7 @@ defmodule BeamAgent.SessionSupervisor do
   alias BeamAgent.Names
 
   alias BeamAgent.Session.{
+    ConversationContext,
     Context,
     EventLog,
     ResourceSupervisor,
@@ -53,6 +54,7 @@ defmodule BeamAgent.SessionSupervisor do
       {StreamHub, opts},
       {ResourceSupervisor, opts},
       {Context, opts},
+      {ConversationContext, opts},
       {ToolPolicy, opts},
       {SubagentSupervisor, opts},
       {BeamAgent.Agent, opts}

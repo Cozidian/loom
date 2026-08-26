@@ -17,6 +17,8 @@ defmodule BeamAgent.CLI do
     api_key_env: :string,
     workspace: :string,
     approval: :string,
+    context_window: :integer,
+    compact_at: :integer,
     tui: :boolean
   ]
 
@@ -121,6 +123,8 @@ defmodule BeamAgent.CLI do
       base_url: :string,
       api_key_env: :string,
       approval: :string,
+      context_window: :integer,
+      compact_at: :integer,
       force: :boolean,
       non_interactive: :boolean
     ]
@@ -213,11 +217,29 @@ defmodule BeamAgent.CLI do
           defaults["approval_policy"]
         )
 
+    context_window =
+      opts[:context_window] ||
+        maybe_prompt(
+          interactive,
+          "Model context window in estimated tokens",
+          Integer.to_string(defaults["context_window_tokens"])
+        )
+
+    compact_at =
+      opts[:compact_at] ||
+        maybe_prompt(
+          interactive,
+          "Compact context at percent",
+          Integer.to_string(defaults["compaction_threshold_percent"])
+        )
+
     globals = %{
       "approval_policy" => approval_policy,
       "data_dir" => Path.expand(data_dir),
       "max_steps" => parse_integer(max_steps),
-      "timeout_ms" => parse_integer(timeout)
+      "timeout_ms" => parse_integer(timeout),
+      "context_window_tokens" => parse_integer(context_window),
+      "compaction_threshold_percent" => parse_integer(compact_at)
     }
 
     {:ok, globals}
@@ -269,6 +291,8 @@ defmodule BeamAgent.CLI do
       provider_profile: config["profile"],
       data_dir: config["data_dir"],
       max_steps: config["max_steps"],
+      context_window_tokens: config["context_window_tokens"],
+      compaction_threshold_percent: config["compaction_threshold_percent"],
       workspace_root: config["workspace_root"],
       approval_policy: String.to_existing_atom(config["approval_policy"]),
       approval_handler: self()
@@ -287,6 +311,8 @@ defmodule BeamAgent.CLI do
           provider_profile: config["profile"],
           data_dir: config["data_dir"],
           max_steps: config["max_steps"],
+          context_window_tokens: config["context_window_tokens"],
+          compaction_threshold_percent: config["compaction_threshold_percent"],
           workspace_root: config["workspace_root"],
           approval_policy: String.to_existing_atom(config["approval_policy"]),
           approval_handler: self()
@@ -327,6 +353,10 @@ defmodule BeamAgent.CLI do
 
           "/status" ->
             print_status(session_id, config)
+            chat_loop(session_id, config)
+
+          "/compact" ->
+            compact_session_context(session_id)
             chat_loop(session_id, config)
 
           "/skills" ->
@@ -429,10 +459,32 @@ defmodule BeamAgent.CLI do
 
   defp print_status(session_id, config) do
     with {:ok, path} <- BeamAgent.event_log_path(session_id),
-         {:ok, context} <- BeamAgent.context_snapshot(session_id) do
-      UI.status(config, session_id, path, context)
+         {:ok, context} <- BeamAgent.context_snapshot(session_id),
+         {:ok, context_stats} <- BeamAgent.conversation_context_stats(session_id) do
+      UI.status(config, session_id, path, context, context_stats)
     else
       {:error, reason} -> error(reason)
+    end
+  end
+
+  defp compact_session_context(session_id) do
+    case BeamAgent.compact_context(session_id) do
+      {:ok, :compacted, stats} ->
+        UI.success(
+          "Context compacted · #{stats.estimated_tokens}/#{stats.window_tokens} estimated tokens"
+        )
+
+        0
+
+      {:ok, :not_needed, stats} ->
+        UI.notice(
+          "Nothing to compact · #{stats.estimated_tokens}/#{stats.window_tokens} estimated tokens"
+        )
+
+        0
+
+      {:error, reason} ->
+        error(reason)
     end
   end
 
@@ -732,6 +784,8 @@ defmodule BeamAgent.CLI do
     output("data_dir:   #{config["data_dir"]}")
     output("max_steps:  #{config["max_steps"]}")
     output("timeout_ms: #{config["timeout_ms"]}")
+    output("context:    #{config["context_window_tokens"]} tokens")
+    output("compact_at: #{config["compaction_threshold_percent"]}%")
   end
 
   defp ensure_replacement_allowed(config_path, force?) do
@@ -853,6 +907,8 @@ defmodule BeamAgent.CLI do
       --approval ask|allow|deny              risky tool policy
       --max-steps N                          tool-loop limit
       --timeout MILLISECONDS                 provider request timeout
+      --context-window TOKENS                estimated model context capacity
+      --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
 
     Running `beam_agent init` opens a guided setup. For automated setup, add
@@ -875,6 +931,8 @@ defmodule BeamAgent.CLI do
       --data-dir PATH        durable session directory
       --max-steps N          maximum tool-loop steps
       --timeout MS           provider request timeout
+      --context-window N     estimated model context capacity in tokens
+      --compact-at PERCENT   automatic compaction threshold (50-95)
       --non-interactive      do not prompt; validate supplied/default values
       --force                replace an existing configuration
     """)

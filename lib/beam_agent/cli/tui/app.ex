@@ -12,6 +12,7 @@ defmodule BeamAgent.CLI.TUI.App do
     %{id: :sessions, label: "Durable sessions", hint: "/sessions"},
     %{id: :skills, label: "Project skills", hint: "/skills"},
     %{id: :reload, label: "Reload project context", hint: "/reload"},
+    %{id: :compact, label: "Compact conversation context", hint: "/compact"},
     %{id: :events, label: "Event log", hint: "/events"},
     %{id: :toggle_tools, label: "Expand or collapse tools", hint: "ctrl+t"},
     %{id: :clear, label: "Clear transcript view", hint: "/clear"},
@@ -30,6 +31,7 @@ defmodule BeamAgent.CLI.TUI.App do
       session_id: session_id,
       config: config,
       controller: nil,
+      context_stats: nil,
       entries: history(session_id),
       input: "",
       cursor: 0,
@@ -212,6 +214,7 @@ defmodule BeamAgent.CLI.TUI.App do
 
   def update({:turn_started, _prompt}, state), do: {%{state | status: :running}, []}
   def update(:turn_cancelling, state), do: {%{state | status: :cancelling}, []}
+  def update({:context_stats, stats}, state), do: {%{state | context_stats: stats}, []}
 
   def update({:turn_finished, {:ok, _answer}}, state),
     do: {%{state | status: :idle, approval: nil, notice: nil}, []}
@@ -451,7 +454,7 @@ defmodule BeamAgent.CLI.TUI.App do
     left = "  BEAM AGENT"
 
     right =
-      "#{status_mark(state.status)}  #{status_label(state.status)}   #{state.config["profile"]}/#{model}  "
+      "#{status_mark(state.status)}  #{status_label(state.status)}   #{state.config["profile"]}/#{model}#{context_usage(state)}  "
 
     [
       line(join_edges(left, right, state.width), style(:header)),
@@ -461,6 +464,12 @@ defmodule BeamAgent.CLI.TUI.App do
       ),
       line("  " <> String.duplicate("─", max(0, state.width - 4)), style(:divider))
     ]
+  end
+
+  defp context_usage(%{context_stats: nil}), do: ""
+
+  defp context_usage(%{context_stats: stats}) do
+    "   ctx #{stats.utilization_percent}%"
   end
 
   defp body_lines(%{approval: approval} = state, height) when not is_nil(approval),

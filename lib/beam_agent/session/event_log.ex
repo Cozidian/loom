@@ -24,9 +24,12 @@ defmodule BeamAgent.Session.EventLog do
 
   def messages(session_id) do
     with {:ok, events} <- events(session_id) do
-      {:ok, Enum.flat_map(events, &to_message/1)}
+      {:ok, messages_from_events(events)}
     end
   end
+
+  def messages_from_events(events) when is_list(events),
+    do: Enum.flat_map(events, &to_message/1)
 
   def path(session_id) do
     with {:ok, pid} <- Names.pid(:event_log, session_id) do

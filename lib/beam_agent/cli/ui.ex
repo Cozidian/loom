@@ -150,6 +150,7 @@ defmodule BeamAgent.CLI.UI do
     command("/new", "start a fresh session")
     command("/sessions", "list durable sessions")
     command("/status", "show provider, model, session, and event log")
+    command("/compact", "summarize older completed turns now")
     command("/skills", "list skills discovered for this session")
     command("/reload", "reload project instructions and skill metadata")
     command("/events", "show the current event count and log path")
@@ -159,7 +160,7 @@ defmodule BeamAgent.CLI.UI do
     blank()
   end
 
-  def status(config, session_id, event_path, context) do
+  def status(config, session_id, event_path, context, context_stats) do
     blank()
     line([:bright, "Session"])
     field("provider", config["provider"])
@@ -170,7 +171,15 @@ defmodule BeamAgent.CLI.UI do
     field("approval", config["approval_policy"])
     field("instructions", length(context.instructions))
     field("skills", length(context.skills))
-    field("context", String.slice(context.fingerprint, 0, 12))
+    field("project context", String.slice(context.fingerprint, 0, 12))
+
+    field(
+      "model context",
+      "#{context_stats.estimated_tokens}/#{context_stats.window_tokens} est. tokens " <>
+        "(#{context_stats.utilization_percent}%)"
+    )
+
+    field("compactions", context_stats.compaction_count)
     field("events", event_path)
     blank()
   end

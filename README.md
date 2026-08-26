@@ -21,6 +21,7 @@ It includes:
 - live, provider-native response streaming with session-scoped subscribers;
 - batched durable stream checkpoints without an `fsync` per token;
 - synchronous append-only JSONL events and crash reconstruction;
+- budgeted model-context projection with durable, restart-safe compaction;
 - `:rest_for_one` recovery from durable-state dependency loss.
 
 The runtime uses Elixir's built-in `JSON` module and OTP's `:httpc` client for
@@ -35,8 +36,8 @@ mix escript.build
 
 Running `beam_agent` opens the terminal chat. On the first launch it walks
 through setup first, configuring the provider, model, durable session directory,
-maximum tool-loop steps, and turn timeout. You can also rerun the wizard later
-with `./beam_agent init`.
+maximum tool-loop steps, turn timeout, model context window, and compaction
+threshold. You can also rerun the wizard later with `./beam_agent init`.
 
 Configuration is stored at `~/.config/beam_agent/config.json` by default with
 mode `0600`; set `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another
@@ -87,12 +88,21 @@ line in the composer, `Ctrl+T` to expand tool results, `Page Up`/`Page Down` to
 move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
 idle). Approval dialogs default to deny and require an explicit one-shot choice.
 
-The useful slash commands remain `/new`, `/sessions`, `/status`, `/skills`,
-`/reload`, `/events`, `/clear`, and `/exit`. Ollama, OpenAI, xAI/Grok, and
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/compact`,
+`/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama, OpenAI, xAI/Grok, and
 Anthropic responses render as they arrive; deterministic or custom
 non-streaming providers render their final response through the same interface.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
+
+BeamAgent estimates the full model request and automatically summarizes older
+completed turns when it reaches the configured threshold. Raw events remain in
+the append-only log; only the next model projection is compacted. `/status`
+shows the estimate and `/compact` requests compaction immediately. Override the
+configured defaults for one run with `--context-window TOKENS` and
+`--compact-at PERCENT`.
+
+See [ROADMAP.md](ROADMAP.md) for the current product work order.
 
 ## Work in a repository
 

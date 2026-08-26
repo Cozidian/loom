@@ -7,7 +7,7 @@ defmodule BeamAgent do
   """
 
   alias BeamAgent.{Agent, Names, SessionSupervisor, Workspace}
-  alias BeamAgent.Session.{Context, EventLog, StreamHub, ToolPolicy}
+  alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub, ToolPolicy}
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
@@ -59,6 +59,33 @@ defmodule BeamAgent do
 
   def events(session_id), do: EventLog.events(session_id)
   def context_snapshot(session_id), do: Context.snapshot(session_id)
+
+  def conversation_context_stats(session_id) do
+    with {:ok, project_context} <- Context.snapshot(session_id) do
+      ConversationContext.stats(
+        session_id,
+        project_context.system_prompt,
+        BeamAgent.CapabilityCatalog.tool_schemas()
+      )
+    end
+  end
+
+  def compact_context(session_id) do
+    with {:ok, options} <- Agent.context_options(session_id),
+         {:ok, project_context} <- Context.snapshot(session_id),
+         tool_schemas <- BeamAgent.CapabilityCatalog.tool_schemas(),
+         {:ok, _messages, stats} <-
+           ConversationContext.compact(
+             session_id,
+             options.provider_module,
+             options.provider_options,
+             project_context.system_prompt,
+             tool_schemas
+           ) do
+      if stats.compacted?, do: {:ok, :compacted, stats}, else: {:ok, :not_needed, stats}
+    end
+  end
+
   def skills(session_id), do: Context.skills(session_id)
   def reload_context(session_id), do: Context.reload(session_id)
   def event_log_path(session_id), do: EventLog.path(session_id)
@@ -67,6 +94,7 @@ defmodule BeamAgent do
   def stream_hub_pid(session_id), do: Names.pid(:stream_hub, session_id)
   def tool_policy_pid(session_id), do: Names.pid(:tool_policy, session_id)
   def context_pid(session_id), do: Names.pid(:context, session_id)
+  def conversation_context_pid(session_id), do: Names.pid(:conversation_context, session_id)
 
   def stop_session(session_id) do
     with {:ok, pid} <- Names.pid(:session_supervisor, session_id) do

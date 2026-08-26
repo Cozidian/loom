@@ -22,6 +22,12 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  def context_options(session_id) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, :context_options)
+    end
+  end
+
   def cancel(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :cancel)
@@ -56,6 +62,8 @@ defmodule BeamAgent.Agent do
         approval_policy: Keyword.get(opts, :approval_policy, :ask),
         approval_handler: Keyword.get(opts, :approval_handler),
         max_steps: max_steps,
+        context_window_tokens: Keyword.get(opts, :context_window_tokens, 32_000),
+        compaction_threshold_percent: Keyword.get(opts, :compaction_threshold_percent, 75),
         status: :idle,
         current_turn: nil
       }
@@ -115,6 +123,21 @@ defmodule BeamAgent.Agent do
 
   def handle_call({:ask, _prompt}, _from, state), do: {:reply, {:error, :empty_prompt}, state}
   def handle_call(:status, _from, state), do: {:reply, {:ok, state.status}, state}
+
+  def handle_call(:context_options, _from, %{current_turn: nil} = state) do
+    options =
+      Map.take(state, [
+        :provider_module,
+        :provider_options,
+        :context_window_tokens,
+        :compaction_threshold_percent
+      ])
+
+    {:reply, {:ok, options}, state}
+  end
+
+  def handle_call(:context_options, _from, state),
+    do: {:reply, {:error, :agent_busy}, state}
 
   def handle_call(:cancel, _from, %{current_turn: nil} = state),
     do: {:reply, {:error, :not_running}, state}

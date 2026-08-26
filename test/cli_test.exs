@@ -29,6 +29,8 @@ defmodule BeamAgent.CLITest do
     assert config["max_steps"] == 5
     assert config["timeout_ms"] == 4_000
     assert config["approval_policy"] == "ask"
+    assert config["context_window_tokens"] == 32_000
+    assert config["compaction_threshold_percent"] == 75
 
     {:ok, stat} = File.stat(context.config_path)
     assert Bitwise.band(stat.mode, 0o777) == 0o600
@@ -80,7 +82,7 @@ defmodule BeamAgent.CLITest do
     {status, output} =
       run_stdout(
         ["run", "--config", context.config_path],
-        "hello\n/status\n/skills\n/reload\n/help\n/nope\n/events\n/exit\n"
+        "hello\n/status\n/compact\n/skills\n/reload\n/help\n/nope\n/events\n/exit\n"
       )
 
     assert status == 0
@@ -92,6 +94,8 @@ defmodule BeamAgent.CLITest do
     assert output =~ "No project skills discovered"
     assert output =~ "Context reloaded"
     assert output =~ "provider  echo"
+    assert output =~ "Nothing to compact"
+    assert output =~ "/compact"
     assert output =~ "/new"
     assert output =~ "Unknown command /nope"
     assert output =~ "events at"
@@ -300,10 +304,12 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 4
+    assert migrated["version"] == 5
     assert migrated["active_profile"] == "echo"
     assert get_in(migrated, ["profiles", "echo", "provider"]) == "echo"
     assert Map.has_key?(migrated["profiles"]["echo"], "model")
+    assert migrated["context_window_tokens"] == 32_000
+    assert migrated["compaction_threshold_percent"] == 75
   end
 
   test "version 3 single-provider configuration becomes one active profile", context do
@@ -323,12 +329,39 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 4
+    assert migrated["version"] == 5
     assert migrated["active_profile"] == "ollama"
     assert get_in(migrated, ["profiles", "ollama", "model"]) == "qwen3:8b"
     assert {:ok, runtime} = BeamAgent.CLI.Config.runtime(migrated)
     assert runtime["provider"] == "ollama"
     assert runtime["profile"] == "ollama"
+  end
+
+  test "version 4 profile configuration gains context defaults", context do
+    legacy = %{
+      "version" => 4,
+      "active_profile" => "echo",
+      "profiles" => %{
+        "echo" => %{
+          "provider" => "echo",
+          "model" => nil,
+          "base_url" => nil,
+          "api_key_env" => nil
+        }
+      },
+      "approval_policy" => "ask",
+      "data_dir" => context.data_dir,
+      "max_steps" => 8,
+      "timeout_ms" => 30_000
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 5
+    assert migrated["context_window_tokens"] == 32_000
+    assert migrated["compaction_threshold_percent"] == 75
   end
 
   test "grok CLI alias resolves to the xAI runtime provider", context do

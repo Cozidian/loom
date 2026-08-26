@@ -20,12 +20,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
       runtime: Keyword.fetch!(opts, :runtime),
       session_id: Keyword.fetch!(opts, :session_id),
       config: Keyword.fetch!(opts, :config),
-      current: nil
+      current: nil,
+      compacting?: false
     }
 
     with :ok <- BeamAgent.subscribe(state.session_id),
          :ok <- BeamAgent.set_approval_handler(state.session_id, self()) do
       notify(state, {:controller_ready, self()})
+      notify_context_stats(state)
       {:ok, state}
     else
       {:error, reason} -> {:stop, reason}
@@ -96,7 +98,32 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_info({result_ref, result}, %{current: %{result_ref: result_ref} = current} = state) do
     Process.demonitor(current.monitor, [:flush])
     notify(state, {:turn_finished, result})
+    notify_context_stats(state)
     {:noreply, %{state | current: nil}}
+  end
+
+  def handle_info({:context_compaction_result, result}, state) do
+    case result do
+      {:ok, :compacted, stats} ->
+        notify(
+          state,
+          {:notice, :success,
+           "Context compacted · #{stats.estimated_tokens}/#{stats.window_tokens} est. tokens"}
+        )
+
+      {:ok, :not_needed, stats} ->
+        notify(
+          state,
+          {:notice, :muted,
+           "Nothing to compact · #{stats.estimated_tokens}/#{stats.window_tokens} est. tokens"}
+        )
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    notify_context_stats(state)
+    {:noreply, %{state | compacting?: false}}
   end
 
   def handle_info(
@@ -138,6 +165,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp run_command(:status, state) do
     with {:ok, path} <- BeamAgent.event_log_path(state.session_id),
          {:ok, context} <- BeamAgent.context_snapshot(state.session_id),
+         {:ok, context_stats} <- BeamAgent.conversation_context_stats(state.session_id),
          {:ok, events} <- BeamAgent.events(state.session_id) do
       notify(state, {
         :panel,
@@ -149,7 +177,9 @@ defmodule BeamAgent.CLI.TUI.Controller do
           "session   #{state.session_id}",
           "workspace #{state.config["workspace_root"]}",
           "approval  #{state.config["approval_policy"]}",
-          "context   #{String.slice(context.fingerprint, 0, 12)}",
+          "project   #{String.slice(context.fingerprint, 0, 12)}",
+          "context   #{context_stats.estimated_tokens}/#{context_stats.window_tokens} est. tokens (#{context_stats.utilization_percent}%)",
+          "compacted #{context_stats.compaction_count} times",
           "events    #{length(events)}",
           "log       #{path}"
         ]
@@ -158,6 +188,27 @@ defmodule BeamAgent.CLI.TUI.Controller do
       {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
     end
 
+    state
+  end
+
+  defp run_command(:compact, %{current: nil, compacting?: false} = state) do
+    owner = self()
+
+    case Task.start(fn ->
+           send(owner, {:context_compaction_result, BeamAgent.compact_context(state.session_id)})
+         end) do
+      {:ok, _pid} ->
+        notify(state, {:notice, :muted, "Compacting older completed turns…"})
+        %{state | compacting?: true}
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command(:compact, state) do
+    notify(state, {:notice, :warning, "Wait for the current operation before compacting"})
     state
   end
 
@@ -216,6 +267,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       _ = BeamAgent.stop_session(state.session_id)
       state = %{state | session_id: new_session_id}
       notify(state, {:session_changed, new_session_id})
+      notify_context_stats(state)
       state
     else
       {:error, reason} ->
@@ -241,10 +293,19 @@ defmodule BeamAgent.CLI.TUI.Controller do
       provider_profile: config["profile"],
       data_dir: config["data_dir"],
       max_steps: config["max_steps"],
+      context_window_tokens: config["context_window_tokens"] || 32_000,
+      compaction_threshold_percent: config["compaction_threshold_percent"] || 75,
       workspace_root: config["workspace_root"],
       approval_policy: String.to_existing_atom(config["approval_policy"]),
       approval_handler: self()
     )
+  end
+
+  defp notify_context_stats(state) do
+    case BeamAgent.conversation_context_stats(state.session_id) do
+      {:ok, stats} -> notify(state, {:context_stats, stats})
+      {:error, _reason} -> :ok
+    end
   end
 
   defp notify(state, message), do: TermUI.Runtime.send_message(state.runtime, :root, message)

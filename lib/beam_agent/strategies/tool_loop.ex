@@ -3,7 +3,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   @behaviour BeamAgent.AgentStrategy
 
   alias BeamAgent.{CapabilityCatalog, ToolRunner}
-  alias BeamAgent.Session.{Context, EventLog, StreamHub}
+  alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
   @impl true
   def run(context, prompt) do
@@ -26,8 +26,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "turn" => turn,
              "step" => step_number
            }),
-         {:ok, messages} <- EventLog.messages(context.session_id),
-         {:ok, response} <- call_provider(context, messages, turn, step_number),
+         {:ok, project_context} <- Context.snapshot(context.session_id),
+         tool_schemas <- CapabilityCatalog.tool_schemas(),
+         {:ok, messages, _context_stats} <-
+           ConversationContext.messages(
+             context.session_id,
+             context.provider_module,
+             context.provider_options,
+             project_context.system_prompt,
+             tool_schemas
+           ),
+         {:ok, response} <-
+           call_provider(
+             context,
+             messages,
+             project_context.system_prompt,
+             tool_schemas,
+             turn,
+             step_number
+           ),
          :ok <- validate_response(response),
          {:ok, _} <-
            EventLog.append(context.session_id, :assistant_message, %{
@@ -54,23 +71,21 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp step(context, turn, _step_number), do: fail_turn(context, turn, :max_steps_exceeded)
 
-  defp call_provider(context, messages, turn, step) do
-    with {:ok, project_context} <- Context.snapshot(context.session_id) do
-      options =
-        context.provider_options
-        |> Keyword.put(:session_id, context.session_id)
-        |> Keyword.put(:parent_session_id, context.parent_session_id)
-        |> Keyword.put(:system_prompt, project_context.system_prompt)
+  defp call_provider(context, messages, system_prompt, tool_schemas, turn, step) do
+    options =
+      context.provider_options
+      |> Keyword.put(:session_id, context.session_id)
+      |> Keyword.put(:parent_session_id, context.parent_session_id)
+      |> Keyword.put(:system_prompt, system_prompt)
 
-      if function_exported?(context.provider_module, :stream, 4) do
-        call_streaming_provider(context, messages, options, turn, step)
-      else
-        context.provider_module.complete(messages, CapabilityCatalog.tool_schemas(), options)
-      end
+    if function_exported?(context.provider_module, :stream, 4) do
+      call_streaming_provider(context, messages, tool_schemas, options, turn, step)
+    else
+      context.provider_module.complete(messages, tool_schemas, options)
     end
   end
 
-  defp call_streaming_provider(context, messages, options, turn, step) do
+  defp call_streaming_provider(context, messages, tool_schemas, options, turn, step) do
     metadata = %{
       "turn" => turn,
       "step" => step,
@@ -86,7 +101,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
         try do
           context.provider_module.stream(
             messages,
-            CapabilityCatalog.tool_schemas(),
+            tool_schemas,
             options,
             emit
           )
@@ -179,7 +194,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :data_dir,
       :workspace_root,
       :approval_policy,
-      :approval_handler
+      :approval_handler,
+      :context_window_tokens,
+      :compaction_threshold_percent
     ])
   end
 
