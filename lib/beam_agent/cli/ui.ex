@@ -171,6 +171,7 @@ defmodule BeamAgent.CLI.UI do
     field("session", session_id)
     field("workspace", config["workspace_root"])
     field("approval", config["approval_policy"])
+    field("routing", config["model_strategy"] || "manual")
     field("instructions", length(context.instructions))
     field("skills", length(context.skills))
     field("project context", String.slice(context.fingerprint, 0, 12))
@@ -199,15 +200,32 @@ defmodule BeamAgent.CLI.UI do
     field("arguments", compact(JSON.encode!(request.arguments)))
 
     decision =
-      case IO.gets(format([:bright, @accent, "Allow once?", :reset, " [y/N]: "])) do
+      case IO.gets(
+             format([
+               :bright,
+               @accent,
+               "Approve?",
+               :reset,
+               " [y] once / [a] always / [N] deny: "
+             ])
+           ) do
         input when is_binary(input) ->
-          if String.downcase(String.trim(input)) in ["y", "yes"], do: :allow_once, else: :deny
+          case String.downcase(String.trim(input)) do
+            value when value in ["y", "yes"] -> :allow_once
+            value when value in ["a", "always"] -> :allow_always
+            _value -> :deny
+          end
 
         _ ->
           :deny
       end
 
-    if decision == :allow_once, do: success("Approved once"), else: warning("Denied")
+    case decision do
+      :allow_once -> success("Approved once")
+      :allow_always -> success("Scoped permission saved")
+      :deny -> warning("Denied")
+    end
+
     begin_wait()
     decision
   end

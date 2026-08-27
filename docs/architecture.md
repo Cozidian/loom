@@ -32,7 +32,7 @@ Primary references:
 | Long-lived workspace runtime | One registered `ProjectSupervisor` per canonical workspace |
 | Project model inventory | Project-owned `ModelRegistry` with supervised health tasks |
 | Ephemeral user objective | A project-owned `GoalSupervisor` with explicit identity |
-| Scoped/stateful capability | A process under the session's `ResourceSupervisor` |
+| Scoped/stateful capability | A process under the narrowest goal/session resource supervisor |
 | Dependency disposal/reload | Links plus `:rest_for_one` restart ordering |
 
 ## Process tree
@@ -46,10 +46,15 @@ BeamAgent.Supervisor
         ├── Project (GenServer, identity and project-lived state)
         ├── ModelHealthSupervisor (Task.Supervisor)
         ├── ModelRegistry (GenServer, configured endpoints and health)
+        ├── ModelRouter (GenServer, per-request deterministic selection)
+        ├── OutcomeStore (GenServer, append-only project outcome ledger)
         └── GoalRootSupervisor (DynamicSupervisor)
             └── GoalSupervisor (one per root goal, :rest_for_one)
                 ├── Goal (GenServer, identity and goal-lived state)
                 ├── Goal.EventHub (GenServer, goal-wide replay and live fan-out)
+                ├── Goal.ResourceSupervisor (DynamicSupervisor)
+                │   └── MCP.Server (one per local stdio server)
+                ├── MCP.Registry (GenServer, discovery and namespaced tools)
                 └── SessionSupervisor (:rest_for_one)
                     ├── EventLog (GenServer, append-only JSONL)
                     ├── StreamHub (GenServer, live fan-out and checkpoints)
@@ -91,11 +96,14 @@ project-owned `Task.Supervisor` and update it to `checking`, `available`, or
 `unavailable` without blocking or coupling goal processes. A registry crash
 rehydrates configured endpoints without restarting sibling goals.
 
-The CLI now loads every stored profile into the project registry while still
-passing the selected profile directly to the session as a manual override. No
-automatic routing decision is made in this slice. `/models` exposes the project
-inventory and `/models refresh` starts health checks through the Elixir runtime;
-the Go TUI remains presentation-only.
+The CLI loads every stored profile into the project registry. `ModelRouter`
+makes an inspectable decision for each intelligence request; Auto prefers local,
+free endpoints for simple work, keeps preferred capable endpoints competitive
+for orchestration, rejects unavailable/privacy-incompatible endpoints, and can
+select deterministic ordinary computation. Manual, local-only, and custom
+strategies remain explicit overrides. Durable `model_route_selected` events
+carry safe decision inputs, candidates, selection, and reason. `/models`
+exposes the inventory and health checks; the Go TUI remains presentation-only.
 
 All provider execution enters through a versioned `ModelRequest`, including
 ordinary tool-loop steps and context compaction. It explicitly carries request
@@ -255,9 +263,13 @@ eager because they define project authority. Skill bodies are lazy: only a
 bounded name/description catalog enters the system prompt, while `read_skill`
 returns the complete selected `SKILL.md` and records `skill_activated`.
 
-The catalog still owns trusted, stateless tool modules. Runtime authority is
-session-scoped: read tools are allowed by default, mutations and commands follow
-the configured risky-tool policy, and approvals grant exactly one pending call.
+The catalog still owns trusted, stateless tool modules. Every goal and worker
+also carries an immutable capability envelope for tool, path, command, host,
+MCP-server, and model-class resources. Delegation can preserve or narrow it;
+an attempted escalation fails. Runtime authority is session-scoped: read tools
+are allowed by default, mutations and commands follow the configured risky-tool
+policy, and approvals grant one call or a durable exact scoped permission.
+Permissions reconstruct from the canonical log and can be inspected/revoked.
 The session policy can switch between `ask` and `auto` at runtime. Enabling
 auto releases already-pending approvals, records an `approval_policy_changed`
 event, and affects future risky calls and child sessions without weakening the
@@ -271,6 +283,21 @@ matching exactly one old-text occurrence. Creates use exclusive file creation.
 Commands use explicit cwd, timeout, output limits, and an enforcing platform
 sandbox. A missing sandbox backend is an error, not an automatic unsandboxed
 fallback.
+
+Goal-scoped local stdio MCP servers live below `Goal.ResourceSupervisor`.
+`MCP.Registry` discovers and publishes namespaced tools, while calls pass through
+the same capability and approval boundary as native tools. Each transport has
+bounded startup/call timeouts, caller monitoring and cancellation notification,
+health/lifecycle events, and a scrubbed environment with only `PATH` plus
+explicit environment-variable references resolved at spawn time. Remote MCP
+transports are intentionally not implemented yet.
+
+`OutcomeStore` owns a bounded append-only project ledger separate from session
+conversation logs. Records contain task/repository classification, endpoint,
+latency, normalized usage, cost hint, retries, status, failures, and cancellation
+but never prompts or model content. Verification starts as `unverified` and is
+attached later as its own fact. Retention, export, restart recovery, and opt-out
+are explicit; routing does not consume these records until roadmap item 10.
 
 ## Deliberate non-port
 
@@ -292,12 +319,13 @@ append-only semantics.
 `BeamAgent.CLI` is an escript entry point over the public harness API. Its JSON
 configuration contains named provider profiles—adapter and model, API base URL,
 and credential environment-variable name—plus global data directory and runtime
-limits, but no secrets or live process state. Config version 7 removes the LLM
-transport deadline after version 6 removed the arbitrary tool-loop step ceiling;
-older configurations retain their context-window settings during migration. The
-CLI resolves exactly one profile before starting or resuming a session; changing
-the stored active profile does not mutate an already running agent. Starting or
-resuming still
+limits, but no secrets or live process state. Config version 8 adds the default
+Auto model strategy; version 7 removed the LLM transport deadline after version
+6 removed the arbitrary tool-loop step ceiling. Older configurations retain
+their context-window settings during migration. The active profile is the manual
+preference and Auto may use any eligible registered endpoint per request;
+changing the stored active profile does not mutate an already running agent.
+Starting or resuming still
 goes through `BeamAgent`, capability resolution still goes through the Registry,
 and conversation state still goes only to the session event log. A future web
 view can therefore use the same public API and persisted events without the CLI

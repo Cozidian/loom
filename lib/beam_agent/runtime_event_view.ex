@@ -8,16 +8,19 @@ defmodule BeamAgent.RuntimeEventView do
   """
 
   @safe_scalar_keys MapSet.new(~w(
-    access approval_id category child_session_id command_id compacted_count
-    compaction_count context_fingerprint correlation_id count decision
-    estimated_tokens fingerprint from goal_id index is_error language limit
-    model name output_tokens parent_session_id policy previous project_id
-    provider provider_profile recovered request_id request_version response_id retries root session_id
-    step stream success task_type timeout to tool tool_call_id total_tokens turn type version
-    window_tokens worker_id
+    access approval_id attempt cached_tokens cancelled category child_session_id command_id compacted_count
+    compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision
+    decision_id endpoint_id estimated_cost estimated_tokens fingerprint from goal_id health id index is_error
+    language latency_ms latency_preference limit locality measured_latency_ms model name outcome_id output_tokens
+    parent_session_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
+    recovered redaction request_id request_version response_id retries root selected_endpoint_id server session_id
+    status step strategy stream success task_type timeout to tool tool_call_id tool_count tools_required total_tokens turn
+    type version window_tokens worker_id
   ))
 
   @safe_container_keys MapSet.new(~w(usage))
+  @safe_object_keys MapSet.new(~w(inputs verification))
+  @safe_list_keys MapSet.new(~w(candidate_endpoint_ids candidates))
 
   @type view :: :public | :internal
 
@@ -63,6 +66,12 @@ defmodule BeamAgent.RuntimeEventView do
       MapSet.member?(@safe_container_keys, key) ->
         public_metrics(value)
 
+      MapSet.member?(@safe_object_keys, key) and is_map(value) ->
+        public_data(value)
+
+      MapSet.member?(@safe_list_keys, key) and is_list(value) ->
+        public_safe_list(value)
+
       key == "events" and is_list(value) ->
         public_list(value)
 
@@ -78,6 +87,17 @@ defmodule BeamAgent.RuntimeEventView do
     Enum.map_reduce(values, false, fn value, redacted? ->
       {value, value_redacted?} = public_nested(value)
       {value, redacted? or value_redacted?}
+    end)
+  end
+
+  defp public_safe_list(values) do
+    Enum.map_reduce(values, false, fn
+      value, redacted? when is_map(value) ->
+        {value, value_redacted?} = public_data(value)
+        {value, redacted? or value_redacted?}
+
+      value, redacted? ->
+        if scalar?(value), do: {value, redacted?}, else: {redaction(value), true}
     end)
   end
 

@@ -65,11 +65,13 @@ defmodule BeamAgent.Agent do
         provider_profile: Keyword.get(opts, :provider_profile),
         provider_module: provider_module,
         provider_options: Keyword.get(opts, :provider_options, []),
+        model_strategy: Keyword.get(opts, :model_strategy, :manual),
         strategy: strategy,
         data_dir: data_dir,
         workspace_root: Keyword.fetch!(opts, :workspace_root),
         approval_policy: Keyword.get(opts, :approval_policy, :ask),
         approval_handler: Keyword.get(opts, :approval_handler),
+        capability_envelope: Keyword.fetch!(opts, :capability_envelope),
         context_window_tokens: Keyword.get(opts, :context_window_tokens, 32_000),
         compaction_threshold_percent: Keyword.get(opts, :compaction_threshold_percent, 75),
         status: :idle,
@@ -141,7 +143,14 @@ defmodule BeamAgent.Agent do
 
   def handle_call(:runtime_identity, _from, state) do
     identity =
-      Map.take(state, [:session_id, :project_id, :goal_id, :workspace_root, :data_dir])
+      Map.take(state, [
+        :session_id,
+        :project_id,
+        :goal_id,
+        :workspace_root,
+        :data_dir,
+        :capability_envelope
+      ])
 
     {:reply, {:ok, identity}, state}
   end
@@ -152,7 +161,9 @@ defmodule BeamAgent.Agent do
         :provider_module,
         :provider_options,
         :context_window_tokens,
-        :compaction_threshold_percent
+        :compaction_threshold_percent,
+        :capability_envelope,
+        :model_strategy
       ])
 
     {:reply, {:ok, options}, state}
@@ -196,6 +207,8 @@ defmodule BeamAgent.Agent do
             correlation_id: current.command.correlation_id
           )
 
+        _ = record_task_outcome(state, current, :cancelled, reason, true)
+
         {:error, :cancelled}
       else
         _ =
@@ -208,6 +221,8 @@ defmodule BeamAgent.Agent do
             },
             correlation_id: current.command.correlation_id
           )
+
+        _ = record_task_outcome(state, current, :failed, reason, false)
 
         {:error, {:turn_process_exit, reason}}
       end
@@ -243,6 +258,7 @@ defmodule BeamAgent.Agent do
           monitor: monitor,
           ref: turn_ref,
           from: from,
+          prompt: prompt,
           command: command,
           cancel_requested: false
         }
@@ -264,6 +280,21 @@ defmodule BeamAgent.Agent do
   end
 
   defp event_id(event), do: "#{event["session_id"]}:#{event["seq"]}"
+
+  defp record_task_outcome(state, current, status, reason, cancelled) do
+    classification = BeamAgent.TaskClassifier.classify(current.prompt, state.workspace_root)
+
+    BeamAgent.OutcomeStore.record(state.project_id, %{
+      kind: :task,
+      goal_id: state.goal_id,
+      session_id: state.session_id,
+      task_type: classification.task_type,
+      language: classification.language,
+      status: status,
+      cancelled: cancelled,
+      failure: reason
+    })
+  end
 
   defp validate_strategy(strategy) do
     case Code.ensure_loaded(strategy) do

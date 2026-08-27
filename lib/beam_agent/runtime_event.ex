@@ -137,9 +137,33 @@ defmodule BeamAgent.RuntimeEvent do
               "tool_approval_granted",
               "tool_approval_cancelled",
               "tool_denied",
-              "approval_policy_changed"
+              "approval_policy_changed",
+              "permission_granted",
+              "permission_revoked",
+              "capability_denied"
             ],
        do: :policy
+
+  defp category(type)
+       when type in [
+              "mcp_server_started",
+              "mcp_server_restarted",
+              "mcp_server_stopped",
+              "mcp_server_failed",
+              "mcp_server_unavailable",
+              "mcp_call_cancelled"
+            ],
+       do: :resource
+
+  defp category("model_route_selected"), do: :routing
+
+  defp category(type)
+       when type in [
+              "model_outcome_recorded",
+              "task_outcome_recorded",
+              "verification_attached"
+            ],
+       do: :outcome
 
   defp category(_type), do: :runtime
 

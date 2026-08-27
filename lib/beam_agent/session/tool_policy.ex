@@ -5,20 +5,21 @@ defmodule BeamAgent.Session.ToolPolicy do
   alias BeamAgent.Names
   alias BeamAgent.Session.EventLog
 
-  @type decision :: :allow | :allow_once | :deny
+  @type decision :: :allow | :allow_once | :allow_always | :deny
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
     GenServer.start_link(__MODULE__, opts, name: Names.via(:tool_policy, id))
   end
 
-  def authorize(session_id, tool, arguments, access, timeout \\ 300_000) do
+  def authorize(session_id, tool, arguments, access, resource \\ %{}, timeout \\ 300_000) do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
-      GenServer.call(pid, {:authorize, tool, arguments, access}, timeout)
+      GenServer.call(pid, {:authorize, tool, arguments, access, resource}, timeout)
     end
   end
 
-  def respond(session_id, approval_id, decision) when decision in [:allow_once, :deny] do
+  def respond(session_id, approval_id, decision)
+      when decision in [:allow_once, :allow_always, :deny] do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
       GenServer.call(pid, {:respond, approval_id, decision})
     end
@@ -40,6 +41,15 @@ defmodule BeamAgent.Session.ToolPolicy do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
       GenServer.call(pid, :handler)
     end
+  end
+
+  def permissions(session_id) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id), do: GenServer.call(pid, :permissions)
+  end
+
+  def revoke(session_id, permission_id) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id),
+         do: GenServer.call(pid, {:revoke, permission_id})
   end
 
   def set_policy(session_id, policy) when policy in [:auto, :allow, :ask, :deny] do
@@ -67,13 +77,14 @@ defmodule BeamAgent.Session.ToolPolicy do
        handler_monitor: monitor,
        approval_policy: approval_policy,
        tool_permissions: Map.new(Keyword.get(opts, :tool_permissions, %{})),
+       permissions: recovered_permissions(session_id),
        pending: %{}
      }}
   end
 
   @impl true
-  def handle_call({:authorize, tool, arguments, access}, from, state) do
-    case effective_decision(state, tool, access) do
+  def handle_call({:authorize, tool, arguments, access, resource}, from, state) do
+    case effective_decision(state, tool, access, resource) do
       :allow ->
         {:reply, :ok, state}
 
@@ -89,7 +100,8 @@ defmodule BeamAgent.Session.ToolPolicy do
           session_id: state.session_id,
           tool: tool,
           arguments: arguments,
-          access: access
+          access: access,
+          resource: resource
         }
 
         record(state, :tool_approval_requested, tool, arguments, %{
@@ -122,14 +134,25 @@ defmodule BeamAgent.Session.ToolPolicy do
 
       {%{from: waiting, caller_monitor: caller_monitor, request: request}, pending} ->
         Process.demonitor(caller_monitor, [:flush])
-        event = if decision == :allow_once, do: :tool_approval_granted, else: :tool_denied
+
+        event =
+          if decision in [:allow_once, :allow_always],
+            do: :tool_approval_granted,
+            else: :tool_denied
+
+        {state, permission_id} = maybe_grant_permission(state, request, decision)
 
         record(state, event, request.tool, request.arguments, %{
           "approval_id" => approval_id,
-          "reason" => if(decision == :allow_once, do: "approved_once", else: "user_denied")
+          "reason" => approval_reason(decision),
+          "permission_id" => permission_id
         })
 
-        reply = if decision == :allow_once, do: :ok, else: {:error, {:tool_denied, request.tool}}
+        reply =
+          if decision in [:allow_once, :allow_always],
+            do: :ok,
+            else: {:error, {:tool_denied, request.tool}}
+
         GenServer.reply(waiting, reply)
         {:reply, :ok, %{state | pending: pending}}
     end
@@ -147,6 +170,25 @@ defmodule BeamAgent.Session.ToolPolicy do
 
   def handle_call(:policy, _from, state), do: {:reply, {:ok, state.approval_policy}, state}
   def handle_call(:handler, _from, state), do: {:reply, {:ok, state.handler}, state}
+
+  def handle_call(:permissions, _from, state),
+    do: {:reply, {:ok, state.permissions |> Map.values() |> Enum.sort_by(& &1["id"])}, state}
+
+  def handle_call({:revoke, permission_id}, _from, state) do
+    case Map.pop(state.permissions, permission_id) do
+      {nil, _} ->
+        {:reply, {:error, :unknown_permission}, state}
+
+      {permission, permissions} ->
+        case EventLog.append(state.session_id, :permission_revoked, %{
+               "permission_id" => permission_id,
+               "resource" => permission["resource"]
+             }) do
+          {:ok, _} -> {:reply, :ok, %{state | permissions: permissions}}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+    end
+  end
 
   def handle_call({:set_policy, policy}, _from, state) do
     previous = state.approval_policy
@@ -195,10 +237,18 @@ defmodule BeamAgent.Session.ToolPolicy do
     end
   end
 
-  defp effective_decision(state, tool, access) do
-    Map.get_lazy(state.tool_permissions, tool, fn ->
-      default_decision(state.approval_policy, access)
-    end)
+  defp effective_decision(state, tool, access, resource) do
+    cond do
+      Enum.any?(state.permissions, fn {_id, permission} ->
+        permission["resource"] == stringify(resource)
+      end) ->
+        :allow
+
+      true ->
+        Map.get_lazy(state.tool_permissions, tool, fn ->
+          default_decision(state.approval_policy, access)
+        end)
+    end
   end
 
   defp default_decision(_policy, access) when access in [:read, :trusted, :delegate], do: :allow
@@ -267,4 +317,47 @@ defmodule BeamAgent.Session.ToolPolicy do
   defp approval_id do
     "approval-" <> (:crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false))
   end
+
+  defp maybe_grant_permission(state, _request, decision) when decision != :allow_always,
+    do: {state, nil}
+
+  defp maybe_grant_permission(state, request, :allow_always) do
+    permission_id =
+      "permission-" <> (:crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false))
+
+    permission = %{
+      "id" => permission_id,
+      "resource" => stringify(request.resource),
+      "tool" => request.tool,
+      "granted_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    {:ok, _} = EventLog.append(state.session_id, :permission_granted, permission)
+    {%{state | permissions: Map.put(state.permissions, permission_id, permission)}, permission_id}
+  end
+
+  defp approval_reason(:allow_once), do: "approved_once"
+  defp approval_reason(:allow_always), do: "approved_always"
+  defp approval_reason(:deny), do: "user_denied"
+
+  defp recovered_permissions(session_id) do
+    case EventLog.events(session_id) do
+      {:ok, events} ->
+        Enum.reduce(events, %{}, fn
+          %{"type" => "permission_granted", "data" => %{"id" => id} = permission}, acc ->
+            Map.put(acc, id, permission)
+
+          %{"type" => "permission_revoked", "data" => %{"permission_id" => id}}, acc ->
+            Map.delete(acc, id)
+
+          _, acc ->
+            acc
+        end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp stringify(resource), do: Map.new(resource, fn {key, value} -> {to_string(key), value} end)
 end

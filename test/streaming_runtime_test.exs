@@ -107,6 +107,7 @@ defmodule BeamAgent.StreamingRuntimeTest do
     {:ok, events} = BeamAgent.events(session_id)
     started = Enum.find(events, &(&1["type"] == "model_response_started"))
     finished = Enum.find(events, &(&1["type"] == "model_response_finished"))
+    outcome = Enum.find(events, &(&1["type"] == "model_outcome_recorded"))
 
     assert started["data"]["request_id"] =~ "model-request-"
     assert started["data"]["request_version"] == 1
@@ -115,6 +116,8 @@ defmodule BeamAgent.StreamingRuntimeTest do
     assert finished["data"]["request_id"] == started["data"]["request_id"]
     assert finished["data"]["response_id"] == started["data"]["response_id"]
     assert finished["data"]["usage"]["provider_usage"] == %{}
+    assert started["seq"] < finished["seq"]
+    assert finished["seq"] < outcome["seq"]
   end
 
   test "dead stream subscribers are removed by process monitoring", context do

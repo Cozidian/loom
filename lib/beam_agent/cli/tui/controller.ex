@@ -98,7 +98,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   def handle_cast({:decide, approval_id, decision}, state)
-      when decision in [:allow_once, :deny] do
+      when decision in [:allow_once, :allow_always, :deny] do
     case Runtime.respond_approval(state.runtime, approval_id, decision) do
       :ok -> :ok
       {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
@@ -274,6 +274,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
           "session   #{state.session_id}",
           "workspace #{state.config["workspace_root"]}",
           "approval  #{state.approval_policy}",
+          "routing   #{state.config["model_strategy"] || "manual"}",
           "project   #{state.project_id}",
           "goal      #{state.goal_id}",
           "snapshot  #{String.slice(status.context.fingerprint, 0, 12)}",
@@ -479,6 +480,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       compaction_threshold_percent: config["compaction_threshold_percent"] || 75,
       workspace_root: config["workspace_root"],
       approval_policy: Config.approval_policy_atom(config["approval_policy"]),
+      model_strategy: Config.model_strategy_atom(config["model_strategy"]),
       approval_handler: self(),
       model_endpoints: config["model_endpoints"] || []
     )

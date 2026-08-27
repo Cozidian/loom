@@ -2,7 +2,7 @@ defmodule BeamAgent.SessionSupervisor do
   @moduledoc "One supervision subtree for one durable session."
   use Supervisor
 
-  alias BeamAgent.{Agent, Names}
+  alias BeamAgent.{Agent, CapabilityEnvelope, Names}
 
   alias BeamAgent.Session.{
     ConversationContext,
@@ -35,34 +35,44 @@ defmodule BeamAgent.SessionSupervisor do
          {:ok, supervisor} <- Names.pid(:subagent_supervisor, parent_session_id) do
       child_id = Keyword.get_lazy(opts, :session_id, &BeamAgent.new_session_id/0)
 
-      child_opts =
-        opts
-        |> Keyword.put(:session_id, child_id)
-        |> Keyword.put(:parent_session_id, parent_session_id)
-        |> Keyword.put(:project_id, identity.project_id)
-        |> Keyword.put(:goal_id, identity.goal_id)
-        |> Keyword.put(:workspace_root, identity.workspace_root)
-        |> Keyword.put_new(:data_dir, identity.data_dir)
+      with {:ok, child_envelope} <- child_envelope(identity.capability_envelope, opts) do
+        child_opts =
+          opts
+          |> Keyword.put(:session_id, child_id)
+          |> Keyword.put(:parent_session_id, parent_session_id)
+          |> Keyword.put(:project_id, identity.project_id)
+          |> Keyword.put(:goal_id, identity.goal_id)
+          |> Keyword.put(:workspace_root, identity.workspace_root)
+          |> Keyword.put_new(:data_dir, identity.data_dir)
+          |> Keyword.put(:capability_envelope, child_envelope)
 
-      case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
-        {:ok, child_pid} ->
-          case EventLog.append(parent_session_id, :subagent_spawned, %{
-                 "child_session_id" => child_id
-               }) do
-            {:ok, _event} ->
-              {:ok, child_id}
+        case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
+          {:ok, child_pid} ->
+            case EventLog.append(parent_session_id, :subagent_spawned, %{
+                   "child_session_id" => child_id
+                 }) do
+              {:ok, _event} ->
+                {:ok, child_id}
 
-            {:error, reason} ->
-              Supervisor.stop(child_pid, :normal)
-              {:error, {:subagent_event_failed, reason}}
-          end
+              {:error, reason} ->
+                Supervisor.stop(child_pid, :normal)
+                {:error, {:subagent_event_failed, reason}}
+            end
 
-        {:error, {:already_started, _pid}} ->
-          {:error, {:session_already_started, child_id}}
+          {:error, {:already_started, _pid}} ->
+            {:error, {:session_already_started, child_id}}
 
-        {:error, reason} ->
-          {:error, reason}
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
+    end
+  end
+
+  defp child_envelope(parent, opts) do
+    case Keyword.get(opts, :capabilities) do
+      nil -> {:ok, parent}
+      requested -> CapabilityEnvelope.restrict(parent, requested)
     end
   end
 

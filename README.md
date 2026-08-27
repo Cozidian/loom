@@ -15,7 +15,11 @@ It includes:
 - a cancellable multi-step tool-calling loop without an arbitrary step ceiling;
 - an immutable, canonical workspace per session;
 - supervised project instructions and lazily activated `SKILL.md` workflows;
-- session-owned auto/ask/deny policy with monitored one-shot approvals;
+- immutable goal/worker capability envelopes and durable scoped permissions;
+- session-owned auto/ask/deny policy with once/always approvals and revocation;
+- goal-supervised local stdio MCP servers with namespaced tools;
+- per-request Auto model routing across all configured profiles;
+- content-free model/task outcomes with later verification attachment;
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
@@ -96,7 +100,8 @@ streaming response, tool activity, and approval requests visible without
 scrolling the shell. Press `Ctrl+P` for the command palette, `Ctrl+O` to add a
 line in the composer, `Ctrl+T` to expand tool results, `Page Up`/`Page Down` to
 move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
-idle). Approval dialogs default to deny and require an explicit one-shot choice.
+idle). Approval dialogs default to deny and offer explicit once or durable
+scoped-always choices.
 
 The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`,
 `/auto`, `/compact`, `/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama,
@@ -132,6 +137,11 @@ explicitly requests `view: :internal`.
 including provider/model, locality, health, and declared capabilities. Use
 `/models refresh` to run supervised provider health checks, or `/models PROFILE`
 to refresh one endpoint.
+The default routing strategy is `auto`: orchestration and difficult work may
+stay on the selected cloud profile while simple child work can route to an
+available local Ollama profile. Use `--model-strategy manual` for the selected
+profile only or `--model-strategy local_only` to prohibit remote models. Each
+choice appears as a `Model routed` information event in the chat.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
 
@@ -177,8 +187,11 @@ Paths must be workspace-relative. Canonical path and symlink checks reject
 escapes outside the root. Tool requests, approvals, denials, typed failures, and
 results are appended to the session JSONL log.
 
-The default risky-tool policy is `ask`, producing an interactive, one-shot
-approval before file mutations or commands execute. It can be configured during
+The default risky-tool policy is `ask`, producing an interactive once-or-always
+approval before file mutations or commands execute. Durable grants are scoped
+to the concrete tool/resource request, can be listed with
+`BeamAgent.permissions/1`, and revoked with `BeamAgent.revoke_permission/2`.
+It can be configured during
 setup or overridden for one run:
 
 ```sh
@@ -195,6 +208,16 @@ checks, or command sandboxing. Command confinement currently has a macOS
 Seatbelt backend; other platforms fail closed with `sandbox_unavailable` until
 an enforcing backend is added. Run `./beam_agent tools` to inspect the active
 tool catalog.
+
+Local MCP servers can be attached to a running goal with
+`BeamAgent.start_mcp_server/2`. Discovered tools use
+`mcp__SERVER__TOOL` names and follow the same capabilities, approvals, timeout,
+and cancellation rules as native tools. An optional `env` map supplies child
+variable names mapped to host environment-variable names, so credential values
+do not enter runtime configuration or events. Model and task outcome records are
+available through `BeamAgent.outcomes/2`; verification is attached separately
+with `BeamAgent.attach_verification/3`, and `BeamAgent.export_outcomes/1`
+returns a redacted JSONL export without prompts or model content.
 
 ## Project instructions and skills
 

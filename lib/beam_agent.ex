@@ -9,9 +9,12 @@ defmodule BeamAgent do
 
   alias BeamAgent.{
     Agent,
+    CapabilityEnvelope,
     Goal,
     ModelRegistry,
+    MCP.Registry,
     Names,
+    OutcomeStore,
     Project,
     ProjectRootSupervisor,
     ProjectSupervisor,
@@ -80,6 +83,9 @@ defmodule BeamAgent do
         |> Keyword.put(:project_id, project_id)
         |> Keyword.put(:workspace_root, project.workspace_root)
         |> Keyword.put(:data_dir, data_dir)
+        |> Keyword.put_new_lazy(:capability_envelope, fn ->
+          CapabilityEnvelope.root(Keyword.get(opts, :capabilities, :all))
+        end)
 
       case ProjectSupervisor.start_goal(project_id, goal_opts) do
         {:ok, _pid} -> {:ok, goal_id}
@@ -143,6 +149,20 @@ defmodule BeamAgent do
   def refresh_models(project_id, endpoint_id \\ :all),
     do: ModelRegistry.refresh_health(project_id, endpoint_id)
 
+  def route_model(project_id, input), do: BeamAgent.ModelRouter.route(project_id, input)
+  def outcomes(project_id, opts \\ []), do: OutcomeStore.list(project_id, opts)
+
+  def attach_verification(project_id, outcome_id, result),
+    do: OutcomeStore.attach_verification(project_id, outcome_id, result)
+
+  def export_outcomes(project_id), do: OutcomeStore.export(project_id)
+  def outcome_log_path(project_id), do: OutcomeStore.path(project_id)
+
+  def start_mcp_server(goal_id, spec), do: Registry.start_server(goal_id, spec)
+  def stop_mcp_server(goal_id, name), do: Registry.stop_server(goal_id, name)
+  def mcp_servers(goal_id), do: Registry.servers(goal_id)
+  def mcp_tools(goal_id), do: Registry.tool_schemas(goal_id)
+
   def respond_approval(session_id, approval_id, decision),
     do: ToolPolicy.respond(session_id, approval_id, decision)
 
@@ -150,6 +170,10 @@ defmodule BeamAgent do
   def approval_handler(session_id), do: ToolPolicy.handler(session_id)
   def approval_policy(session_id), do: ToolPolicy.policy(session_id)
   def set_approval_policy(session_id, policy), do: ToolPolicy.set_policy(session_id, policy)
+  def permissions(session_id), do: ToolPolicy.permissions(session_id)
+
+  def revoke_permission(session_id, permission_id),
+    do: ToolPolicy.revoke(session_id, permission_id)
 
   def events(session_id), do: EventLog.events(session_id)
   def context_snapshot(session_id), do: Context.snapshot(session_id)
@@ -231,7 +255,15 @@ defmodule BeamAgent do
 
   defp project_options(opts, workspace_root) do
     opts
-    |> Keyword.take([:model_endpoints, :provider, :provider_options, :provider_profile])
+    |> Keyword.take([
+      :model_endpoints,
+      :provider,
+      :provider_options,
+      :provider_profile,
+      :data_dir,
+      :outcome_telemetry,
+      :outcome_retention
+    ])
     |> Keyword.put(:workspace_root, workspace_root)
   end
 

@@ -3,7 +3,8 @@ defmodule BeamAgent.GoalSupervisor do
   use Supervisor
 
   alias BeamAgent.{Goal, Names, SessionSupervisor}
-  alias BeamAgent.Goal.EventHub
+  alias BeamAgent.Goal.{EventHub, ResourceSupervisor}
+  alias BeamAgent.MCP.Registry
 
   def start_link(opts) do
     goal_id = Keyword.fetch!(opts, :goal_id)
@@ -27,6 +28,9 @@ defmodule BeamAgent.GoalSupervisor do
       {SessionSupervisor, opts}
       |> Supervisor.child_spec(restart: :permanent)
 
-    Supervisor.init([{Goal, opts}, {EventHub, opts}, session], strategy: :rest_for_one)
+    Supervisor.init(
+      [{Goal, opts}, {EventHub, opts}, {ResourceSupervisor, opts}, {Registry, opts}, session],
+      strategy: :rest_for_one
+    )
   end
 end

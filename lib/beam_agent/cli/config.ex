@@ -3,10 +3,11 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 7
+  @version 8
   @profile_keys ["provider", "model", "base_url", "api_key_env"]
   @global_keys [
     "approval_policy",
+    "model_strategy",
     "data_dir",
     "context_window_tokens",
     "compaction_threshold_percent"
@@ -30,6 +31,7 @@ defmodule BeamAgent.CLI.Config do
         }
       },
       "approval_policy" => "ask",
+      "model_strategy" => "auto",
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "context_window_tokens" => 32_000,
       "compaction_threshold_percent" => 75
@@ -171,6 +173,7 @@ defmodule BeamAgent.CLI.Config do
     |> maybe_put("base_url", opts[:base_url])
     |> maybe_put("api_key_env", opts[:api_key_env])
     |> maybe_put("approval_policy", opts[:approval])
+    |> maybe_put("model_strategy", opts[:model_strategy])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
     |> maybe_put("context_window_tokens", opts[:context_window])
     |> maybe_put("compaction_threshold_percent", opts[:compact_at])
@@ -183,6 +186,10 @@ defmodule BeamAgent.CLI.Config do
   def approval_policy_atom(policy) when policy in ["auto", "allow"], do: :auto
   def approval_policy_atom("ask"), do: :ask
   def approval_policy_atom("deny"), do: :deny
+
+  def model_strategy_atom("auto"), do: :auto
+  def model_strategy_atom("manual"), do: :manual
+  def model_strategy_atom("local_only"), do: :local_only
 
   def provider_options(config) do
     [
@@ -262,7 +269,11 @@ defmodule BeamAgent.CLI.Config do
   end
 
   defp migrate(%{"version" => 6} = config) do
-    {:ok, config |> Map.put("version", @version) |> Map.delete("timeout_ms")}
+    config |> Map.put("version", 7) |> Map.delete("timeout_ms") |> migrate()
+  end
+
+  defp migrate(%{"version" => 7} = config) do
+    {:ok, config |> Map.put("version", @version) |> Map.put_new("model_strategy", "auto")}
   end
 
   defp migrate(config), do: {:ok, config}
@@ -317,7 +328,8 @@ defmodule BeamAgent.CLI.Config do
              50,
              95
            ),
-         :ok <- validate_approval_policy(config["approval_policy"]) do
+         :ok <- validate_approval_policy(config["approval_policy"]),
+         :ok <- validate_model_strategy(config["model_strategy"]) do
       :ok
     end
   end
@@ -378,6 +390,12 @@ defmodule BeamAgent.CLI.Config do
     do: :ok
 
   defp validate_approval_policy(_policy), do: {:error, {:invalid_config_value, "approval_policy"}}
+
+  defp validate_model_strategy(strategy) when strategy in ["auto", "manual", "local_only"],
+    do: :ok
+
+  defp validate_model_strategy(_strategy),
+    do: {:error, {:invalid_config_value, "model_strategy"}}
 
   defp maybe_reset_provider_defaults(config, nil), do: config
 

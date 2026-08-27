@@ -150,9 +150,18 @@ func TestRuntimeEventsRenderGoalAndSubagentActivityWithoutNilAssistant(t *testin
 		"session-child",
 		false,
 	))
+	m.applyStream(runtimeEvent(
+		"task_outcome_recorded",
+		map[string]any{
+			"status":       "succeeded",
+			"verification": map[string]any{"status": "unverified"},
+		},
+		"session-root",
+		true,
+	))
 
-	if len(m.entries) != 3 {
-		t.Fatalf("expected two info entries, one answer, and no nil assistant, got %#v", m.entries)
+	if len(m.entries) != 4 {
+		t.Fatalf("expected three info entries, one answer, and no nil assistant, got %#v", m.entries)
 	}
 	if m.entries[0].Kind != "info" || m.entries[1].Kind != "assistant" || m.entries[2].Kind != "info" {
 		t.Fatalf("expected runtime info entries, got %#v", m.entries)
@@ -165,6 +174,12 @@ func TestRuntimeEventsRenderGoalAndSubagentActivityWithoutNilAssistant(t *testin
 	}
 	if bytes.Contains([]byte(m.View().Content), []byte("Subagent completed · session root")) {
 		t.Fatal("the root turn must not render as a completed subagent")
+	}
+	if m.entries[2].Content != "Subagent default · session child · ollama/qwen3:8b" {
+		t.Fatal("the inherited child model must be labeled as a default")
+	}
+	if m.entries[3].Content != "Task outcome · succeeded · unverified" {
+		t.Fatal("task outcomes must expose their verification state")
 	}
 }
 
@@ -210,6 +225,56 @@ func TestApprovalStartsFailClosed(t *testing.T) {
 
 	if m.approval == nil || m.approval.Choice != "deny" {
 		t.Fatalf("approval must default to deny: %#v", m.approval)
+	}
+}
+
+func TestApprovalCanPersistAScopedGrant(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-1",
+			"tool":        "run_command",
+			"access":      "execute",
+		},
+	})
+
+	next, _ := m.updateApproval("right")
+	next, _ = next.(model).updateApproval("right")
+	selected := next.(model)
+	if selected.approval.Choice != "allow_always" {
+		t.Fatalf("expected allow_always, got %q", selected.approval.Choice)
+	}
+
+	_, cmd := selected.updateApproval("enter")
+	cmd()
+	reader := newProtocol(&wire, &bytes.Buffer{})
+	action, err := reader.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Decision != "allow_always" {
+		t.Fatalf("expected durable approval action, got %#v", action)
+	}
+}
+
+func TestRoutingAndResourceEventsRenderInline(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyStream(runtimeEvent("model_route_selected", map[string]any{
+		"selected_endpoint_id": "ollama",
+		"reason":               "local free endpoint preferred for simple work",
+	}, "session-root", true))
+	m.applyStream(runtimeEvent("mcp_server_started", map[string]any{
+		"server":     "repo",
+		"tool_count": float64(3),
+	}, "session-root", true))
+
+	if len(m.entries) != 2 || m.entries[0].Kind != "info" || m.entries[1].Kind != "info" {
+		t.Fatalf("expected routing and resource info entries, got %#v", m.entries)
+	}
+	if m.entries[0].Content != "Model routed · ollama · local free endpoint preferred for simple work" {
+		t.Fatalf("unexpected routing info: %q", m.entries[0].Content)
 	}
 }
 

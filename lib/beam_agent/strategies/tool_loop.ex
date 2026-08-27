@@ -2,7 +2,17 @@ defmodule BeamAgent.Strategies.ToolLoop do
   @moduledoc "Default sequential, cancellable, multi-step model/tool strategy."
   @behaviour BeamAgent.AgentStrategy
 
-  alias BeamAgent.{CapabilityCatalog, ModelInvocation, ModelRequest, ToolRunner}
+  alias BeamAgent.{
+    CapabilityCatalog,
+    MCP.Registry,
+    ModelEndpoint,
+    ModelInvocation,
+    ModelRequest,
+    ModelRouter,
+    OutcomeStore,
+    ToolRunner
+  }
+
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
   @repeated_tool_result_limit 3
@@ -35,19 +45,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "tools_enabled" => tools_enabled?
            }),
          {:ok, project_context} <- Context.snapshot(context.session_id),
-         tool_schemas <- if(tools_enabled?, do: CapabilityCatalog.tool_schemas(), else: []),
+         tool_schemas <-
+           if(tools_enabled?,
+             do: CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id),
+             else: []
+           ),
          system_prompt <- recovery_prompt(project_context.system_prompt, tools_enabled?),
+         {:ok, route} <- route_model(context, tool_schemas, turn, step_number),
          {:ok, messages, _context_stats} <-
            ConversationContext.messages(
              context.session_id,
-             context.provider_module,
-             context.provider_options,
+             provider_module(route, context),
+             provider_options(route, context),
              system_prompt,
              tool_schemas
            ),
          {:ok, response} <-
            call_provider(
              context,
+             route,
              messages,
              system_prompt,
              tool_schemas,
@@ -153,22 +169,35 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp call_provider(context, messages, system_prompt, tool_schemas, turn, step) do
+  defp call_provider(
+         _context,
+         %{endpoint: nil, deterministic_answer: answer},
+         _messages,
+         _system_prompt,
+         _tool_schemas,
+         _turn,
+         _step
+       ),
+       do: {:ok, %{content: answer, tool_calls: []}}
+
+  defp call_provider(context, route, messages, system_prompt, tool_schemas, turn, step) do
+    endpoint = route.endpoint
+
     options =
-      context.provider_options
+      provider_options(route, context)
       |> Keyword.put(:session_id, context.session_id)
       |> Keyword.put(:parent_session_id, context.parent_session_id)
       |> Keyword.put(:system_prompt, system_prompt)
 
     with {:ok, request} <-
            ModelRequest.new(
-             endpoint_id: context.provider_profile,
-             provider: context.provider,
-             provider_module: context.provider_module,
+             endpoint_id: endpoint.id,
+             provider: endpoint.provider,
+             provider_module: endpoint.provider_module,
              model: options[:model],
              messages: messages,
              tools: tool_schemas,
-             timeout: Keyword.get(context.provider_options, :invocation_timeout_ms, :infinity),
+             timeout: Keyword.get(options, :invocation_timeout_ms, :infinity),
              options: options,
              metadata: %{session_id: context.session_id, turn: turn, step: step}
            ),
@@ -176,7 +205,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
            StreamHub.begin_response(context.session_id, invocation_metadata(request, turn, step)) do
       emit = &StreamHub.emit(context.session_id, response_id, &1)
 
+      started = System.monotonic_time(:millisecond)
       result = ModelInvocation.invoke(request, emit)
+      latency = System.monotonic_time(:millisecond) - started
 
       case result do
         {:ok, response} ->
@@ -186,14 +217,98 @@ defmodule BeamAgent.Strategies.ToolLoop do
           }
 
           case StreamHub.finish_response(context.session_id, response_id, finish_metadata) do
-            :ok -> {:ok, response}
-            {:error, reason} -> {:error, reason}
+            :ok ->
+              record_model_outcome(
+                context,
+                route,
+                request,
+                response.usage,
+                latency,
+                :succeeded,
+                nil,
+                turn,
+                step
+              )
+
+              {:ok, response}
+
+            {:error, reason} ->
+              record_model_outcome(
+                context,
+                route,
+                request,
+                response.usage,
+                latency,
+                :failed,
+                reason,
+                turn,
+                step
+              )
+
+              {:error, reason}
           end
 
         {:error, error} ->
           _ = StreamHub.fail_response(context.session_id, response_id, error)
+
+          record_model_outcome(
+            context,
+            route,
+            request,
+            %{},
+            latency,
+            :failed,
+            error.cause,
+            turn,
+            step
+          )
+
           {:error, error.cause}
       end
+    end
+  end
+
+  defp record_model_outcome(
+         context,
+         route,
+         request,
+         usage,
+         latency,
+         status,
+         failure,
+         turn,
+         step
+       ) do
+    attrs = %{
+      kind: :model,
+      goal_id: context.goal_id,
+      session_id: context.session_id,
+      turn: turn,
+      step: step,
+      task_type: route.inputs.task_type,
+      language: route.inputs.language,
+      endpoint_id: request.endpoint_id,
+      provider: request.provider,
+      model: request.model,
+      latency_ms: latency,
+      usage: usage,
+      estimated_cost: if(route.endpoint.claims.cost_hint == :free, do: 0, else: nil),
+      retries: 0,
+      status: status,
+      failure: failure,
+      route_decision_id: route.decision_id
+    }
+
+    case OutcomeStore.record(context.project_id, attrs) do
+      {:ok, %{id: id}} ->
+        EventLog.append(context.session_id, :model_outcome_recorded, %{
+          "outcome_id" => id,
+          "status" => status,
+          "latency_ms" => latency
+        })
+
+      _other ->
+        :ok
     end
   end
 
@@ -209,6 +324,89 @@ defmodule BeamAgent.Strategies.ToolLoop do
       "stream" => request.stream,
       "timeout" => if(request.timeout == :infinity, do: "infinity", else: request.timeout)
     }
+  end
+
+  defp route_model(context, tool_schemas, turn, step) do
+    prompt = latest_user_prompt(context.session_id)
+
+    input = %{
+      prompt: prompt,
+      workspace_root: context.workspace_root,
+      strategy: context.model_strategy,
+      preferred_endpoint_id: context.provider_profile,
+      preferred_provider: context.provider,
+      tools: tool_schemas,
+      context_tokens: estimated_context_tokens(context.session_id),
+      latency_preference: :interactive,
+      cost_preference: :prefer_low,
+      privacy_requirement:
+        if(context.model_strategy == :local_only, do: :local, else: :provider_allowed),
+      capability_envelope: context.capability_envelope,
+      fallback_endpoint: current_endpoint(context)
+    }
+
+    with {:ok, route} <- ModelRouter.route(context.project_id, input),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :model_route_selected, %{
+             "decision_id" => route.decision_id,
+             "turn" => turn,
+             "step" => step,
+             "strategy" => inspect(context.model_strategy),
+             "candidate_endpoint_ids" => route.candidate_endpoint_ids,
+             "candidates" => route.candidates,
+             "selected_endpoint_id" => route.selected_endpoint_id,
+             "inputs" => route.inputs,
+             "reason" => route.reason
+           }) do
+      {:ok, route}
+    end
+  end
+
+  defp provider_module(%{endpoint: nil}, context), do: context.provider_module
+  defp provider_module(%{endpoint: endpoint}, _context), do: endpoint.provider_module
+  defp provider_options(%{endpoint: nil}, context), do: context.provider_options
+
+  defp provider_options(%{endpoint: _endpoint}, %{model_strategy: :manual} = context),
+    do: context.provider_options
+
+  defp provider_options(%{endpoint: endpoint}, _context),
+    do: ModelEndpoint.invocation_options(endpoint)
+
+  defp latest_user_prompt(session_id) do
+    {:ok, events} = EventLog.events(session_id)
+
+    events
+    |> Enum.reverse()
+    |> Enum.find_value("", fn event ->
+      if event["type"] == "user_message", do: event["data"]["content"]
+    end)
+  end
+
+  defp estimated_context_tokens(session_id) do
+    {:ok, events} = EventLog.events(session_id)
+
+    characters =
+      Enum.reduce(events, 0, fn event, total ->
+        data = event["data"] || %{}
+        content = data["content"]
+        total + if(is_binary(content), do: String.length(content), else: 0)
+      end)
+
+    div(characters + 3, 4)
+  end
+
+  defp current_endpoint(context) do
+    {:ok, endpoint} =
+      ModelEndpoint.new(%{
+        id: context.provider_profile || to_string(context.provider),
+        provider: context.provider,
+        provider_module: context.provider_module,
+        model: context.provider_options[:model],
+        base_url: context.provider_options[:base_url],
+        api_key_env: context.provider_options[:api_key_env]
+      })
+
+    endpoint
   end
 
   defp validate_response(%{content: content, tool_calls: calls})
@@ -312,8 +510,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
       {:ok, module} ->
         ToolRunner.execute(module, call.arguments, tool_context(context, causation_id))
 
-      {:error, reason} ->
-        {:error, reason}
+      {:error, _reason} ->
+        Registry.execute(
+          context.goal_id,
+          call.name,
+          call.arguments,
+          tool_context(context, causation_id)
+        )
     end
   end
 
@@ -334,6 +537,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :approval_handler,
       :context_window_tokens,
       :compaction_threshold_percent,
+      :capability_envelope,
+      :model_strategy,
       :runtime_command
     ])
     |> Map.put(:causation_id, causation_id)
@@ -377,6 +582,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "turn" => turn,
              "reason" => "completed"
            }) do
+      record_task_outcome(context, turn, :succeeded, nil)
       {:ok, answer}
     end
   end
@@ -389,7 +595,36 @@ defmodule BeamAgent.Strategies.ToolLoop do
         "error" => inspect(reason)
       })
 
+    record_task_outcome(context, turn, :failed, reason)
     {:error, reason}
+  end
+
+  defp record_task_outcome(context, turn, status, failure) do
+    prompt = latest_user_prompt(context.session_id)
+    classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
+
+    attrs = %{
+      kind: :task,
+      goal_id: context.goal_id,
+      session_id: context.session_id,
+      turn: turn,
+      task_type: classification.task_type,
+      language: classification.language,
+      status: status,
+      failure: failure
+    }
+
+    case OutcomeStore.record(context.project_id, attrs) do
+      {:ok, %{id: id, verification: verification}} ->
+        EventLog.append(context.session_id, :task_outcome_recorded, %{
+          "outcome_id" => id,
+          "status" => status,
+          "verification" => verification
+        })
+
+      _other ->
+        :ok
+    end
   end
 
   defp count_events(session_id, type) do

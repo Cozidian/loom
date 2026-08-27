@@ -478,10 +478,10 @@ func (m model) updatePalette(key string) (tea.Model, tea.Cmd) {
 func (m model) updateApproval(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "left", "n":
-		m.approval.Choice = "deny"
+		m.approval.Choice = previousApprovalChoice(m.approval.Choice)
 		return m, nil
 	case "right", "y":
-		m.approval.Choice = "allow_once"
+		m.approval.Choice = nextApprovalChoice(m.approval.Choice)
 		return m, nil
 	case "esc":
 		return m.resolveApproval("deny")
@@ -524,6 +524,8 @@ func (m *model) applyBackend(message packet) {
 		m.approval = nil
 		if message.Decision == "allow_once" {
 			m.notice, m.noticeTone = "Approved once", "success"
+		} else if message.Decision == "allow_always" {
+			m.notice, m.noticeTone = "Scoped permission saved", "success"
 		} else {
 			m.notice, m.noticeTone = "Tool denied", "warning"
 		}
@@ -659,9 +661,9 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		if model == "" {
 			model = "built-in"
 		}
-		label := "Model ready"
+		label := "Default model"
 		if !root {
-			label = "Subagent model · " + shortSession(sessionID)
+			label = "Subagent default · " + shortSession(sessionID)
 		}
 		result := label + " · " + asString(data["provider"]) + "/" + model
 		if asBool(data["recovered"]) {
@@ -680,8 +682,42 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		return "Approval policy · " + asString(data["from"]) + " → " + asString(data["to"])
 	case "tool_loop_stalled":
 		return "Repeated tool result ×" + asString(data["repetitions"]) + " · switching to answer-only"
+	case "model_route_selected":
+		selected := asString(data["selected_endpoint_id"])
+		if selected == "" {
+			selected = "deterministic"
+		}
+		return "Model routed · " + selected + " · " + asString(data["reason"])
+	case "mcp_server_started":
+		return "MCP ready · " + asString(data["server"]) + " · " + asString(data["tool_count"]) + " tools"
+	case "mcp_server_restarted":
+		return "MCP restarted · " + asString(data["server"]) + " · attempt " + asString(data["attempt"])
+	case "mcp_server_stopped":
+		return "MCP stopped · " + asString(data["server"])
+	case "mcp_server_failed", "mcp_server_unavailable":
+		return "MCP unavailable · " + asString(data["server"])
+	case "permission_granted":
+		return "Scoped permission saved · " + asString(data["tool"])
+	case "permission_revoked":
+		return "Scoped permission revoked"
+	case "capability_denied":
+		return "Capability denied · " + asString(data["reason"])
+	case "model_outcome_recorded":
+		return "Model outcome · " + asString(data["status"]) + " · " + asString(data["latency_ms"]) + " ms"
+	case "task_outcome_recorded":
+		result := "Task outcome · " + asString(data["status"])
+		if verification := verificationStatus(data); verification != "" {
+			result += " · " + verification
+		}
+		return result
+	case "verification_attached":
+		return "Verification · " + verificationStatus(data)
 	}
 	return ""
+}
+
+func verificationStatus(data map[string]any) string {
+	return asString(asMap(data["verification"])["status"])
 }
 
 func runtimeToolID(sessionID, toolCallID string) string {
@@ -796,11 +832,36 @@ func (m model) renderApproval() string {
 	args, _ := json.Marshal(m.approval.Arguments)
 	deny := "[ Deny ]"
 	allow := "  Allow once  "
+	always := "  Allow always  "
 	if m.approval.Choice == "allow_once" {
 		deny, allow = "  Deny  ", "[ Allow once ]"
+	} else if m.approval.Choice == "allow_always" {
+		deny, always = "  Deny  ", "[ Allow always ]"
 	}
-	content := fmt.Sprintf("Tool      %s\nAccess    %s\nArguments %s\n\n%s     %s\n\n←/→ choose · enter confirm · esc deny", m.approval.Tool, m.approval.Access, args, deny, allow)
+	content := fmt.Sprintf("Tool      %s\nAccess    %s\nArguments %s\n\n%s     %s     %s\n\n←/→ choose · enter confirm · esc deny", m.approval.Tool, m.approval.Access, args, deny, allow, always)
 	return m.modal("Approval required", content, yellow)
+}
+
+func nextApprovalChoice(choice string) string {
+	switch choice {
+	case "deny":
+		return "allow_once"
+	case "allow_once":
+		return "allow_always"
+	default:
+		return "deny"
+	}
+}
+
+func previousApprovalChoice(choice string) string {
+	switch choice {
+	case "deny":
+		return "allow_always"
+	case "allow_always":
+		return "allow_once"
+	default:
+		return "deny"
+	}
 }
 
 func (m model) renderPanel() string {

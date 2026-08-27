@@ -57,6 +57,20 @@ defmodule BeamAgent.Runtime do
 
   def models(client), do: Client.models(client)
   def refresh_models(client, endpoint_id \\ :all), do: Client.refresh_models(client, endpoint_id)
+  def permissions(client), do: Client.permissions(client)
+
+  def revoke_permission(client, permission_id),
+    do: Client.revoke_permission(client, permission_id)
+
+  def mcp_servers(client), do: Client.mcp_servers(client)
+  def start_mcp_server(client, spec), do: Client.start_mcp_server(client, spec)
+  def stop_mcp_server(client, name), do: Client.stop_mcp_server(client, name)
+  def outcomes(client, opts \\ []), do: Client.outcomes(client, opts)
+
+  def attach_verification(client, outcome_id, result),
+    do: Client.attach_verification(client, outcome_id, result)
+
+  def export_outcomes(client), do: Client.export_outcomes(client)
 
   def run(client, prompt, timeout, approval_fun, event_fun \\ fn _event -> :ok end)
       when is_pid(client) and is_function(approval_fun, 1) and is_function(event_fun, 1) do
@@ -135,6 +149,7 @@ defmodule BeamAgent.Runtime do
   defp approval_decision(approval_fun, request) do
     case approval_fun.(request) do
       :allow_once -> :allow_once
+      :allow_always -> :allow_always
       _decision -> :deny
     end
   rescue

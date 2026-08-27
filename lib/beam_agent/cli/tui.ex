@@ -176,7 +176,7 @@ defmodule BeamAgent.CLI.TUI do
          %{"type" => "approval", "approval_id" => approval_id, "decision" => decision},
          controller
        )
-       when decision in ["allow_once", "deny"] do
+       when decision in ["allow_once", "allow_always", "deny"] do
     Controller.decide(controller, approval_id, String.to_existing_atom(decision))
     :ok
   end
@@ -316,7 +316,7 @@ defmodule BeamAgent.CLI.TUI do
          scope: %{root?: true}
        }) do
     recovered = if data["recovered"], do: " · recovered", else: ""
-    "Model ready · #{data["provider"]}/#{data["model"] || "built-in"}#{recovered}"
+    "Default model · #{data["provider"]}/#{data["model"] || "built-in"}#{recovered}"
   end
 
   defp info_entry(%{
@@ -329,7 +329,7 @@ defmodule BeamAgent.CLI.TUI do
          scope: %{root?: false, session_id: session_id}
        }),
        do:
-         "Subagent model · #{short_id(session_id)} · #{data["provider"]}/#{data["model"] || "built-in"}"
+         "Subagent default · #{short_id(session_id)} · #{data["provider"]}/#{data["model"] || "built-in"}"
 
   defp info_entry(%{
          payload: %{type: "turn_finished", data: data},
@@ -349,7 +349,22 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: "tool_loop_stalled", data: data}}),
     do: "Repeated tool result ×#{data["repetitions"]} · switching to answer-only"
 
+  defp info_entry(%{payload: %{type: "task_outcome_recorded", data: data}}),
+    do: outcome_label("Task outcome", data)
+
+  defp info_entry(%{payload: %{type: "verification_attached", data: data}}),
+    do: outcome_label("Verification", data)
+
   defp info_entry(_event), do: nil
+
+  defp outcome_label(label, data) do
+    status = data["status"] || get_in(data, ["verification", "status"])
+    verification = get_in(data, ["verification", "status"])
+
+    [label, status, if(label == "Task outcome", do: verification)]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" · ")
+  end
 
   defp tool_id(session_id, tool_call_id), do: "#{session_id}:#{tool_call_id}"
 

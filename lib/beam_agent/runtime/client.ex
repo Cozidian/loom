@@ -32,6 +32,24 @@ defmodule BeamAgent.Runtime.Client do
   def refresh_models(client, endpoint_id),
     do: GenServer.call(client, {:refresh_models, endpoint_id})
 
+  def permissions(client), do: GenServer.call(client, :permissions)
+
+  def revoke_permission(client, permission_id),
+    do: GenServer.call(client, {:revoke_permission, permission_id})
+
+  def mcp_servers(client), do: GenServer.call(client, :mcp_servers)
+
+  def start_mcp_server(client, spec),
+    do: GenServer.call(client, {:start_mcp_server, spec}, 31_000)
+
+  def stop_mcp_server(client, name), do: GenServer.call(client, {:stop_mcp_server, name})
+  def outcomes(client, opts), do: GenServer.call(client, {:outcomes, opts})
+
+  def attach_verification(client, outcome_id, result),
+    do: GenServer.call(client, {:attach_verification, outcome_id, result})
+
+  def export_outcomes(client), do: GenServer.call(client, :export_outcomes)
+
   @impl true
   def init(opts) do
     subscriber = Keyword.fetch!(opts, :subscriber)
@@ -106,7 +124,7 @@ defmodule BeamAgent.Runtime.Client do
   end
 
   def handle_call({:respond_approval, approval_id, decision}, _from, state)
-      when decision in [:allow_once, :deny] do
+      when decision in [:allow_once, :allow_always, :deny] do
     session_id = Map.get(state.pending_approvals, approval_id, state.session_id)
 
     case BeamAgent.respond_approval(session_id, approval_id, decision) do
@@ -189,6 +207,30 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call({:refresh_models, endpoint_id}, _from, state),
     do: {:reply, BeamAgent.refresh_models(state.project_id, endpoint_id), state}
+
+  def handle_call(:permissions, _from, state),
+    do: {:reply, BeamAgent.permissions(state.session_id), state}
+
+  def handle_call({:revoke_permission, id}, _from, state),
+    do: {:reply, BeamAgent.revoke_permission(state.session_id, id), state}
+
+  def handle_call(:mcp_servers, _from, state),
+    do: {:reply, BeamAgent.mcp_servers(state.goal_id), state}
+
+  def handle_call({:start_mcp_server, spec}, _from, state),
+    do: {:reply, BeamAgent.start_mcp_server(state.goal_id, spec), state}
+
+  def handle_call({:stop_mcp_server, name}, _from, state),
+    do: {:reply, BeamAgent.stop_mcp_server(state.goal_id, name), state}
+
+  def handle_call({:outcomes, opts}, _from, state),
+    do: {:reply, BeamAgent.outcomes(state.project_id, opts), state}
+
+  def handle_call({:attach_verification, id, result}, _from, state),
+    do: {:reply, BeamAgent.attach_verification(state.project_id, id, result), state}
+
+  def handle_call(:export_outcomes, _from, state),
+    do: {:reply, BeamAgent.export_outcomes(state.project_id), state}
 
   @impl true
   def handle_info({:beam_agent_runtime_event, event}, state) do

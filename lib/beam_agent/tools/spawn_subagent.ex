@@ -46,6 +46,8 @@ defmodule BeamAgent.Tools.SpawnSubagent do
       approval_handler: approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent,
+      capability_envelope: context.capability_envelope,
+      model_strategy: context.model_strategy,
       correlation_id: context.runtime_command.correlation_id,
       causation_id: context.causation_id
     ]

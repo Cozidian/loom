@@ -62,6 +62,10 @@ defmodule BeamAgent.ModelEndpoint do
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end
 
+  def invocation_options(%__MODULE__{} = endpoint) do
+    health_options(endpoint)
+  end
+
   def same_configuration?(%__MODULE__{} = left, %__MODULE__{} = right) do
     Map.take(left, [:provider, :provider_module, :model, :transport, :credential, :claims]) ==
       Map.take(right, [:provider, :provider_module, :model, :transport, :credential, :claims])

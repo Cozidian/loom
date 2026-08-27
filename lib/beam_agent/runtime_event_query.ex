@@ -1,7 +1,7 @@
 defmodule BeamAgent.RuntimeEventQuery do
   @moduledoc "Validated filters for inspecting a goal's public runtime-event projection."
 
-  @categories ~w(lifecycle command tool model context policy runtime)a
+  @categories ~w(lifecycle command tool model context policy resource routing outcome runtime)a
   @default_limit 24
   @max_limit 100
 
@@ -64,7 +64,7 @@ defmodule BeamAgent.RuntimeEventQuery do
 
   def usage do
     [
-      "/events [category=tool,model] [type=tool_called,tool_result]",
+      "/events [category=tool,model,routing,resource,outcome] [type=tool_called,tool_result]",
       "        [worker=root|children] [session=SESSION_PREFIX]",
       "        [correlation=PREFIX] [causation=PREFIX]",
       "        [after=N] [before=N] [redacted=true|false]",

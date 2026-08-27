@@ -186,7 +186,7 @@ doing the right work.
      ownership, and a replacement client can replay only facts after its last
      cursor.
 
-6. [ ] Add resource-specific permissions and capability envelopes
+6. [x] Add resource-specific permissions and capability envelopes
 
    - Replace the broad risky-tool choice with decisions scoped to a tool,
      command family, path, host, MCP server, model class, or other resource.
@@ -196,8 +196,15 @@ doing the right work.
      preserve or reduce authority but must not silently increase it.
    - Keep workspace confinement, observed-state edits, secret handling, audit
      events, and fail-closed sandbox behavior independent of model decisions.
+   - Delivered: immutable `CapabilityEnvelope` values cover tool, path, command,
+     host, MCP-server, and model-class authority. Child workers inherit or
+     explicitly narrow authority; escalation is rejected. `allow_always` stores
+     an exact scoped permission in the canonical session log, survives restart,
+     is inspectable and revocable, and is available in both terminal clients.
+     Capability denial runs before approval and never bypasses workspace,
+     observed-state, or sandbox enforcement.
 
-7. [ ] Add MCP servers as supervised resources
+7. [x] Add MCP servers as supervised resources
 
    - Start with local stdio servers owned by the narrowest appropriate project
      or goal resource supervisor.
@@ -207,10 +214,17 @@ doing the right work.
      native tools.
    - Add remote transports only after local ownership, recovery, and credential
      boundaries are proven.
+   - Delivered: each goal owns a dynamic resource supervisor and MCP registry.
+     Local stdio servers initialize and discover tools under supervised
+     processes, publish namespaced `mcp__server__tool` schemas, expose health,
+     use bounded requests, receive cancellation when their calling worker exits,
+     start with a scrubbed environment plus explicit variables, and emit durable
+     lifecycle events. MCP execution passes through the same capability and
+     approval boundary as native tools. Remote transports remain deferred.
 
 ### Intelligence
 
-8. [ ] Introduce automatic model routing
+8. [x] Introduce automatic model routing
 
    - Make `Auto` the preferred strategy while retaining specific model/provider,
      local-only, and custom-strategy overrides.
@@ -222,8 +236,16 @@ doing the right work.
      tests, or ordinary code can answer more reliably.
    - Record the candidates, decision inputs, selected model, and reason without
      exposing hidden reasoning or secrets.
+   - Delivered: the project-owned `ModelRouter` selects an endpoint for every
+     request. CLI configuration version 8 makes `auto` the default and supports
+     `manual`, `local_only`, and programmatic custom strategies. The initial
+     deterministic policy considers task and language classification, reasoning
+     demand, context fit, measured latency, cost, health, locality/privacy, and
+     capability envelopes. Exact arithmetic can select ordinary computation
+     instead of an LLM. Every decision records safe inputs, candidates,
+     selection, strategy, and a concise reason; the TUI renders it inline.
 
-9. [ ] Capture model and task outcomes
+9. [x] Capture model and task outcomes
 
    - Record task type, language, repository identity, model, latency, normalized
      usage, estimated cost, retries, failures, and cancellation.
@@ -232,6 +254,14 @@ doing the right work.
      with success.
    - Define stable outcome records before building learned routing.
    - Make retention, redaction, export, and opt-out behavior explicit.
+   - Delivered: a project-owned `OutcomeStore` persists a bounded append-only
+     outcome ledger with stable, content-free model and task records. It stores
+     repository/goal identity, task type, language, endpoint/provider/model,
+     latency, normalized usage, cost hint, retries, status, failure, and
+     cancellation. Verification is an independently attached fact, initially
+     `unverified`; public APIs support inspection, attachment, export, restart
+     recovery, retention limits, and complete telemetry opt-out. Learned routing
+     remains item 10 and does not yet consume these measurements.
 
 10. [ ] Improve routing from evidence
 
