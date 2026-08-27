@@ -10,6 +10,7 @@ defmodule BeamAgent do
   alias BeamAgent.{
     Agent,
     Goal,
+    ModelRegistry,
     Names,
     Project,
     ProjectRootSupervisor,
@@ -19,6 +20,7 @@ defmodule BeamAgent do
   }
 
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub, ToolPolicy}
+  alias BeamAgent.Goal.EventHub
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
@@ -26,7 +28,7 @@ defmodule BeamAgent do
 
     with :ok <- validate_session_id(id),
          {:ok, workspace_root} <- Workspace.canonical_root(workspace_root),
-         {:ok, project_id} <- start_project(workspace_root: workspace_root) do
+         {:ok, project_id} <- start_project(project_options(opts, workspace_root)) do
       opts =
         opts
         |> Keyword.put(:session_id, id)
@@ -53,7 +55,8 @@ defmodule BeamAgent do
         |> Keyword.put(:workspace_root, workspace_root)
 
       with {:ok, _pid} <- ProjectRootSupervisor.start_project(project_opts),
-           {:ok, %{workspace_root: ^workspace_root}} <- Project.snapshot(project_id) do
+           {:ok, %{workspace_root: ^workspace_root}} <- Project.snapshot(project_id),
+           :ok <- sync_model_registry(project_id, opts) do
         {:ok, project_id}
       end
     end
@@ -101,11 +104,50 @@ defmodule BeamAgent do
     do: StreamHub.unsubscribe(session_id, subscriber)
 
   def sync_stream(session_id), do: StreamHub.sync(session_id)
+  def subscribe_goal(goal_id), do: EventHub.subscribe(goal_id)
+
+  def subscribe_goal(goal_id, subscriber) when is_pid(subscriber),
+    do: EventHub.subscribe(goal_id, subscriber)
+
+  def subscribe_goal(goal_id, opts) when is_list(opts), do: EventHub.subscribe(goal_id, opts)
+
+  def subscribe_goal(goal_id, subscriber, opts),
+    do: EventHub.subscribe(goal_id, subscriber, opts)
+
+  def subscribe_goal_from(goal_id, after_cursor),
+    do: EventHub.subscribe_from(goal_id, self(), after_cursor)
+
+  def subscribe_goal_from(goal_id, after_cursor, subscriber) when is_pid(subscriber),
+    do: EventHub.subscribe_from(goal_id, subscriber, after_cursor)
+
+  def subscribe_goal_from(goal_id, after_cursor, opts) when is_list(opts),
+    do: EventHub.subscribe_from(goal_id, self(), after_cursor, opts)
+
+  def subscribe_goal_from(goal_id, after_cursor, subscriber, opts),
+    do: EventHub.subscribe_from(goal_id, subscriber, after_cursor, opts)
+
+  def unsubscribe_goal(goal_id, subscriber \\ self()),
+    do: EventHub.unsubscribe(goal_id, subscriber)
+
+  def goal_events(goal_id, opts \\ []), do: EventHub.events(goal_id, opts)
+
+  def inspect_goal_events(goal_id, query \\ "", opts \\ []),
+    do: EventHub.inspect_events(goal_id, query, opts)
+
+  def sync_goal(goal_id), do: EventHub.sync(goal_id)
+
+  def models(project_id), do: ModelRegistry.list(project_id)
+  def model(project_id, endpoint_id), do: ModelRegistry.fetch(project_id, endpoint_id)
+  def register_model(project_id, endpoint), do: ModelRegistry.register(project_id, endpoint)
+
+  def refresh_models(project_id, endpoint_id \\ :all),
+    do: ModelRegistry.refresh_health(project_id, endpoint_id)
 
   def respond_approval(session_id, approval_id, decision),
     do: ToolPolicy.respond(session_id, approval_id, decision)
 
   def set_approval_handler(session_id, handler), do: ToolPolicy.set_handler(session_id, handler)
+  def approval_handler(session_id), do: ToolPolicy.handler(session_id)
   def approval_policy(session_id), do: ToolPolicy.policy(session_id)
   def set_approval_policy(session_id, policy), do: ToolPolicy.set_policy(session_id, policy)
 
@@ -151,6 +193,8 @@ defmodule BeamAgent do
   def project_supervisor_pid(project_id), do: Names.pid(:project_supervisor, project_id)
   def goal_pid(goal_id), do: Names.pid(:goal, goal_id)
   def goal_supervisor_pid(goal_id), do: Names.pid(:goal_supervisor, goal_id)
+  def goal_event_hub_pid(goal_id), do: Names.pid(:goal_event_hub, goal_id)
+  def model_registry_pid(project_id), do: Names.pid(:model_registry, project_id)
   def project(project_id), do: Project.snapshot(project_id)
   def goal(goal_id), do: Goal.snapshot(goal_id)
 
@@ -183,6 +227,35 @@ defmodule BeamAgent do
   def new_session_id do
     suffix = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
     "session-#{suffix}"
+  end
+
+  defp project_options(opts, workspace_root) do
+    opts
+    |> Keyword.take([:model_endpoints, :provider, :provider_options, :provider_profile])
+    |> Keyword.put(:workspace_root, workspace_root)
+  end
+
+  defp sync_model_registry(project_id, opts) do
+    if Keyword.has_key?(opts, :model_endpoints) do
+      ModelRegistry.replace(project_id, Keyword.fetch!(opts, :model_endpoints))
+    else
+      register_session_model(project_id, opts)
+    end
+  end
+
+  defp register_session_model(project_id, opts) do
+    provider = Keyword.get(opts, :provider, Application.fetch_env!(:beam_agent, :provider))
+    provider_options = Keyword.get(opts, :provider_options, [])
+
+    endpoint = %{
+      id: Keyword.get(opts, :provider_profile, Atom.to_string(provider)),
+      provider: provider,
+      model: Keyword.get(provider_options, :model),
+      base_url: Keyword.get(provider_options, :base_url),
+      api_key_env: Keyword.get(provider_options, :api_key_env)
+    }
+
+    ModelRegistry.register(project_id, endpoint)
   end
 
   defp validate_session_id(id) when is_binary(id) do

@@ -1,0 +1,200 @@
+defmodule BeamAgent.ModelRegistry do
+  @moduledoc "Long-lived, project-owned inventory and health state for model endpoints."
+  use GenServer
+
+  alias BeamAgent.{ModelEndpoint, Names}
+
+  def start_link(opts) do
+    project_id = Keyword.fetch!(opts, :project_id)
+    GenServer.start_link(__MODULE__, opts, name: Names.via(:model_registry, project_id))
+  end
+
+  def list(project_id) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id), do: GenServer.call(pid, :list)
+  end
+
+  def fetch(project_id, endpoint_id) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id) do
+      GenServer.call(pid, {:fetch, endpoint_id})
+    end
+  end
+
+  def register(project_id, spec) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id) do
+      GenServer.call(pid, {:register, spec})
+    end
+  end
+
+  def replace(project_id, specs) when is_list(specs) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id) do
+      GenServer.call(pid, {:replace, specs})
+    end
+  end
+
+  def refresh_health(project_id, endpoint_id \\ :all) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id) do
+      GenServer.call(pid, {:refresh_health, endpoint_id})
+    end
+  end
+
+  @impl true
+  def init(opts) do
+    state = %{
+      project_id: Keyword.fetch!(opts, :project_id),
+      endpoints: %{},
+      checks: %{}
+    }
+
+    case normalize_many(Keyword.get(opts, :model_endpoints, [])) do
+      {:ok, endpoints} -> {:ok, %{state | endpoints: endpoints}}
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  @impl true
+  def handle_call(:list, _from, state) do
+    endpoints = state.endpoints |> Map.values() |> Enum.sort_by(& &1.id)
+    {:reply, {:ok, endpoints}, state}
+  end
+
+  def handle_call({:fetch, endpoint_id}, _from, state) do
+    case Map.fetch(state.endpoints, endpoint_id) do
+      {:ok, endpoint} -> {:reply, {:ok, endpoint}, state}
+      :error -> {:reply, {:error, {:unknown_model_endpoint, endpoint_id}}, state}
+    end
+  end
+
+  def handle_call({:register, spec}, _from, state) do
+    case ModelEndpoint.new(spec) do
+      {:ok, endpoint} ->
+        endpoint = preserve_runtime_state(state.endpoints[endpoint.id], endpoint)
+        {:reply, :ok, put_in(state.endpoints[endpoint.id], endpoint)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:replace, specs}, _from, state) do
+    case normalize_many(specs, state.endpoints) do
+      {:ok, endpoints} -> {:reply, :ok, %{state | endpoints: endpoints}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:refresh_health, endpoint_id}, _from, state) do
+    with {:ok, ids} <- refresh_ids(state.endpoints, endpoint_id),
+         {:ok, supervisor} <- Names.pid(:model_health_supervisor, state.project_id) do
+      state = Enum.reduce(ids, state, &start_health_check(&2, &1, supervisor))
+      {:reply, {:ok, ids}, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({reference, result}, state) when is_reference(reference) do
+    case Map.pop(state.checks, reference) do
+      {nil, _checks} ->
+        {:noreply, state}
+
+      {endpoint_id, checks} ->
+        Process.demonitor(reference, [:flush])
+        {:noreply, state |> Map.put(:checks, checks) |> put_health(endpoint_id, result)}
+    end
+  end
+
+  def handle_info({:DOWN, reference, :process, _pid, reason}, state) do
+    case Map.pop(state.checks, reference) do
+      {nil, _checks} ->
+        {:noreply, state}
+
+      {endpoint_id, checks} ->
+        result = {:error, {:healthcheck_exit, health_reason(reason)}}
+        {:noreply, state |> Map.put(:checks, checks) |> put_health(endpoint_id, result)}
+    end
+  end
+
+  defp start_health_check(state, endpoint_id, supervisor) do
+    endpoint = Map.fetch!(state.endpoints, endpoint_id)
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        healthcheck(endpoint.provider_module, ModelEndpoint.health_options(endpoint))
+      end)
+
+    state
+    |> put_in([:checks, task.ref], endpoint_id)
+    |> put_in([:endpoints, endpoint_id, Access.key(:health)], %{
+      status: :checking,
+      checked_at: nil
+    })
+  end
+
+  defp put_health(state, endpoint_id, result) do
+    case Map.fetch(state.endpoints, endpoint_id) do
+      :error ->
+        state
+
+      {:ok, endpoint} ->
+        health = %{
+          status: health_status(result),
+          checked_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+
+        put_in(state.endpoints[endpoint_id], %{endpoint | health: health})
+    end
+  end
+
+  defp healthcheck(module, options) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :healthcheck, 1),
+      do: module.healthcheck(options),
+      else: :ok
+  rescue
+    _error -> {:error, :healthcheck_exception}
+  catch
+    _kind, _reason -> {:error, :healthcheck_failure}
+  end
+
+  defp health_status(:ok), do: :available
+  defp health_status({:ok, _detail}), do: :available
+  defp health_status({:error, _reason}), do: :unavailable
+  defp health_status(_other), do: :unavailable
+
+  defp health_reason(reason) when is_atom(reason), do: reason
+  defp health_reason(_reason), do: :failed
+
+  defp refresh_ids(endpoints, :all), do: {:ok, Map.keys(endpoints)}
+
+  defp refresh_ids(endpoints, endpoint_id) when is_binary(endpoint_id) do
+    if Map.has_key?(endpoints, endpoint_id),
+      do: {:ok, [endpoint_id]},
+      else: {:error, {:unknown_model_endpoint, endpoint_id}}
+  end
+
+  defp refresh_ids(_endpoints, endpoint_id),
+    do: {:error, {:unknown_model_endpoint, endpoint_id}}
+
+  defp normalize_many(specs, existing \\ %{}) do
+    Enum.reduce_while(specs, {:ok, %{}}, fn spec, {:ok, endpoints} ->
+      case ModelEndpoint.new(spec) do
+        {:ok, endpoint} ->
+          endpoint = preserve_runtime_state(existing[endpoint.id], endpoint)
+          {:cont, {:ok, Map.put(endpoints, endpoint.id, endpoint)}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp preserve_runtime_state(nil, endpoint), do: endpoint
+
+  defp preserve_runtime_state(existing, endpoint) do
+    if ModelEndpoint.same_configuration?(existing, endpoint) do
+      %{endpoint | health: existing.health, measurements: existing.measurements}
+    else
+      endpoint
+    end
+  end
+end

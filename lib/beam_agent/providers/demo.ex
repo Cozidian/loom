@@ -7,7 +7,15 @@ defmodule BeamAgent.Providers.Demo do
 
   @impl true
   def configuration do
-    %{name: "demo", label: "Deterministic tool/subagent demo"}
+    %{
+      name: "demo",
+      label: "Deterministic tool/subagent demo",
+      capabilities: [:text_generation, :tool_use, :delegation],
+      modalities: [:text],
+      locality: :local,
+      privacy: :local,
+      cost_hint: :free
+    }
   end
 
   @impl true

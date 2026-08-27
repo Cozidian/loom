@@ -125,6 +125,22 @@ defmodule BeamAgent.CLI.Config do
 
   def profiles(config), do: config["profiles"] |> Enum.sort_by(fn {name, _profile} -> name end)
 
+  def model_endpoints(config, runtime \\ nil) do
+    endpoints =
+      config
+      |> profiles()
+      |> Enum.map(fn {name, profile} -> endpoint_spec(name, profile) end)
+
+    case runtime do
+      %{"profile" => name} = runtime ->
+        replacement = endpoint_spec(name, runtime)
+        [replacement | Enum.reject(endpoints, &(&1.id == name))]
+
+      _runtime ->
+        endpoints
+    end
+  end
+
   def validate(config) when is_map(config) do
     with :ok <- require_version(config["version"]),
          :ok <- validate_profile_name(config["active_profile"]),
@@ -384,6 +400,20 @@ defmodule BeamAgent.CLI.Config do
 
   defp maybe_put(config, _key, nil), do: config
   defp maybe_put(config, key, value), do: Map.put(config, key, value)
+
+  defp endpoint_spec(name, profile) do
+    {:ok, provider} = Providers.fetch(profile["provider"])
+
+    %{
+      id: name,
+      provider: provider.id,
+      provider_module: provider.module,
+      model: profile["model"],
+      base_url: profile["base_url"],
+      api_key_env: profile["api_key_env"],
+      claims: profile["claims"]
+    }
+  end
 
   defp config_home do
     System.get_env("XDG_CONFIG_HOME") || Path.join(System.user_home!(), ".config")

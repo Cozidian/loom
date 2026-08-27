@@ -73,6 +73,32 @@ defmodule BeamAgent.ProjectGoalRuntimeTest do
     assert child_started["data"]["project_id"] == context.project_id
     assert child_started["data"]["goal_id"] == session_id
 
+    assert {:ok, goal_events} = BeamAgent.goal_events(session_id)
+
+    sequences_before_restart =
+      Map.new(goal_events, &{&1.event_id, &1.goal_seq})
+
+    assert Enum.any?(goal_events, fn event ->
+             event.version == 1 and event.durability == :durable and
+               event.scope.project_id == context.project_id and
+               event.scope.goal_id == session_id and
+               event.scope.session_id == "goal-worker" and
+               event.payload.type == "agent_started"
+           end)
+
+    assert {:ok, first_event_hub} = BeamAgent.goal_event_hub_pid(session_id)
+    Process.exit(first_event_hub, :kill)
+    assert wait_for_new_pid(:goal_event_hub, session_id, first_event_hub) != first_event_hub
+    assert wait_for_goal_event(session_id, "goal-worker", "agent_started")
+    assert {:ok, rebuilt_goal_events} = BeamAgent.goal_events(session_id)
+
+    assert Enum.all?(sequences_before_restart, fn {event_id, goal_seq} ->
+             Enum.any?(
+               rebuilt_goal_events,
+               &(&1.event_id == event_id and &1.goal_seq == goal_seq)
+             )
+           end)
+
     assert :ok = BeamAgent.stop_session(session_id)
     wait_until_missing(:goal, session_id)
     wait_until_missing(:agent, "goal-worker")
@@ -227,6 +253,29 @@ defmodule BeamAgent.ProjectGoalRuntimeTest do
       _ ->
         Process.sleep(10)
         wait_until_missing(kind, id, attempts - 1)
+    end
+  end
+
+  defp wait_for_goal_event(goal_id, session_id, event_type, attempts \\ 100)
+
+  defp wait_for_goal_event(_goal_id, _session_id, _event_type, 0),
+    do: flunk("goal event was not reconstructed")
+
+  defp wait_for_goal_event(goal_id, session_id, event_type, attempts) do
+    case BeamAgent.goal_events(goal_id) do
+      {:ok, events} ->
+        if Enum.any?(events, fn event ->
+             event.scope.session_id == session_id and event.payload.type == event_type
+           end) do
+          true
+        else
+          Process.sleep(10)
+          wait_for_goal_event(goal_id, session_id, event_type, attempts - 1)
+        end
+
+      {:error, :not_found} ->
+        Process.sleep(10)
+        wait_for_goal_event(goal_id, session_id, event_type, attempts - 1)
     end
   end
 end

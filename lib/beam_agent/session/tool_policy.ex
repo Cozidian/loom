@@ -36,6 +36,12 @@ defmodule BeamAgent.Session.ToolPolicy do
     end
   end
 
+  def handler(session_id) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
+      GenServer.call(pid, :handler)
+    end
+  end
+
   def set_policy(session_id, policy) when policy in [:auto, :allow, :ask, :deny] do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
       GenServer.call(pid, {:set_policy, normalize_policy(policy)})
@@ -140,6 +146,7 @@ defmodule BeamAgent.Session.ToolPolicy do
   end
 
   def handle_call(:policy, _from, state), do: {:reply, {:ok, state.approval_policy}, state}
+  def handle_call(:handler, _from, state), do: {:reply, {:ok, state.handler}, state}
 
   def handle_call({:set_policy, policy}, _from, state) do
     previous = state.approval_policy

@@ -20,6 +20,8 @@ It includes:
 - child agents dynamically supervised beneath their parent session;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
 - live, provider-native response streaming with session-scoped subscribers;
+- versioned, goal-wide runtime events spanning parent and child sessions;
+- interface-neutral runtime clients with cursor-based replay and reconnect;
 - batched durable stream checkpoints without an `fsync` per token;
 - synchronous append-only JSONL events and crash reconstruction;
 - budgeted model-context projection with durable, restart-safe compaction;
@@ -96,11 +98,40 @@ line in the composer, `Ctrl+T` to expand tool results, `Page Up`/`Page Down` to
 move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
 idle). Approval dialogs default to deny and require an explicit one-shot choice.
 
-The useful slash commands remain `/new`, `/sessions`, `/status`, `/auto`,
-`/compact`, `/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama,
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`,
+`/auto`, `/compact`, `/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama,
 OpenAI, xAI/Grok, and Anthropic responses render as they arrive; deterministic
 or custom non-streaming providers render their final response through the same
 interface.
+Goal, model, subagent, failure, and policy lifecycle events appear as muted
+information entries in the transcript. Child tool calls are shown with their
+worker identifier, `/status` exposes the real project and goal IDs, and
+`/events` shows the latest durable events aggregated across the goal tree,
+including their goal cursor, correlation, and causation identity.
+The event inspector accepts composable filters, for example:
+
+```text
+/events category=tool worker=children limit=20
+/events type=model_response_failed order=desc
+/events correlation=AbC123 after=40 redacted=true
+/events help
+```
+
+Available filters cover category, event type, root/child worker, session prefix,
+correlation and causation prefixes, cursor range, redaction state, ordering, and
+a bounded result limit. Filtering and counting run in the Elixir goal runtime;
+the Go terminal only submits the query and renders the safe public results.
+The local interfaces use the same `BeamAgent.Runtime` contract intended for
+future LiveView, editor, and API clients. A connection atomically receives
+replay and subscribes to later goal events, exposes its durable cursor, and can
+be recreated with `after: cursor` without making terminal state authoritative.
+Public connections use redacted events unless a trusted in-process client
+explicitly requests `view: :internal`.
+
+`/models` lists every configured profile registered in the current project,
+including provider/model, locality, health, and declared capabilities. Use
+`/models refresh` to run supervised provider health checks, or `/models PROFILE`
+to refresh one endpoint.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
 
@@ -111,9 +142,12 @@ shows the estimate and `/compact` requests compaction immediately. Override the
 configured defaults for one run with `--context-window TOKENS` and
 `--compact-at PERCENT`.
 
-LLM requests and multi-step turns have no fixed deadline. They continue until
-the provider finishes, a real transport error occurs, or the user cancels with
-`Ctrl+C`. Tool-specific limits, such as sandboxed command timeouts, remain.
+LLM requests and productive multi-step turns have no fixed deadline. If the
+same tool plan returns the same result three times consecutively, the runtime
+records `tool_loop_stalled` and performs one answer-only recovery step with
+tools disabled. Otherwise work continues until the provider finishes, a real
+transport error occurs, or the user cancels with `Ctrl+C`. Tool-specific limits,
+such as sandboxed command timeouts, remain.
 
 See [ROADMAP.md](ROADMAP.md) for the current product work order.
 
@@ -270,6 +304,14 @@ compatible. The built-in real adapters use native wire formats: NDJSON for
 Ollama, Chat Completions SSE for OpenAI/xAI, and typed Messages SSE blocks for
 Anthropic.
 
+Every provider call enters through a versioned `ModelRequest`. The request
+names its endpoint/provider/model, streaming mode, timeout, owner-process
+cancellation boundary, messages, tools, and metadata. `ModelInvocation`
+normalizes successful content/tool calls, provider failures, exceptions,
+timeouts, and OpenAI/Anthropic/Ollama usage counters. Both ordinary turns and
+context compaction use this contract; session cancellation still terminates the
+supervised owner process and therefore its in-flight invocation.
+
 ## Run the demonstration
 
 ```sh
@@ -293,8 +335,38 @@ behaviour remains available for a real model adapter.
     approval_policy: :deny
   )
 
-{:ok, answer} = BeamAgent.ask(session_id, "hello")
+{:ok, runtime} = BeamAgent.Runtime.connect(session_id)
+{:ok, %{events: replay, cursor: cursor}} = BeamAgent.Runtime.bootstrap(runtime)
+
+:ok = BeamAgent.Runtime.submit(runtime, "hello")
+
+receive do
+  {:beam_agent_runtime, ^runtime, {:event, event}} -> event
+end
+
+# Recreate a disconnected client without missing or duplicating durable facts.
+BeamAgent.Runtime.disconnect(runtime)
+{:ok, runtime} = BeamAgent.Runtime.connect(session_id, after: cursor)
+
 {:ok, events} = BeamAgent.events(session_id)
+
+:ok = BeamAgent.subscribe_goal(session_id)
+{:ok, goal_events} = BeamAgent.goal_events(session_id)
+
+{:ok, %{events: missed, cursor: cursor}} =
+  BeamAgent.subscribe_goal_from(session_id, previous_cursor)
+
+# Trusted in-process clients can explicitly request the unredacted projection.
+{:ok, internal_events} = BeamAgent.goal_events(session_id, view: :internal)
+
+{:ok, inspection} =
+  BeamAgent.inspect_goal_events(
+    session_id,
+    "category=tool worker=children order=desc limit=20"
+  )
+
+{:ok, endpoints} = BeamAgent.models(project_id)
+{:ok, _started} = BeamAgent.refresh_models(project_id)
 ```
 
 Use a stable `session_id` and the same `data_dir` with
@@ -302,7 +374,19 @@ Use a stable `session_id` and the same `data_dir` with
 `start_session/1` is the compatibility API: it opens or reuses the workspace's
 project runtime and creates a goal with the same identifier as its durable root
 session. Embedders can use `start_project/1` and `start_goal/2` directly when
-they need explicit lifecycle control.
+they need explicit lifecycle control. A goal subscriber receives
+`{:beam_agent_runtime_event, event}` messages for live and durable activity from
+the root session and its subagents; the versioned envelope is a projection and
+does not replace the canonical per-session event logs. Durable envelopes carry
+a goal-wide `goal_seq`; `subscribe_goal_from/3` atomically subscribes and
+returns events after a prior cursor so a client cannot open a replay/live gap.
+Goal replay and subscriptions use a fail-closed public projection by default:
+prompts, model text, tool arguments/results, errors, paths, and unknown payload
+fields are replaced with typed size descriptors. Event identity, scope,
+lineage, lifecycle, model/tool names, status flags, and numeric usage remain
+observable. `view: :internal` is an explicit trusted-process override, not an
+authorization boundary; canonical session JSONL remains complete and
+unredacted.
 
 See [docs/architecture.md](docs/architecture.md) for the DeepSeek Harness to OTP
 mapping, process tree, and deliberate differences from Cordis.

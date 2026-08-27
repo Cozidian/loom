@@ -2,8 +2,6 @@ defmodule BeamAgent.Tools.SpawnSubagent do
   @moduledoc false
   @behaviour BeamAgent.Tool
 
-  alias BeamAgent.Session.EventLog
-
   @impl true
   def name, do: "spawn_subagent"
 
@@ -31,6 +29,12 @@ defmodule BeamAgent.Tools.SpawnSubagent do
         {:error, _reason} -> context.approval_policy
       end
 
+    approval_handler =
+      case BeamAgent.approval_handler(context.session_id) do
+        {:ok, handler} when is_pid(handler) -> handler
+        _other -> context.approval_handler
+      end
+
     opts = [
       provider: context.provider,
       provider_profile: context.provider_profile,
@@ -39,16 +43,14 @@ defmodule BeamAgent.Tools.SpawnSubagent do
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
       approval_policy: approval_policy,
-      approval_handler: context.approval_handler,
+      approval_handler: approval_handler,
       context_window_tokens: context.context_window_tokens,
-      compaction_threshold_percent: context.compaction_threshold_percent
+      compaction_threshold_percent: context.compaction_threshold_percent,
+      correlation_id: context.runtime_command.correlation_id,
+      causation_id: context.causation_id
     ]
 
     with {:ok, child_id} <- BeamAgent.spawn_subagent(context.session_id, opts),
-         {:ok, _event} <-
-           EventLog.append(context.session_id, :subagent_spawned, %{
-             "child_session_id" => child_id
-           }),
          {:ok, answer} <- BeamAgent.ask(child_id, prompt) do
       {:ok, JSON.encode!(%{child_session_id: child_id, answer: answer})}
     end

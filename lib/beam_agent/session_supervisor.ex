@@ -42,11 +42,26 @@ defmodule BeamAgent.SessionSupervisor do
         |> Keyword.put(:project_id, identity.project_id)
         |> Keyword.put(:goal_id, identity.goal_id)
         |> Keyword.put(:workspace_root, identity.workspace_root)
+        |> Keyword.put_new(:data_dir, identity.data_dir)
 
       case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
-        {:ok, _pid} -> {:ok, child_id}
-        {:error, {:already_started, _pid}} -> {:error, {:session_already_started, child_id}}
-        {:error, reason} -> {:error, reason}
+        {:ok, child_pid} ->
+          case EventLog.append(parent_session_id, :subagent_spawned, %{
+                 "child_session_id" => child_id
+               }) do
+            {:ok, _event} ->
+              {:ok, child_id}
+
+            {:error, reason} ->
+              Supervisor.stop(child_pid, :normal)
+              {:error, {:subagent_event_failed, reason}}
+          end
+
+        {:error, {:already_started, _pid}} ->
+          {:error, {:session_already_started, child_id}}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end

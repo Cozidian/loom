@@ -7,7 +7,15 @@ defmodule BeamAgent.Providers.Echo do
 
   @impl true
   def configuration do
-    %{name: "echo", label: "Deterministic echo provider"}
+    %{
+      name: "echo",
+      label: "Deterministic echo provider",
+      capabilities: [:text_generation],
+      modalities: [:text],
+      locality: :local,
+      privacy: :local,
+      cost_hint: :free
+    }
   end
 
   @impl true

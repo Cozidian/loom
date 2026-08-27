@@ -111,7 +111,7 @@ doing the right work.
      `BeamAgent.GoalSupervisor`, inherited child-session identity, and
      `test/project_goal_runtime_test.exs`.
 
-3. [ ] Define the event and message architecture
+3. [x] Define the event and message architecture
 
    - Create a versioned runtime event envelope with goal, worker, causation, and
      correlation identity plus timestamps and typed payloads.
@@ -124,8 +124,23 @@ doing the right work.
      one giant model context the owner of all knowledge.
    - Keep sensitive tool input, credentials, and excessive model content out of
      broadly visible events by default.
+   - First vertical slice delivered: `BeamAgent.RuntimeEvent` defines a
+     versioned, goal-scoped projection over canonical session events;
+     `BeamAgent.Goal.EventHub` reconstructs and streams parent and child
+     activity; and the TUI renders meaningful lifecycle information plus a
+     latest-events view. Repeated identical tool results now emit an observable
+     `tool_loop_stalled` recovery event instead of creating unbounded work.
+     A second slice adds versioned runtime commands, durable goal-wide
+     sequences, causal/correlation lineage across subagents, and atomic
+     replay-plus-live subscriptions from a cursor. A third slice makes public
+     replay and subscriptions fail-closed by default, redacting prompts, model
+     content, tool data, errors, paths, and unknown payload fields while
+     retaining an explicit trusted internal projection for the local TUI.
+     The final slice adds a runtime-owned, filterable public inspector covering
+     category, type, worker/session, lineage, cursor range, redaction state,
+     ordering, and bounded limits, exposed through the TUI's `/events` command.
 
-4. [ ] Promote provider profiles into a model registry
+4. [x] Promote provider profiles into a model registry
 
    - Keep `BeamAgent.LLMProvider` as the provider protocol seam while registering
      many usable model endpoints simultaneously.
@@ -138,8 +153,19 @@ doing the right work.
      runtime.
    - Treat the current fixed profile per session as a supported manual override,
      not the eventual default architecture.
+   - First vertical slice delivered: every configured CLI profile is registered
+     simultaneously in a project-owned `ModelRegistry`, separate from the
+     global provider adapter catalog. Endpoint descriptors carry model,
+     transport, credential reference, capability/modalities, locality, privacy,
+     context/cost hints, health, and a distinct measurements field. Supervised
+     asynchronous health checks update availability, `/models` exposes the
+     inventory in the TUI, and the selected session profile remains the manual
+     override. A versioned `ModelRequest` plus normalized response, usage, and
+     error contracts now covers streaming and non-streaming calls, optional
+     finite timeouts, provider failures, and owner-process cancellation. Both
+     tool-loop work and context compaction use the same invocation boundary.
 
-5. [ ] Separate the runtime API from every interface
+5. [x] Separate the runtime API from every interface
 
    - Extract the current controller boundary into an interface-neutral local
      runtime API for goals, subscriptions, approvals, cancellation, inspection,
@@ -148,6 +174,17 @@ doing the right work.
      future LiveView, editor, and programmatic clients.
    - Preserve append-only replay so a disconnected client can reconstruct state
      and continue from a known event sequence.
+   - First vertical slice delivered: `BeamAgent.Runtime` now exposes a public,
+     interface-neutral connection contract over a goal. A runtime client owns
+     atomic replay plus live subscription, durable cursors, asynchronous turn
+     submission, approvals, cancellation, status, event inspection, model
+     inventory access, and rebinding to another or resumed session. Public
+     connections receive the fail-closed event view by default; trusted local
+     clients opt into the internal view. The TUI controller and line-oriented
+     turn runner both consume this contract rather than independently owning
+     turn tasks and subscriptions. Disconnecting leaves runtime work under OTP
+     ownership, and a replacement client can replay only facts after its last
+     cursor.
 
 6. [ ] Add resource-specific permissions and capability envelopes
 

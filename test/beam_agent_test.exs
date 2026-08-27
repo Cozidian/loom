@@ -42,6 +42,34 @@ defmodule BeamAgentTest do
     end
   end
 
+  defmodule RepeatedToolProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :repeated_tool_test
+
+    @impl true
+    def complete(messages, tools, _options) do
+      completed_steps = Enum.count(messages, &(&1.role == :tool))
+
+      if tools == [] do
+        {:ok, %{content: "The answer is 4.", tool_calls: []}}
+      else
+        {:ok,
+         %{
+           content: nil,
+           tool_calls: [
+             %{
+               id: "repeated-add-#{completed_steps}",
+               name: "add",
+               arguments: %{"a" => 2, "b" => 2}
+             }
+           ]
+         }}
+      end
+    end
+  end
+
   defp data_dir do
     path = Path.join(System.tmp_dir!(), "beam-agent-test-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(path) end)
@@ -84,6 +112,28 @@ defmodule BeamAgentTest do
     assert {:ok, events} = BeamAgent.events(id)
     assert Enum.count(events, &(&1["type"] == "tool_called")) == 12
     refute Enum.any?(events, &(&1["data"]["reason"] == ":max_steps_exceeded"))
+  end
+
+  test "identical tool calls and results switch to an answer-only recovery step" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(RepeatedToolProvider)
+    {:ok, id} = BeamAgent.start_session(data_dir: data_dir(), provider: :repeated_tool_test)
+
+    assert {:ok, "The answer is 4."} = BeamAgent.ask(id, "what is 2 + 2?")
+    assert {:ok, events} = BeamAgent.events(id)
+    assert Enum.count(events, &(&1["type"] == "tool_called")) == 3
+
+    assert %{"data" => %{"repetitions" => 3, "calls" => [call]}} =
+             Enum.find(events, &(&1["type"] == "tool_loop_stalled"))
+
+    assert call == %{"name" => "add", "arguments" => %{"a" => 2, "b" => 2}}
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "step_started" and event["data"]["step"] == 4 and
+               event["data"]["tools_enabled"] == false
+           end)
+
+    assert List.last(events)["type"] == "turn_finished"
+    assert List.last(events)["data"]["reason"] == "completed"
   end
 
   test "restarts a crashed agent and reconstructs model history from durable events" do

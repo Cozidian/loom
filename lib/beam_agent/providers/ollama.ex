@@ -13,6 +13,11 @@ defmodule BeamAgent.Providers.Ollama do
     %{
       name: "ollama",
       label: "Ollama (local)",
+      capabilities: [:text_generation, :tool_use, :streaming],
+      modalities: [:text],
+      locality: :local,
+      privacy: :local,
+      cost_hint: :free,
       model_required: true,
       default_model: "llama3.2",
       default_base_url: "http://127.0.0.1:11434"

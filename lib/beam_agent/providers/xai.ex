@@ -12,6 +12,11 @@ defmodule BeamAgent.Providers.XAI do
     %{
       name: "xai",
       label: "xAI (Grok)",
+      capabilities: [:text_generation, :tool_use, :streaming],
+      modalities: [:text],
+      locality: :remote,
+      privacy: :provider,
+      cost_hint: :metered,
       model_required: true,
       default_base_url: "https://api.x.ai/v1",
       default_api_key_env: "XAI_API_KEY"

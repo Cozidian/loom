@@ -8,7 +8,8 @@ defmodule BeamAgent.Session.StreamHub do
   """
   use GenServer
 
-  alias BeamAgent.Names
+  alias BeamAgent.{ModelUsage, Names}
+  alias BeamAgent.Goal.EventHub
   alias BeamAgent.Session.EventLog
 
   @checkpoint_interval_ms 250
@@ -73,12 +74,16 @@ defmodule BeamAgent.Session.StreamHub do
   def init(opts) do
     state = %{
       session_id: Keyword.fetch!(opts, :session_id),
+      project_id: Keyword.fetch!(opts, :project_id),
+      goal_id: Keyword.fetch!(opts, :goal_id),
       subscribers: %{},
       responses: %{}
     }
 
-    send(self(), :recover_interrupted_responses)
-    {:ok, state}
+    with :ok <- EventHub.register_session(state.goal_id, state.session_id) do
+      send(self(), :recover_interrupted_responses)
+      {:ok, state}
+    end
   end
 
   @impl true
@@ -99,8 +104,16 @@ defmodule BeamAgent.Session.StreamHub do
     data = Map.put(metadata, "response_id", response_id)
 
     case EventLog.append(state.session_id, :model_response_started, data) do
-      {:ok, _event} ->
-        response = %{pending: [], timer: nil, owner: owner, monitor: Process.monitor(owner)}
+      {:ok, event} ->
+        response = %{
+          pending: [],
+          timer: nil,
+          owner: owner,
+          monitor: Process.monitor(owner),
+          correlation_id: event["correlation_id"],
+          causation_id: event_id(event)
+        }
+
         {:reply, {:ok, response_id}, put_in(state.responses[response_id], response)}
 
       {:error, reason} ->
@@ -110,13 +123,21 @@ defmodule BeamAgent.Session.StreamHub do
 
   def handle_call({:finish_response, response_id, metadata}, _from, state) do
     with {:ok, state} <- flush_response(state, response_id),
-         {:ok, _event} <-
+         {:ok, event} <-
            EventLog.append(
              state.session_id,
              :model_response_finished,
              Map.put(metadata, "response_id", response_id)
            ) do
-      broadcast(state, %{type: :response_finished, response_id: response_id})
+      response = Map.fetch!(state.responses, response_id)
+
+      broadcast(state, %{
+        type: :response_finished,
+        response_id: response_id,
+        correlation_id: response.correlation_id,
+        causation_id: event_id(event)
+      })
+
       {:reply, :ok, drop_response(state, response_id)}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -125,12 +146,21 @@ defmodule BeamAgent.Session.StreamHub do
 
   def handle_call({:fail_response, response_id, reason}, _from, state) do
     with {:ok, state} <- flush_response(state, response_id),
-         {:ok, _event} <-
+         {:ok, event} <-
            EventLog.append(state.session_id, :model_response_failed, %{
              "response_id" => response_id,
              "error" => inspect(reason)
            }) do
-      broadcast(state, %{type: :response_failed, response_id: response_id, error: reason})
+      response = Map.fetch!(state.responses, response_id)
+
+      broadcast(state, %{
+        type: :response_failed,
+        response_id: response_id,
+        error: reason,
+        correlation_id: response.correlation_id,
+        causation_id: event_id(event)
+      })
+
       {:reply, :ok, drop_response(state, response_id)}
     else
       {:error, error} -> {:reply, {:error, error}, state}
@@ -141,7 +171,7 @@ defmodule BeamAgent.Session.StreamHub do
   def handle_cast({:emit, response_id, event}, state) do
     case Map.fetch(state.responses, response_id) do
       {:ok, response} ->
-        normalized = normalize_live_event(response_id, event)
+        normalized = normalize_live_event(response_id, event, response)
         broadcast(state, normalized)
 
         response = %{response | pending: response.pending ++ [checkpoint_event(normalized)]}
@@ -222,9 +252,15 @@ defmodule BeamAgent.Session.StreamHub do
                "response_id" => response_id,
                "events" => response.pending
              }) do
-          {:ok, _event} ->
+          {:ok, event} ->
             state = clear_timer(state, response_id)
-            {:ok, put_in(state.responses[response_id].pending, [])}
+
+            state =
+              state
+              |> put_in([:responses, response_id, :pending], [])
+              |> put_in([:responses, response_id, :causation_id], event_id(event))
+
+            {:ok, state}
 
           {:error, reason} ->
             {:error, reason}
@@ -295,6 +331,7 @@ defmodule BeamAgent.Session.StreamHub do
   end
 
   defp broadcast(state, event) do
+    EventHub.publish(state.goal_id, state.session_id, event)
     Enum.each(Map.keys(state.subscribers), &send(&1, {:beam_agent_stream, event}))
   end
 
@@ -309,17 +346,38 @@ defmodule BeamAgent.Session.StreamHub do
     end
   end
 
-  defp normalize_live_event(response_id, {:text_delta, delta}) when is_binary(delta),
-    do: %{type: :text_delta, response_id: response_id, delta: delta}
+  defp normalize_live_event(response_id, {:text_delta, delta}, response)
+       when is_binary(delta),
+       do: live_metadata(response, %{type: :text_delta, response_id: response_id, delta: delta})
 
-  defp normalize_live_event(response_id, {:tool_call_delta, delta}) when is_map(delta),
-    do: %{type: :tool_call_delta, response_id: response_id, delta: delta}
+  defp normalize_live_event(response_id, {:tool_call_delta, delta}, response)
+       when is_map(delta),
+       do:
+         live_metadata(response, %{type: :tool_call_delta, response_id: response_id, delta: delta})
 
-  defp normalize_live_event(response_id, {:usage, usage}) when is_map(usage),
-    do: %{type: :usage, response_id: response_id, usage: usage}
+  defp normalize_live_event(response_id, {:usage, usage}, response) when is_map(usage),
+    do:
+      live_metadata(response, %{
+        type: :usage,
+        response_id: response_id,
+        usage: ModelUsage.normalize(usage)
+      })
 
-  defp normalize_live_event(response_id, event),
-    do: %{type: :provider_event, response_id: response_id, event: inspect(event)}
+  defp normalize_live_event(response_id, event, response),
+    do:
+      live_metadata(response, %{
+        type: :provider_event,
+        response_id: response_id,
+        event: inspect(event)
+      })
+
+  defp live_metadata(response, event) do
+    event
+    |> Map.put(:correlation_id, response.correlation_id)
+    |> Map.put(:causation_id, response.causation_id)
+  end
+
+  defp event_id(event), do: "#{event["session_id"]}:#{event["seq"]}"
 
   defp checkpoint_event(%{type: :text_delta, delta: delta}),
     do: %{"type" => "text_delta", "delta" => delta}

@@ -44,12 +44,16 @@ var (
 type packet struct {
 	Type         string         `json:"type"`
 	SessionID    string         `json:"session_id,omitempty"`
+	ProjectID    string         `json:"project_id,omitempty"`
+	GoalID       string         `json:"goal_id,omitempty"`
+	Cursor       int64          `json:"cursor,omitempty"`
 	Workspace    string         `json:"workspace,omitempty"`
 	Provider     string         `json:"provider,omitempty"`
 	Profile      string         `json:"profile,omitempty"`
 	Model        string         `json:"model,omitempty"`
 	Prompt       string         `json:"prompt,omitempty"`
 	Command      string         `json:"command,omitempty"`
+	Query        string         `json:"query,omitempty"`
 	ApprovalID   string         `json:"approval_id,omitempty"`
 	ApprovalMode string         `json:"approval_mode,omitempty"`
 	Decision     string         `json:"decision,omitempty"`
@@ -154,10 +158,11 @@ var commands = []commandItem{
 	{ID: "status", Label: "Session status", Hint: "/status"},
 	{ID: "new", Label: "New session", Hint: "/new"},
 	{ID: "sessions", Label: "Durable sessions", Hint: "/sessions"},
+	{ID: "models", Label: "Model registry", Hint: "/models [refresh|PROFILE]"},
 	{ID: "skills", Label: "Project skills", Hint: "/skills"},
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
-	{ID: "events", Label: "Event log", Hint: "/events"},
+	{ID: "events", Label: "Inspect goal events", Hint: "/events [filters]"},
 	{ID: "toggle_tools", Label: "Expand or collapse tools", Hint: "ctrl+t"},
 	{ID: "clear", Label: "Clear transcript", Hint: "/clear"},
 	{ID: "exit", Label: "Leave chat", Hint: "/exit"},
@@ -171,6 +176,9 @@ type model struct {
 	height        int
 	workspace     string
 	sessionID     string
+	projectID     string
+	goalID        string
+	cursor        int64
 	provider      string
 	profile       string
 	llmModel      string
@@ -211,6 +219,9 @@ func newModel(initial packet, bridge *protocol) model {
 		height:       24,
 		workspace:    filepath.Base(initial.Workspace),
 		sessionID:    initial.SessionID,
+		projectID:    initial.ProjectID,
+		goalID:       initial.GoalID,
+		cursor:       initial.Cursor,
 		provider:     initial.Provider,
 		profile:      initial.Profile,
 		llmModel:     initial.Model,
@@ -380,7 +391,15 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 }
 
 func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
-	switch command {
+	command = strings.TrimSpace(command)
+	name := command
+	query := ""
+	if separator := strings.IndexByte(command, ' '); separator >= 0 {
+		name = command[:separator]
+		query = strings.TrimSpace(command[separator+1:])
+	}
+
+	switch name {
 	case "/exit", "/quit":
 		return m, tea.Quit
 	case "/", "/help":
@@ -392,16 +411,16 @@ func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
 		m.refreshTranscript(true)
 		return m, nil
 	case "/model":
-		command = "/status"
+		name = "/status"
 	}
 
-	id := strings.TrimPrefix(command, "/")
+	id := strings.TrimPrefix(name, "/")
 	for _, item := range commands {
 		if item.ID == id && !m.localCommand(item.ID) {
 			m.notice = "Loading " + id + "…"
 			m.noticeTone = "muted"
 			m.refreshTranscript(true)
-			return m, m.send(packet{Type: "command", Command: id})
+			return m, m.send(packet{Type: "command", Command: id, Query: query})
 		}
 	}
 
@@ -520,6 +539,8 @@ func (m *model) applyBackend(message packet) {
 		m.notice = ""
 	case "session_changed":
 		m.sessionID = message.SessionID
+		m.goalID = message.SessionID
+		m.cursor = 0
 		m.entries = []entry{{Kind: "system", Content: "Started " + shortSession(message.SessionID)}}
 		m.status = "ready"
 		m.panelTitle = ""
@@ -532,6 +553,9 @@ func (m *model) applyBackend(message packet) {
 
 func (m *model) applyStream(event map[string]any) {
 	switch asString(event["type"]) {
+	case "runtime_event":
+		m.applyRuntimeEvent(event)
+
 	case "text_delta":
 		responseID := asString(event["response_id"])
 		delta := asString(event["delta"])
@@ -554,37 +578,124 @@ func (m *model) applyStream(event map[string]any) {
 
 	case "durable_event":
 		durable := asMap(event["event"])
-		data := asMap(durable["data"])
-		switch asString(durable["type"]) {
-		case "assistant_message":
-			content := asString(data["content"])
-			if content != "" && !m.recentAssistantMatches(content) {
-				m.entries = append(m.entries, entry{Kind: "assistant", Content: content})
-			}
-		case "tool_called":
-			m.entries = append(m.entries, entry{
-				Kind:      "tool",
-				ID:        asString(data["tool_call_id"]),
-				Name:      asString(data["name"]),
-				Arguments: asMap(data["arguments"]),
-				Status:    "running",
-			})
-		case "tool_result":
-			id := asString(data["tool_call_id"])
-			for i := range m.entries {
-				if m.entries[i].Kind == "tool" && m.entries[i].ID == id {
-					m.entries[i].Content = asString(data["content"])
-					m.entries[i].Error = asBool(data["is_error"])
-					if m.entries[i].Error {
-						m.entries[i].Status = "error"
-					} else {
-						m.entries[i].Status = "done"
-					}
-					return
+		m.applyDurableEvent(
+			asString(durable["type"]),
+			asMap(durable["data"]),
+			"",
+			true,
+		)
+	}
+}
+
+func (m *model) applyRuntimeEvent(event map[string]any) {
+	payload := asMap(event["payload"])
+	scope := asMap(event["scope"])
+	root := asBool(scope["root?"])
+	sessionID := asString(scope["session_id"])
+
+	if asString(event["durability"]) == "ephemeral" {
+		if root {
+			m.applyStream(asMap(payload["data"]))
+		}
+		return
+	}
+
+	if goalSeq, ok := number(event["goal_seq"]); ok && int64(goalSeq) > m.cursor {
+		m.cursor = int64(goalSeq)
+	}
+
+	eventType := asString(payload["type"])
+	data := asMap(payload["data"])
+	m.applyDurableEvent(eventType, data, sessionID, root)
+
+	if info := runtimeInfo(eventType, data, sessionID, root); info != "" {
+		m.entries = append(m.entries, entry{Kind: "info", Content: info})
+	}
+}
+
+func (m *model) applyDurableEvent(eventType string, data map[string]any, sessionID string, root bool) {
+	switch eventType {
+	case "assistant_message":
+		if !root {
+			return
+		}
+		content := asString(data["content"])
+		if content != "" && !m.recentAssistantMatches(content) {
+			m.entries = append(m.entries, entry{Kind: "assistant", Content: content})
+		}
+	case "tool_called":
+		m.entries = append(m.entries, entry{
+			Kind:      "tool",
+			ID:        runtimeToolID(sessionID, asString(data["tool_call_id"])),
+			Name:      runtimeToolName(sessionID, asString(data["name"]), root),
+			Arguments: asMap(data["arguments"]),
+			Status:    "running",
+		})
+	case "tool_result":
+		id := runtimeToolID(sessionID, asString(data["tool_call_id"]))
+		for i := range m.entries {
+			if m.entries[i].Kind == "tool" && m.entries[i].ID == id {
+				m.entries[i].Content = asString(data["content"])
+				m.entries[i].Error = asBool(data["is_error"])
+				if m.entries[i].Error {
+					m.entries[i].Status = "error"
+				} else {
+					m.entries[i].Status = "done"
 				}
+				return
 			}
 		}
 	}
+}
+
+func runtimeInfo(eventType string, data map[string]any, sessionID string, root bool) string {
+	switch eventType {
+	case "session_started":
+		if root {
+			return "Goal started · " + shortSession(sessionID)
+		}
+	case "agent_started":
+		model := asString(data["model"])
+		if model == "" {
+			model = "built-in"
+		}
+		label := "Model ready"
+		if !root {
+			label = "Subagent model · " + shortSession(sessionID)
+		}
+		result := label + " · " + asString(data["provider"]) + "/" + model
+		if asBool(data["recovered"]) {
+			result += " · recovered"
+		}
+		return result
+	case "subagent_spawned":
+		return "Subagent spawned · " + shortSession(asString(data["child_session_id"]))
+	case "turn_finished":
+		if !root {
+			return "Subagent " + asString(data["reason"]) + " · " + shortSession(sessionID)
+		}
+	case "model_response_failed":
+		return "Model response failed · " + shortSession(sessionID)
+	case "approval_policy_changed":
+		return "Approval policy · " + asString(data["from"]) + " → " + asString(data["to"])
+	case "tool_loop_stalled":
+		return "Repeated tool result ×" + asString(data["repetitions"]) + " · switching to answer-only"
+	}
+	return ""
+}
+
+func runtimeToolID(sessionID, toolCallID string) string {
+	if sessionID == "" {
+		return toolCallID
+	}
+	return sessionID + ":" + toolCallID
+}
+
+func runtimeToolName(sessionID, name string, root bool) string {
+	if root || sessionID == "" {
+		return name
+	}
+	return shortSession(sessionID) + " · " + name
 }
 
 func (m model) recentAssistantMatches(content string) bool {
@@ -624,6 +735,8 @@ func (m *model) refreshTranscript(bottom bool) {
 			fmt.Fprintf(&b, "\n%s\n", errorStyle.Render("! "+item.Content))
 		case "system":
 			fmt.Fprintf(&b, "%s\n", mutedStyle.Render("· "+item.Content))
+		case "info":
+			fmt.Fprintf(&b, "%s\n", mutedStyle.Render("i  "+item.Content))
 		}
 	}
 	if m.notice != "" {

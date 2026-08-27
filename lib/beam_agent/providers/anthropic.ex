@@ -13,6 +13,11 @@ defmodule BeamAgent.Providers.Anthropic do
     %{
       name: "anthropic",
       label: "Anthropic Claude",
+      capabilities: [:text_generation, :tool_use, :streaming],
+      modalities: [:text],
+      locality: :remote,
+      privacy: :provider,
+      cost_hint: :metered,
       model_required: true,
       default_base_url: "https://api.anthropic.com",
       default_api_key_env: "ANTHROPIC_API_KEY"

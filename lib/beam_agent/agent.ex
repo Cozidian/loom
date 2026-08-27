@@ -2,7 +2,7 @@ defmodule BeamAgent.Agent do
   @moduledoc "A mailbox-owning agent process whose model-visible state lives in its event log."
   use GenServer
 
-  alias BeamAgent.{CapabilityCatalog, Names}
+  alias BeamAgent.{CapabilityCatalog, Names, RuntimeCommand}
   alias BeamAgent.Session.{Context, EventLog}
 
   def start_link(opts) do
@@ -57,6 +57,8 @@ defmodule BeamAgent.Agent do
       state = %{
         session_id: session_id,
         parent_session_id: Keyword.get(opts, :parent_session_id),
+        inherited_correlation_id: Keyword.get(opts, :correlation_id),
+        inherited_causation_id: Keyword.get(opts, :causation_id),
         project_id: Keyword.fetch!(opts, :project_id),
         goal_id: Keyword.fetch!(opts, :goal_id),
         provider: provider,
@@ -94,34 +96,39 @@ defmodule BeamAgent.Agent do
   @impl true
   def handle_call({:ask, prompt}, from, %{current_turn: nil} = state)
       when is_binary(prompt) and prompt != "" do
-    {:ok, supervisor} = Names.pid(:resource_supervisor, state.session_id)
-    agent = self()
-    turn_ref = make_ref()
+    command =
+      RuntimeCommand.new(
+        :submit_prompt,
+        %{
+          project_id: state.project_id,
+          goal_id: state.goal_id,
+          session_id: state.session_id,
+          worker_id: state.session_id
+        },
+        correlation_id: state.inherited_correlation_id,
+        causation_id: state.inherited_causation_id
+      )
 
-    task = fn ->
-      # The session resource supervisor owns the worker, while this extra link
-      # ensures an in-flight turn cannot outlive the agent that accepted it.
-      Process.link(agent)
-      result = state.strategy.run(state, prompt)
-      send(agent, {:turn_result, turn_ref, self(), result})
-    end
+    metadata = [
+      correlation_id: command.correlation_id,
+      causation_id: command.causation_id
+    ]
 
-    case DynamicSupervisor.start_child(supervisor, {Task, task}) do
-      {:ok, task_pid} ->
-        monitor = Process.monitor(task_pid)
-
-        current = %{
-          pid: task_pid,
-          monitor: monitor,
-          ref: turn_ref,
-          from: from,
-          cancel_requested: false
-        }
-
-        {:noreply, %{state | status: :running, current_turn: current}}
-
-      {:error, reason} ->
-        {:reply, {:error, {:turn_start_failed, reason}}, state}
+    with {:ok, command_event} <-
+           EventLog.append(
+             state.session_id,
+             :command_received,
+             %{
+               "command_id" => command.command_id,
+               "name" => command.name,
+               "version" => command.version
+             },
+             metadata
+           ),
+         {:ok, supervisor} <- Names.pid(:resource_supervisor, state.session_id) do
+      start_turn(supervisor, state, from, prompt, command, command_event)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -134,7 +141,7 @@ defmodule BeamAgent.Agent do
 
   def handle_call(:runtime_identity, _from, state) do
     identity =
-      Map.take(state, [:session_id, :project_id, :goal_id, :workspace_root])
+      Map.take(state, [:session_id, :project_id, :goal_id, :workspace_root, :data_dir])
 
     {:reply, {:ok, identity}, state}
   end
@@ -179,16 +186,28 @@ defmodule BeamAgent.Agent do
     result =
       if current.cancel_requested do
         _ =
-          EventLog.append(state.session_id, :turn_cancelled, %{
-            "reason" => inspect(reason)
-          })
+          EventLog.append(
+            state.session_id,
+            :turn_cancelled,
+            %{
+              "reason" => inspect(reason),
+              "command_id" => current.command.command_id
+            },
+            correlation_id: current.command.correlation_id
+          )
 
         {:error, :cancelled}
       else
         _ =
-          EventLog.append(state.session_id, :turn_worker_failed, %{
-            "reason" => inspect(reason)
-          })
+          EventLog.append(
+            state.session_id,
+            :turn_worker_failed,
+            %{
+              "reason" => inspect(reason),
+              "command_id" => current.command.command_id
+            },
+            correlation_id: current.command.correlation_id
+          )
 
         {:error, {:turn_process_exit, reason}}
       end
@@ -200,6 +219,51 @@ defmodule BeamAgent.Agent do
   def handle_info({:DOWN, _monitor, :process, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:turn_result, _ref, _pid, _result}, state), do: {:noreply, state}
+
+  defp start_turn(supervisor, state, from, prompt, command, command_event) do
+    agent = self()
+    turn_ref = make_ref()
+    command = Map.put(command, :event_id, event_id(command_event))
+    turn_context = Map.put(state, :runtime_command, command)
+
+    task = fn ->
+      # The session resource supervisor owns the worker, while this extra link
+      # ensures an in-flight turn cannot outlive the agent that accepted it.
+      Process.link(agent)
+      result = state.strategy.run(turn_context, prompt)
+      send(agent, {:turn_result, turn_ref, self(), result})
+    end
+
+    case DynamicSupervisor.start_child(supervisor, {Task, task}) do
+      {:ok, task_pid} ->
+        monitor = Process.monitor(task_pid)
+
+        current = %{
+          pid: task_pid,
+          monitor: monitor,
+          ref: turn_ref,
+          from: from,
+          command: command,
+          cancel_requested: false
+        }
+
+        {:noreply, %{state | status: :running, current_turn: current}}
+
+      {:error, reason} ->
+        _ =
+          EventLog.append(
+            state.session_id,
+            :command_failed,
+            %{"command_id" => command.command_id, "error" => inspect(reason)},
+            correlation_id: command.correlation_id,
+            causation_id: command.event_id
+          )
+
+        {:reply, {:error, {:turn_start_failed, reason}}, state}
+    end
+  end
+
+  defp event_id(event), do: "#{event["session_id"]}:#{event["seq"]}"
 
   defp validate_strategy(strategy) do
     case Code.ensure_loaded(strategy) do

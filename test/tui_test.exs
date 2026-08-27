@@ -42,11 +42,13 @@ defmodule BeamAgent.CLITUITest do
 
     assert payload.type == "init"
     assert payload.session_id == context.session_id
+    assert payload.cursor > 0
     assert payload.workspace == context.config["workspace_root"]
     assert payload.profile == "echo"
     assert payload.model == "built-in"
     assert payload.approval_mode == "ask"
-    assert Enum.map(payload.entries, & &1.kind) == ["user", "assistant"]
+    assert Enum.map(payload.entries, & &1.kind) == ["info", "info", "user", "assistant"]
+    assert hd(payload.entries).content =~ "Goal started"
     assert List.last(payload.entries).content == "echo(1): hello"
     assert is_map(payload.context_stats)
   end
@@ -66,6 +68,36 @@ defmodule BeamAgent.CLITUITest do
     assert decoded["type"] == "approval_requested"
     assert decoded["approval"]["access"] == "execute"
     assert decoded["approval"]["arguments"] == %{"command" => "mix test"}
+
+    nil_payload =
+      TUI.notification_payload({
+        :stream,
+        %{
+          type: :runtime_event,
+          durability: :durable,
+          payload: %{type: "assistant_message", data: %{"content" => nil}}
+        }
+      })
+
+    assert nil_payload
+           |> JSON.encode!()
+           |> JSON.decode!()
+           |> get_in(["event", "payload", "data", "content"]) ==
+             nil
+
+    boolean_payload =
+      TUI.notification_payload({
+        :stream,
+        %{
+          type: :runtime_event,
+          scope: %{root?: true},
+          payload: %{type: "tool_result", data: %{"is_error" => false}}
+        }
+      })
+
+    decoded_boolean_payload = boolean_payload |> JSON.encode!() |> JSON.decode!()
+    assert get_in(decoded_boolean_payload, ["event", "scope", "root?"]) == true
+    assert get_in(decoded_boolean_payload, ["event", "payload", "data", "is_error"]) == false
 
     assert TUI.notification_payload({:approval_resolved, "approval-1", :deny}) == %{
              type: "approval_resolved",
@@ -88,6 +120,11 @@ defmodule BeamAgent.CLITUITest do
     assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
     assert_receive {:beam_agent_tui, {:context_stats, _stats}}
 
+    assert {:ok, bootstrap} = Controller.bootstrap(controller)
+    assert bootstrap.cursor > 0
+    assert bootstrap.events != []
+    assert Enum.all?(bootstrap.events, &(&1.goal_seq <= bootstrap.cursor))
+
     Controller.submit(controller, "hello")
 
     assert_receive {:beam_agent_tui, {:turn_started, "hello"}}
@@ -97,11 +134,13 @@ defmodule BeamAgent.CLITUITest do
     assert Enum.any?(messages, fn
              {:stream,
               %{
-                type: :durable_event,
-                event: %{
-                  "type" => "assistant_message",
-                  "data" => %{"content" => "echo(1): hello"}
-                }
+                type: :runtime_event,
+                durability: :durable,
+                payload: %{
+                  type: "assistant_message",
+                  data: %{"content" => "echo(1): hello"}
+                },
+                scope: %{root?: true}
               }} ->
                true
 
@@ -110,6 +149,37 @@ defmodule BeamAgent.CLITUITest do
            end)
 
     assert Enum.any?(messages, &match?({:turn_finished, {:ok, "echo(1): hello"}}, &1))
+
+    Controller.command(controller, :events)
+    assert_receive {:beam_agent_tui, {:panel, title, lines}}
+    assert title =~ "Goal events"
+    assert hd(lines) =~ "cursor"
+    assert Enum.any?(lines, &(&1 =~ "corr" and &1 =~ "cause"))
+
+    Controller.command(controller, {:events, "category=model type=assistant_message limit=1"})
+    assert_receive {:beam_agent_tui, {:panel, filtered_title, filtered_lines}}
+    assert filtered_title =~ "1 results"
+    assert Enum.at(filtered_lines, 1) =~ "category=model"
+    assert Enum.at(filtered_lines, 1) =~ "type=assistant_message"
+    assert List.last(filtered_lines) =~ "model/assistant_message"
+    assert List.last(filtered_lines) =~ "redacted"
+
+    Controller.command(controller, {:events, "help"})
+    assert_receive {:beam_agent_tui, {:panel, "Event inspector filters", help_lines}}
+    assert Enum.any?(help_lines, &(&1 =~ "worker=root|children"))
+
+    Controller.command(controller, {:events, "limit=1000"})
+    assert_receive {:beam_agent_tui, {:panel, "Invalid event filter", error_lines}}
+    assert hd(error_lines) == "Invalid limit value: 1000"
+
+    Controller.command(controller, :models)
+    assert_receive {:beam_agent_tui, {:panel, models_title, model_lines}}
+    assert models_title =~ "Model registry"
+    assert Enum.any?(model_lines, &(&1 =~ "● echo · echo/provider default · local · unknown"))
+
+    Controller.command(controller, {:models, "refresh"})
+    assert_receive {:beam_agent_tui, {:notice, :muted, refresh_message}}
+    assert refresh_message =~ "Checking 1 model endpoints"
   end
 
   test "controller toggles visible session auto mode", context do

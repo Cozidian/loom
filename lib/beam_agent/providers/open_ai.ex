@@ -12,6 +12,11 @@ defmodule BeamAgent.Providers.OpenAI do
     %{
       name: "openai",
       label: "OpenAI",
+      capabilities: [:text_generation, :tool_use, :streaming],
+      modalities: [:text],
+      locality: :remote,
+      privacy: :provider,
+      cost_hint: :metered,
       model_required: true,
       default_base_url: "https://api.openai.com/v1",
       default_api_key_env: "OPENAI_API_KEY"

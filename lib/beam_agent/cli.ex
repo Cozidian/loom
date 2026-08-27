@@ -228,6 +228,8 @@ defmodule BeamAgent.CLI do
          {:ok, stored_config} <- Config.load(config_path),
          {:ok, config} <- Config.runtime(stored_config, opts[:profile]),
          config <- Config.merge_overrides(config, opts),
+         config <-
+           Map.put(config, "model_endpoints", Config.model_endpoints(stored_config, config)),
          config <- Map.put(config, "workspace_root", Path.expand(opts[:workspace] || File.cwd!())),
          :ok <- Config.validate_runtime(config),
          :ok <- require_existing_session(opts[:session], config, require_existing?),
@@ -272,7 +274,8 @@ defmodule BeamAgent.CLI do
       compaction_threshold_percent: config["compaction_threshold_percent"],
       workspace_root: config["workspace_root"],
       approval_policy: Config.approval_policy_atom(config["approval_policy"]),
-      approval_handler: self()
+      approval_handler: self(),
+      model_endpoints: config["model_endpoints"] || []
     )
   end
 
@@ -291,7 +294,8 @@ defmodule BeamAgent.CLI do
           compaction_threshold_percent: config["compaction_threshold_percent"],
           workspace_root: config["workspace_root"],
           approval_policy: Config.approval_policy_atom(config["approval_policy"]),
-          approval_handler: self()
+          approval_handler: self(),
+          model_endpoints: config["model_endpoints"] || []
         )
     end
   end
@@ -329,6 +333,18 @@ defmodule BeamAgent.CLI do
 
           "/status" ->
             print_status(session_id, config)
+            chat_loop(session_id, config)
+
+          "/models" ->
+            print_session_models(session_id, config)
+            chat_loop(session_id, config)
+
+          "/models refresh" ->
+            refresh_session_models(session_id, :all)
+            chat_loop(session_id, config)
+
+          "/models " <> endpoint_id ->
+            refresh_session_models(session_id, endpoint_id)
             chat_loop(session_id, config)
 
           "/auto" ->
@@ -443,6 +459,39 @@ defmodule BeamAgent.CLI do
          {:ok, approval_policy} <- BeamAgent.approval_policy(session_id) do
       config = Map.put(config, "approval_policy", to_string(approval_policy))
       UI.status(config, session_id, path, context, context_stats)
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp print_session_models(session_id, config) do
+    with {:ok, identity} <- BeamAgent.Agent.runtime_identity(session_id),
+         {:ok, endpoints} <- BeamAgent.models(identity.project_id) do
+      IO.puts("")
+      output("Model registry")
+
+      Enum.each(endpoints, fn endpoint ->
+        marker = if endpoint.id == config["profile"], do: "*", else: " "
+        model = endpoint.model || "provider default"
+        capabilities = endpoint.claims.capabilities |> Enum.map(&to_string/1) |> Enum.join(",")
+
+        output(
+          "#{marker} #{endpoint.id}  #{endpoint.provider}/#{model}  #{endpoint.claims.locality}  #{endpoint.health.status}  #{capabilities}"
+        )
+      end)
+
+      IO.puts("")
+      0
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp refresh_session_models(session_id, endpoint_id) do
+    with {:ok, identity} <- BeamAgent.Agent.runtime_identity(session_id),
+         {:ok, endpoint_ids} <- BeamAgent.refresh_models(identity.project_id, endpoint_id) do
+      UI.notice("Checking #{length(endpoint_ids)} model endpoints · run /models for status")
+      0
     else
       {:error, reason} -> error(reason)
     end

@@ -3,6 +3,7 @@ defmodule BeamAgent.Session.EventLog do
   use GenServer
 
   alias BeamAgent.Names
+  alias BeamAgent.Goal.EventHub
   alias BeamAgent.Session.StreamHub
 
   def start_link(opts) do
@@ -10,9 +11,9 @@ defmodule BeamAgent.Session.EventLog do
     GenServer.start_link(__MODULE__, opts, name: Names.via(:event_log, id))
   end
 
-  def append(session_id, type, data) when is_map(data) do
+  def append(session_id, type, data, metadata \\ []) when is_map(data) and is_list(metadata) do
     with {:ok, pid} <- Names.pid(:event_log, session_id) do
-      GenServer.call(pid, {:append, type, data})
+      GenServer.call(pid, {:append, type, data, metadata})
     end
   end
 
@@ -37,6 +38,18 @@ defmodule BeamAgent.Session.EventLog do
     end
   end
 
+  def read(data_dir, session_id)
+      when is_binary(data_dir) and is_binary(session_id) do
+    if Regex.match?(~r/\A[a-zA-Z0-9_-]+\z/, session_id) do
+      data_dir
+      |> Path.join(session_id)
+      |> Path.join("events.jsonl")
+      |> load()
+    else
+      {:error, :invalid_session_id}
+    end
+  end
+
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
@@ -50,14 +63,23 @@ defmodule BeamAgent.Session.EventLog do
     with :ok <- File.mkdir_p(directory),
          {:ok, events} <- load(path),
          {:ok, io} <- File.open(path, [:append, :binary, :utf8]) do
-      state = %{session_id: session_id, path: path, io: io, events: events}
+      state = %{
+        session_id: session_id,
+        goal_id: goal_id,
+        path: path,
+        io: io,
+        events: events,
+        correlation_id: restored_correlation(events)
+      }
 
       initialize_log(
         state,
         parent_session_id,
         Keyword.fetch!(opts, :workspace_root),
         project_id,
-        goal_id
+        goal_id,
+        Keyword.get(opts, :correlation_id),
+        Keyword.get(opts, :causation_id)
       )
     else
       {:error, reason} -> {:stop, reason}
@@ -65,8 +87,8 @@ defmodule BeamAgent.Session.EventLog do
   end
 
   @impl true
-  def handle_call({:append, type, data}, _from, state) do
-    case persist(state, type, data) do
+  def handle_call({:append, type, data, metadata}, _from, state) do
+    case persist(state, type, data, metadata) do
       {:ok, event, next} -> {:reply, {:ok, event}, next}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -78,26 +100,57 @@ defmodule BeamAgent.Session.EventLog do
   @impl true
   def terminate(_reason, state), do: File.close(state.io)
 
-  defp persist(state, type, data) do
+  defp persist(state, type, data, metadata \\ []) do
+    with {:ok, goal_seq} <- EventHub.next_sequence(state.goal_id) do
+      persist_reserved(state, type, data, metadata, goal_seq)
+    end
+  end
+
+  defp persist_reserved(state, type, data, metadata, goal_seq) do
+    correlation_id = metadata_value(metadata, :correlation_id, state.correlation_id)
+    causation_id = metadata_value(metadata, :causation_id, last_event_id(state.events))
+
     event = %{
       "seq" => length(state.events),
+      "goal_seq" => goal_seq,
       "at" => DateTime.utc_now() |> DateTime.to_iso8601(),
       "session_id" => state.session_id,
       "type" => to_string(type),
+      "correlation_id" => correlation_id,
+      "causation_id" => causation_id,
       "data" => stringify_keys(data)
     }
 
-    try do
-      encoded = JSON.encode!(event)
+    encoded = JSON.encode!(event)
 
-      with :ok <- IO.binwrite(state.io, [encoded, "\n"]),
-           :ok <- :file.sync(state.io) do
+    case write_event(state.io, encoded) do
+      :ok ->
         StreamHub.publish_event(state.session_id, event)
-        {:ok, event, %{state | events: state.events ++ [event]}}
-      end
-    rescue
-      error -> {:error, {:invalid_event, Exception.message(error)}}
+
+        next_correlation =
+          if to_string(type) in [
+               "turn_finished",
+               "turn_cancelled",
+               "turn_worker_failed",
+               "command_failed"
+             ],
+             do: nil,
+             else: correlation_id
+
+        {:ok, event, %{state | events: state.events ++ [event], correlation_id: next_correlation}}
+
+      {:error, reason} ->
+        _ = EventHub.abandon_sequence(state.goal_id, goal_seq)
+        {:error, reason}
     end
+  rescue
+    error ->
+      _ = EventHub.abandon_sequence(state.goal_id, goal_seq)
+      {:error, {:invalid_event, Exception.message(error)}}
+  end
+
+  defp write_event(io, encoded) do
+    with :ok <- IO.binwrite(io, [encoded, "\n"]), :ok <- :file.sync(io), do: :ok
   end
 
   defp load(path) do
@@ -141,20 +194,37 @@ defmodule BeamAgent.Session.EventLog do
          parent_session_id,
          workspace_root,
          project_id,
-         goal_id
+         goal_id,
+         correlation_id,
+         causation_id
        ) do
-    case persist(state, :session_started, %{
-           "parent_session_id" => parent_session_id,
-           "workspace_root" => workspace_root,
-           "project_id" => project_id,
-           "goal_id" => goal_id
-         }) do
+    metadata = [correlation_id: correlation_id, causation_id: causation_id]
+
+    case persist(
+           state,
+           :session_started,
+           %{
+             "parent_session_id" => parent_session_id,
+             "workspace_root" => workspace_root,
+             "project_id" => project_id,
+             "goal_id" => goal_id
+           },
+           metadata
+         ) do
       {:ok, _event, state} -> {:ok, state}
       {:error, reason} -> close_and_stop(state, reason)
     end
   end
 
-  defp initialize_log(state, _parent_session_id, workspace_root, project_id, goal_id) do
+  defp initialize_log(
+         state,
+         _parent_session_id,
+         workspace_root,
+         project_id,
+         goal_id,
+         _correlation_id,
+         _causation_id
+       ) do
     with {:ok, state} <- ensure_workspace_binding(state, workspace_root),
          {:ok, state} <- ensure_goal_binding(state, project_id, goal_id) do
       {:ok, state}
@@ -282,4 +352,35 @@ defmodule BeamAgent.Session.EventLog do
   defp stringify_keys(false), do: false
   defp stringify_keys(value) when is_atom(value), do: Atom.to_string(value)
   defp stringify_keys(value), do: value
+
+  defp metadata_value(metadata, key, default) do
+    if Keyword.has_key?(metadata, key), do: Keyword.get(metadata, key), else: default
+  end
+
+  defp last_event_id([]), do: nil
+
+  defp last_event_id(events) do
+    event = List.last(events)
+    "#{event["session_id"]}:#{event["seq"]}"
+  end
+
+  defp restored_correlation(events) do
+    Enum.reduce(events, nil, fn event, correlation_id ->
+      cond do
+        event["type"] in [
+          "turn_finished",
+          "turn_cancelled",
+          "turn_worker_failed",
+          "command_failed"
+        ] ->
+          nil
+
+        is_binary(event["correlation_id"]) ->
+          event["correlation_id"]
+
+        true ->
+          correlation_id
+      end
+    end)
+  end
 end

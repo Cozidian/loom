@@ -2,7 +2,7 @@ defmodule BeamAgent.ProjectSupervisor do
   @moduledoc "One supervision subtree for one canonical project workspace."
   use Supervisor
 
-  alias BeamAgent.{Names, Project}
+  alias BeamAgent.{ModelRegistry, Names, Project}
   alias BeamAgent.Project.GoalRootSupervisor
 
   def start_link(opts) do
@@ -47,6 +47,9 @@ defmodule BeamAgent.ProjectSupervisor do
   def init(opts) do
     children = [
       {Project, opts},
+      {Task.Supervisor,
+       name: Names.via(:model_health_supervisor, Keyword.fetch!(opts, :project_id))},
+      {ModelRegistry, opts},
       {GoalRootSupervisor, opts}
     ]
 

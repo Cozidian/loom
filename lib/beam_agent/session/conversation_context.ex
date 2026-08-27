@@ -7,7 +7,7 @@ defmodule BeamAgent.Session.ConversationContext do
   """
   use GenServer
 
-  alias BeamAgent.Names
+  alias BeamAgent.{ModelInvocation, ModelRequest, Names}
   alias BeamAgent.Session.EventLog
 
   @default_window_tokens 32_000
@@ -317,26 +317,30 @@ defmodule BeamAgent.Session.ConversationContext do
 
     prompt = render_summary_source(plan.source_messages)
 
-    try do
-      case provider_module.complete([%{role: :user, content: prompt}], [], options) do
-        {:ok, %{content: content, tool_calls: []}}
-        when is_binary(content) and content != "" ->
+    with {:ok, request} <-
+           ModelRequest.new(
+             endpoint_id: options[:profile],
+             provider: provider_module.id(),
+             provider_module: provider_module,
+             model: options[:model],
+             messages: [%{role: :user, content: prompt}],
+             tools: [],
+             stream: false,
+             timeout: Keyword.get(provider_options, :invocation_timeout_ms, :infinity),
+             options: options,
+             metadata: %{task: :context_compaction}
+           ) do
+      case ModelInvocation.invoke(request) do
+        {:ok, %{content: content, tool_calls: []}} when is_binary(content) and content != "" ->
           max_chars = plan.summary_max_tokens * 4
           {:ok, String.slice(content, 0, max_chars)}
 
         {:ok, response} ->
           {:error, {:invalid_compaction_response, response}}
 
-        {:error, _reason} = error ->
-          error
-
-        other ->
-          {:error, {:invalid_provider_return, other}}
+        {:error, error} ->
+          {:error, error.cause}
       end
-    rescue
-      error -> {:error, {:compaction_provider_exception, Exception.message(error)}}
-    catch
-      kind, reason -> {:error, {:compaction_provider_throw, kind, reason}}
     end
   end
 

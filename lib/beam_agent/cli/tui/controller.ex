@@ -3,8 +3,10 @@ defmodule BeamAgent.CLI.TUI.Controller do
   use GenServer
 
   alias BeamAgent.CLI.Config
+  alias BeamAgent.{Runtime, RuntimeEventQuery}
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+  def bootstrap(controller), do: GenServer.call(controller, :bootstrap)
 
   def submit(controller, prompt), do: GenServer.cast(controller, {:submit, prompt})
   def cancel(controller), do: GenServer.cast(controller, :cancel)
@@ -18,7 +20,13 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def init(opts) do
     state = %{
       client: Keyword.fetch!(opts, :client),
+      runtime: nil,
+      runtime_monitor: nil,
       session_id: Keyword.fetch!(opts, :session_id),
+      project_id: nil,
+      goal_id: nil,
+      cursor: 0,
+      bootstrap_events: [],
       config: Keyword.fetch!(opts, :config),
       approval_policy: :ask,
       auto_fallback: :ask,
@@ -26,17 +34,23 @@ defmodule BeamAgent.CLI.TUI.Controller do
       compacting?: false
     }
 
-    with :ok <- BeamAgent.subscribe(state.session_id),
-         :ok <- BeamAgent.set_approval_handler(state.session_id, self()),
-         {:ok, approval_policy} <- BeamAgent.approval_policy(state.session_id) do
+    with {:ok, runtime} <-
+           Runtime.connect(state.session_id, subscriber: self(), view: :internal),
+         {:ok, subscription} <- Runtime.bootstrap(runtime) do
       state = %{
         state
-        | approval_policy: approval_policy,
-          auto_fallback: auto_fallback(approval_policy, state.config)
+        | runtime: runtime,
+          runtime_monitor: Process.monitor(runtime),
+          project_id: subscription.project_id,
+          goal_id: subscription.goal_id,
+          cursor: subscription.cursor,
+          bootstrap_events: subscription.events,
+          approval_policy: subscription.approval_policy,
+          auto_fallback: auto_fallback(subscription.approval_policy, state.config)
       }
 
       notify(state, {:controller_ready, self()})
-      notify(state, {:approval_mode, approval_policy})
+      notify(state, {:approval_mode, subscription.approval_policy})
       notify_context_stats(state)
       {:ok, state}
     else
@@ -45,20 +59,25 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   @impl true
-  def handle_cast({:submit, prompt}, %{current: nil} = state) when is_binary(prompt) do
-    owner = self()
-    result_ref = make_ref()
+  def handle_call(:bootstrap, _from, state) do
+    snapshot = %{
+      project_id: state.project_id,
+      goal_id: state.goal_id,
+      cursor: state.cursor,
+      events: state.bootstrap_events
+    }
 
-    case Task.start(fn ->
-           send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt, :infinity)})
-         end) do
-      {:ok, pid} ->
-        current = %{pid: pid, monitor: Process.monitor(pid), result_ref: result_ref}
-        notify(state, {:turn_started, prompt})
-        {:noreply, %{state | current: current}}
+    {:reply, {:ok, snapshot}, %{state | bootstrap_events: []}}
+  end
+
+  @impl true
+  def handle_cast({:submit, prompt}, %{current: nil} = state) when is_binary(prompt) do
+    case Runtime.submit(state.runtime, prompt) do
+      :ok ->
+        {:noreply, %{state | current: :running}}
 
       {:error, reason} ->
-        notify(state, {:turn_finished, {:error, {:turn_start_failed, reason}}})
+        notify(state, {:turn_finished, {:error, reason}})
         {:noreply, state}
     end
   end
@@ -74,15 +93,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   def handle_cast(:cancel, state) do
-    _ = BeamAgent.cancel(state.session_id)
-    notify(state, :turn_cancelling)
+    _ = Runtime.cancel(state.runtime)
     {:noreply, state}
   end
 
   def handle_cast({:decide, approval_id, decision}, state)
       when decision in [:allow_once, :deny] do
-    case BeamAgent.respond_approval(state.session_id, approval_id, decision) do
-      :ok -> notify(state, {:approval_resolved, approval_id, decision})
+    case Runtime.respond_approval(state.runtime, approval_id, decision) do
+      :ok -> :ok
       {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
     end
 
@@ -94,21 +112,67 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   @impl true
-  def handle_info({:beam_agent_stream, event}, state) do
+  def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
     notify(state, {:stream, event})
-    {:noreply, state}
+
+    cursor =
+      case event do
+        %{durability: :durable, goal_seq: goal_seq} when is_integer(goal_seq) ->
+          max(state.cursor, goal_seq)
+
+        _event ->
+          state.cursor
+      end
+
+    {:noreply, %{state | cursor: cursor}}
   end
 
-  def handle_info({:beam_agent_approval, request}, state) do
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approval_requested, request}},
+        %{runtime: runtime} = state
+      ) do
     notify(state, {:approval_requested, request})
     {:noreply, state}
   end
 
-  def handle_info({result_ref, result}, %{current: %{result_ref: result_ref} = current} = state) do
-    Process.demonitor(current.monitor, [:flush])
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:turn_started, prompt}},
+        %{runtime: runtime} = state
+      ) do
+    notify(state, {:turn_started, prompt})
+    {:noreply, %{state | current: :running}}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:turn_finished, result}},
+        %{runtime: runtime} = state
+      ) do
     notify(state, {:turn_finished, result})
     notify_context_stats(state)
     {:noreply, %{state | current: nil}}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, :turn_cancelling},
+        %{runtime: runtime} = state
+      ) do
+    notify(state, :turn_cancelling)
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approval_resolved, approval_id, decision}},
+        %{runtime: runtime} = state
+      ) do
+    notify(state, {:approval_resolved, approval_id, decision})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approval_policy_changed, policy}},
+        %{runtime: runtime} = state
+      ) do
+    {:noreply, %{state | approval_policy: policy}}
   end
 
   def handle_info({:context_compaction_result, result}, state) do
@@ -136,26 +200,19 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   def handle_info(
-        {:DOWN, monitor, :process, _pid, reason},
-        %{current: %{monitor: monitor}} = state
-      )
-      when reason != :normal do
-    notify(state, {:turn_finished, {:error, {:turn_task_exit, reason}}})
-    {:noreply, %{state | current: nil}}
+        {:DOWN, monitor, :process, runtime, reason},
+        %{runtime_monitor: monitor, runtime: runtime} = state
+      ) do
+    {:stop, {:runtime_client_exit, reason}, state}
   end
 
   def handle_info({:DOWN, _monitor, :process, _pid, _reason}, state), do: {:noreply, state}
-  def handle_info({_result_ref, _result}, state), do: {:noreply, state}
+  def handle_info({:beam_agent_runtime, _runtime, _notification}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
-    if state.current do
-      _ = BeamAgent.cancel(state.session_id)
-      Process.demonitor(state.current.monitor, [:flush])
-      if Process.alive?(state.current.pid), do: Process.exit(state.current.pid, :shutdown)
-    end
-
-    _ = BeamAgent.unsubscribe(state.session_id, self())
+    if state.runtime_monitor, do: Process.demonitor(state.runtime_monitor, [:flush])
+    if state.runtime, do: Runtime.disconnect(state.runtime)
     :ok
   end
 
@@ -174,7 +231,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp run_command(:auto, state) do
     next = if state.approval_policy == :auto, do: state.auto_fallback, else: :auto
 
-    case BeamAgent.set_approval_policy(state.session_id, next) do
+    case Runtime.set_approval_policy(state.runtime, next) do
       :ok ->
         config = Map.put(state.config, "approval_policy", to_string(next))
 
@@ -206,10 +263,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   defp run_command(:status, state) do
-    with {:ok, path} <- BeamAgent.event_log_path(state.session_id),
-         {:ok, context} <- BeamAgent.context_snapshot(state.session_id),
-         {:ok, context_stats} <- BeamAgent.conversation_context_stats(state.session_id),
-         {:ok, events} <- BeamAgent.events(state.session_id) do
+    with {:ok, status} <- Runtime.status(state.runtime) do
       notify(state, {
         :panel,
         "Session status",
@@ -220,11 +274,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
           "session   #{state.session_id}",
           "workspace #{state.config["workspace_root"]}",
           "approval  #{state.approval_policy}",
-          "project   #{String.slice(context.fingerprint, 0, 12)}",
-          "context   #{context_stats.estimated_tokens}/#{context_stats.window_tokens} est. tokens (#{context_stats.utilization_percent}%)",
-          "compacted #{context_stats.compaction_count} times",
-          "events    #{length(events)}",
-          "log       #{path}"
+          "project   #{state.project_id}",
+          "goal      #{state.goal_id}",
+          "snapshot  #{String.slice(status.context.fingerprint, 0, 12)}",
+          "context   #{status.context_stats.estimated_tokens}/#{status.context_stats.window_tokens} est. tokens (#{status.context_stats.utilization_percent}%)",
+          "compacted #{status.context_stats.compaction_count} times",
+          "events    #{status.event_count}",
+          "cursor    #{status.cursor}",
+          "log       #{status.event_log_path}"
         ]
       })
     else
@@ -271,12 +328,84 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
-  defp run_command(:events, state) do
-    with {:ok, events} <- BeamAgent.events(state.session_id),
-         {:ok, path} <- BeamAgent.event_log_path(state.session_id) do
-      notify(state, {:panel, "Event log", ["#{length(events)} durable events", path]})
+  defp run_command(:models, state), do: run_command({:models, ""}, state)
+
+  defp run_command({:models, ""}, state) do
+    case Runtime.models(state.runtime) do
+      {:ok, endpoints} ->
+        lines =
+          if endpoints == [] do
+            ["No model endpoints registered"]
+          else
+            Enum.map(endpoints, &format_model_endpoint(&1, state.config["profile"]))
+          end
+
+        notify(state, {:panel, "Model registry · #{length(endpoints)} endpoints", lines})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:models, "refresh"}, state) do
+    case Runtime.refresh_models(state.runtime) do
+      {:ok, endpoint_ids} ->
+        notify(
+          state,
+          {:notice, :muted,
+           "Checking #{length(endpoint_ids)} model endpoints · run /models to refresh status"}
+        )
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:models, endpoint_id}, state) when is_binary(endpoint_id) do
+    case Runtime.refresh_models(state.runtime, endpoint_id) do
+      {:ok, [_endpoint_id]} ->
+        notify(
+          state,
+          {:notice, :muted, "Checking #{endpoint_id} · run /models to refresh status"}
+        )
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command(:events, state), do: run_command({:events, ""}, state)
+
+  defp run_command({:events, "help"}, state) do
+    notify(state, {:panel, "Event inspector filters", RuntimeEventQuery.usage()})
+    state
+  end
+
+  defp run_command({:events, query}, state) when is_binary(query) do
+    with {:ok, inspection} <- Runtime.inspect_events(state.runtime, query),
+         {:ok, status} <- Runtime.status(state.runtime) do
+      lines =
+        [
+          "#{inspection.matched}/#{inspection.total} matched · showing #{inspection.returned} · cursor #{inspection.cursor}",
+          "filters #{Enum.join(inspection.filters, " · ")}",
+          "root log #{status.event_log_path}",
+          ""
+        ] ++ Enum.map(inspection.events, &format_runtime_event/1)
+
+      notify(state, {:panel, "Goal events · #{inspection.returned} results", lines})
     else
-      {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
+      {:error, :event_filter_help} ->
+        notify(state, {:panel, "Event inspector filters", RuntimeEventQuery.usage()})
+
+      {:error, reason} ->
+        lines = [event_filter_error(reason), "" | RuntimeEventQuery.usage()]
+        notify(state, {:panel, "Invalid event filter", lines})
     end
 
     state
@@ -304,12 +433,23 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp run_command(:new, %{current: nil} = state) do
     with {:ok, provider} <- Config.provider_atom(state.config["provider"]),
          {:ok, new_session_id} <- start_session(state.config, provider),
-         :ok <- BeamAgent.subscribe(new_session_id),
-         :ok <- BeamAgent.set_approval_handler(new_session_id, self()) do
-      _ = BeamAgent.unsubscribe(state.session_id, self())
+         {:ok, subscription} <-
+           Runtime.reconnect(state.runtime, new_session_id, after: nil, view: :internal) do
       _ = BeamAgent.stop_session(state.session_id)
-      state = %{state | session_id: new_session_id}
+
+      state = %{
+        state
+        | session_id: new_session_id,
+          project_id: subscription.project_id,
+          goal_id: subscription.goal_id,
+          cursor: subscription.cursor,
+          bootstrap_events: [],
+          approval_policy: subscription.approval_policy,
+          current: nil
+      }
+
       notify(state, {:session_changed, new_session_id})
+      Enum.each(subscription.events, &notify(state, {:stream, &1}))
       notify_context_stats(state)
       state
     else
@@ -339,7 +479,8 @@ defmodule BeamAgent.CLI.TUI.Controller do
       compaction_threshold_percent: config["compaction_threshold_percent"] || 75,
       workspace_root: config["workspace_root"],
       approval_policy: Config.approval_policy_atom(config["approval_policy"]),
-      approval_handler: self()
+      approval_handler: self(),
+      model_endpoints: config["model_endpoints"] || []
     )
   end
 
@@ -365,4 +506,73 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp auto_fallback(policy, _config), do: policy
 
   defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
+
+  defp format_runtime_event(event) do
+    time = event.at |> to_string() |> String.slice(11, 12)
+    worker = if event.scope.root?, do: "root", else: "child"
+    source = "#{worker} #{short_id(event.scope.session_id)}"
+    type = to_string(event.payload.type)
+
+    lineage =
+      "corr #{short_id(event.correlation_id || "none")} · cause #{short_id(event.causation_id || "root")}"
+
+    "##{event.goal_seq}  #{time}  #{source}  #{event.category}/#{type}#{event_detail(event)}#{redaction_detail(event)} · #{lineage}"
+  end
+
+  defp event_detail(%{payload: %{type: type, data: data}})
+       when type in ["agent_started", :agent_started] do
+    " · #{data["provider"] || data[:provider]}/#{data["model"] || data[:model] || "built-in"}"
+  end
+
+  defp event_detail(%{payload: %{type: type, data: data}})
+       when type in ["tool_called", :tool_called] do
+    " · #{data["name"] || data[:name]}"
+  end
+
+  defp event_detail(%{payload: %{type: type, data: data}})
+       when type in ["tool_result", :tool_result] do
+    status = if data["is_error"] || data[:is_error], do: "error", else: "ok"
+    " · #{data["name"] || data[:name]} · #{status}"
+  end
+
+  defp event_detail(%{payload: %{type: type, data: data}})
+       when type in ["turn_finished", :turn_finished] do
+    case data["reason"] || data[:reason] do
+      reason when is_binary(reason) or is_atom(reason) -> " · #{reason}"
+      _redacted_or_missing -> ""
+    end
+  end
+
+  defp event_detail(_event), do: ""
+
+  defp redaction_detail(%{redacted?: true}), do: " · redacted"
+  defp redaction_detail(_event), do: ""
+
+  defp event_filter_error({:unknown_event_filter, key}), do: "Unknown filter: #{key}"
+
+  defp event_filter_error({:invalid_event_filter_value, key, value}),
+    do: "Invalid #{key} value: #{value}"
+
+  defp event_filter_error({:invalid_event_filter, token}), do: "Invalid filter: #{token}"
+  defp event_filter_error(reason), do: format_error(reason)
+
+  defp format_model_endpoint(endpoint, active_profile) do
+    marker = if endpoint.id == active_profile, do: "●", else: "○"
+    model = endpoint.model || "provider default"
+    capabilities = endpoint.claims.capabilities |> Enum.map(&to_string/1) |> Enum.join(",")
+
+    "#{marker} #{endpoint.id} · #{endpoint.provider}/#{model} · #{endpoint.claims.locality} · #{endpoint.health.status} · #{capabilities}"
+  end
+
+  defp short_id(id) do
+    id = to_string(id)
+
+    suffix =
+      case String.split(id, "-", parts: 2) do
+        [_prefix, suffix] -> suffix
+        [id] -> id
+      end
+
+    String.slice(suffix, 0, 8)
+  end
 end

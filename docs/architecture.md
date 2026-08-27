@@ -26,8 +26,11 @@ Primary references:
 | Tool runtime registry | Stateless `BeamAgent.Tool` modules published in `Registry` |
 | Session event source of truth | Session-owned append-only JSONL `EventLog` process |
 | Live event fan-out | Session-owned, subscriber-monitoring `StreamHub` process |
+| Goal-wide observable event projection | Goal-owned `Goal.EventHub` over root and child sessions |
+| Interface connection and reconnect | Ephemeral `BeamAgent.Runtime.Client` over cursor-based goal replay |
 | In-process subagent provider | Dynamically supervised child session subtree |
 | Long-lived workspace runtime | One registered `ProjectSupervisor` per canonical workspace |
+| Project model inventory | Project-owned `ModelRegistry` with supervised health tasks |
 | Ephemeral user objective | A project-owned `GoalSupervisor` with explicit identity |
 | Scoped/stateful capability | A process under the session's `ResourceSupervisor` |
 | Dependency disposal/reload | Links plus `:rest_for_one` restart ordering |
@@ -41,9 +44,12 @@ BeamAgent.Supervisor
 └── ProjectRootSupervisor (DynamicSupervisor)
     └── ProjectSupervisor (one per canonical workspace, :one_for_one)
         ├── Project (GenServer, identity and project-lived state)
+        ├── ModelHealthSupervisor (Task.Supervisor)
+        ├── ModelRegistry (GenServer, configured endpoints and health)
         └── GoalRootSupervisor (DynamicSupervisor)
             └── GoalSupervisor (one per root goal, :rest_for_one)
                 ├── Goal (GenServer, identity and goal-lived state)
+                ├── Goal.EventHub (GenServer, goal-wide replay and live fan-out)
                 └── SessionSupervisor (:rest_for_one)
                     ├── EventLog (GenServer, append-only JSONL)
                     ├── StreamHub (GenServer, live fan-out and checkpoints)
@@ -68,6 +74,114 @@ existing clients do not need to change. A goal-state failure rebuilds the
 dependent session from its event log; sibling goals remain isolated. Nested
 subagent sessions remain inside the root session for now and inherit the
 project and goal identity from their parent process.
+
+Provider adapters and model endpoints are separate runtime concepts.
+`CapabilityCatalog` globally publishes stateless `LLMProvider` modules such as
+Ollama and xAI. Each long-lived project owns a `ModelRegistry` containing all
+configured profile endpoints simultaneously. An endpoint identifies its
+provider module, model, transport location, and credential environment-variable
+reference; credential values are never copied into the registry.
+
+Endpoint `claims` describe configured or provider-declared capabilities,
+modalities, locality, privacy, context limit, and cost hints. `measurements` are
+a separate empty runtime-owned field reserved for observed outcomes, preventing
+future routing from confusing declarations with evidence. Availability starts
+as `unknown`; explicit refreshes run provider health checks beneath a
+project-owned `Task.Supervisor` and update it to `checking`, `available`, or
+`unavailable` without blocking or coupling goal processes. A registry crash
+rehydrates configured endpoints without restarting sibling goals.
+
+The CLI now loads every stored profile into the project registry while still
+passing the selected profile directly to the session as a manual override. No
+automatic routing decision is made in this slice. `/models` exposes the project
+inventory and `/models refresh` starts health checks through the Elixir runtime;
+the Go TUI remains presentation-only.
+
+All provider execution enters through a versioned `ModelRequest`, including
+ordinary tool-loop steps and context compaction. It explicitly carries request
+and endpoint identity, provider/model, messages, tools, streaming choice,
+timeout, owner-process cancellation semantics, transport options, and task
+metadata. `ModelInvocation` catches provider exceptions and invalid returns,
+enforces an optional finite timeout without imposing one by default, and emits
+`ModelResponse` or `ModelError` contracts. The tool loop records normalized
+request identity in the durable model-response lifecycle, then unwraps the
+internal cause at the existing `BeamAgent.ask` compatibility boundary.
+
+`ModelUsage` maps OpenAI prompt/completion tokens, Anthropic input/output tokens,
+and Ollama prompt/evaluation counts into input, output, total, and cached token
+fields while retaining numeric provider counters. Streaming and non-streaming
+providers now share the same durable started/finished/failed lifecycle. Turn
+cancellation kills the supervised owner process; the stream hub observes that
+boundary and durably closes an interrupted response.
+
+`Goal.EventHub` projects every root and child session event into a versioned
+`BeamAgent.RuntimeEvent` envelope. The envelope adds project, goal, session,
+worker, correlation, causation, goal sequence, timestamp, category, and
+durability metadata while each
+session's append-only JSONL remains the canonical durable record. Registering a
+session replays its log and follows recorded `subagent_spawned` relationships,
+so the goal projection can be rebuilt after a hub restart without introducing a
+second durable store. Goal subscribers receive both durable facts and ephemeral
+provider progress through one interface-neutral contract.
+
+Every interface request begins as a versioned `BeamAgent.RuntimeCommand`; the
+runtime records a `command_received` fact before starting its turn worker. The
+command correlation continues through model activity, tool calls, results, and
+child sessions. Each durable fact also points at a causation identity. For the
+sequential session log this defaults to the preceding fact, while delegated
+child sessions explicitly point at the parent tool call that created them.
+
+The goal hub reserves monotonic sequences before a session log writes a fact
+and only advances its public cursor after sequences are committed or explicitly
+abandoned. The assigned `goal_seq`, correlation, and causation fields live in
+the canonical JSONL event, so hub recovery preserves identity. Legacy events
+without a goal sequence receive stable negative compatibility sequences and
+remain available during a full replay.
+
+`subscribe_goal_from/3` combines subscription and replay in one serialized hub
+call. It returns every durable event after an optional cursor plus the current
+settled cursor; later events arrive through the same subscription. This avoids
+the race created by separately reading history and then subscribing. The TUI
+uses that atomic bootstrap and exposes cursor and lineage in `/status` and
+`/events`.
+
+Goal replay and subscriptions default to `view: :public`. That projection is
+fail-closed: prompt and model content, tool arguments and results, errors,
+filesystem paths, and any payload field not explicitly classified as safe are
+replaced by descriptors containing only value kind and size. Stable identity,
+scope, causation/correlation, event type, model/tool names, status flags, and
+numeric usage remain visible. This prevents a newly introduced payload field
+from becoming public merely because a producer started emitting it.
+
+Trusted in-process consumers may explicitly request `view: :internal`. The
+local TUI does this for its atomic transcript bootstrap and live chat rendering;
+its `/events` inspector uses the public projection. `RuntimeEventQuery` parses
+and validates composable category, type, worker, session, lineage, cursor,
+redaction, ordering, and limit filters without creating atoms from input.
+`Goal.EventHub` executes the query over its goal-wide projection and returns
+total, matched, returned, cursor, and active-filter metadata with the selected
+events. The terminal only submits the expression and renders those results.
+
+`BeamAgent.Runtime` is the public connection boundary above the goal hub and
+session services. Its ephemeral client process attaches one interface
+subscriber, atomically bootstraps replay and live delivery, tracks the latest
+durable cursor, submits turns asynchronously, forwards approvals, and exposes
+cancellation, status, inspection, model inventory, and session rebinding. A
+connection owns no model-visible or durable state. Disconnecting it does not
+terminate work already owned by the session; a replacement connection can use
+`after: cursor` to receive only facts it missed.
+
+Runtime connections default to the public fail-closed event view. The local TUI
+and line client explicitly request the internal view for model text and tool
+rendering. Attaching a client temporarily becomes the session's approval
+handler, including for subsequently delegated children; a clean disconnect
+restores the previously attached handler when it is still alive. This keeps
+approval ownership aligned with the active interface without embedding terminal
+logic in the agent process.
+
+View selection is not yet a capability or authorization boundary, so a future
+remote interface must expose only the public view until capability enforcement
+exists. Canonical JSONL stays complete and unredacted for recovery.
 
 The event log comes first because every model-visible fact depends on it. If the
 agent crashes, only the agent restarts and reconstructs messages by replaying the
@@ -193,21 +307,33 @@ Terminal presentation is isolated from the runtime across a process boundary.
 On a real TTY, the Go `beam_agent_tui` client owns Bubble Tea screen state,
 keyboard input, the textarea, viewport, command palette, and Lip Gloss
 rendering. `BeamAgent.CLI.TUI` exchanges length-framed JSON packets with that
-client while `BeamAgent.CLI.TUI.Controller` owns subscriptions, the active turn
-task, cancellation, approvals, and session rebinding. Go retains stdin and
+client while `BeamAgent.Runtime.Client` owns subscriptions, the active interface
+turn task, cancellation, approvals, and session rebinding. The thin
+`BeamAgent.CLI.TUI.Controller` maps runtime notifications and CLI-only commands
+to terminal payloads. Go retains stdin and
 stdout for terminal presentation while Erlang's port driver reserves file
 descriptors 3 and 4 for the private protocol; the view explicitly leaves mouse
 reporting disabled.
 
-The bridge consumes the same live stream and durable event APIs as any future
-view; it does not interpret provider protocols or own conversation state. The
-line-oriented `BeamAgent.CLI.UI` and `TurnRunner` remain the fallback for
+The bridge subscribes to the goal-wide runtime event projection used by future
+views; it does not interpret provider protocols or own conversation state. It
+renders root conversation entries, tools from every worker, and selected
+lifecycle information such as goal startup, model identity, subagent creation,
+subagent completion, failures, and policy changes. `/events` opens the public,
+goal-wide inspector; filters can select categories, exact event types,
+root/child workers, session or lineage prefixes, cursor ranges, redaction state,
+ordering, and result limits. The per-session JSONL files remain the complete
+record. The line-oriented `BeamAgent.CLI.UI` and `TurnRunner` remain the fallback
+for
 `--no-tui`, redirected streams, tests, and one-shot prompts. Tool activity is
 rendered from durable events as it happens, and a streamed final answer is not
 printed a second time in either path. Running the executable with no arguments
 is the human path: it opens chat and performs guided setup first when
 configuration is absent. Explicit subcommands remain stable for scripts and
 diagnostics.
+
+`TurnRunner` is now only a compatibility adapter over `BeamAgent.Runtime`; it no
+longer implements a second subscription, approval, timeout, and turn-task loop.
 
 ## Provider boundary
 
@@ -219,6 +345,15 @@ events while assembling that same final response. Transport lives behind
 `BeamAgent.HTTPClient`, whose asynchronous streaming callback is implemented by
 OTP `:httpc`; protocol tests remain independent of a live service and another
 HTTP implementation can replace it.
+
+There is no arbitrary step ceiling: long tool sequences remain valid while
+they produce different work or results. The strategy does detect deterministic
+no-progress loops. After the same tool plan returns the same result three times
+consecutively, it appends `tool_loop_stalled`, exposes the recovery in the event
+stream and TUI, and makes one final provider request without tool schemas. The
+recovery prompt tells the model to answer from results already present in the
+canonical conversation. A model that still emits tool calls fails the turn with
+matched error results rather than resuming an unbounded loop.
 
 Profile identity is passed into the session options and recorded on each
 `agent_started` event alongside the resolved adapter and model. Child agents

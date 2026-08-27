@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(auto status new sessions skills reload compact events)a
+  @commands ~w(auto status new sessions models skills reload compact events)a
 
   def available?(override \\ nil)
 
@@ -32,12 +32,13 @@ defmodule BeamAgent.CLI.TUI do
     with executable when is_binary(executable) <- executable(),
          {:ok, port} <- open_port(executable),
          {:ok, controller} <-
-           Controller.start_link(client: self(), session_id: session_id, config: config) do
+           Controller.start_link(client: self(), session_id: session_id, config: config),
+         {:ok, bootstrap} <- Controller.bootstrap(controller) do
       Process.unlink(controller)
       monitor = Process.monitor(controller)
 
       try do
-        :ok = send_packet(port, initial_payload(session_id, config))
+        :ok = send_packet(port, initial_payload(session_id, config, bootstrap))
         bridge_loop(port, controller, monitor)
       after
         Process.demonitor(monitor, [:flush])
@@ -52,15 +53,33 @@ defmodule BeamAgent.CLI.TUI do
 
   @doc false
   def initial_payload(session_id, config) do
+    {:ok, identity} = BeamAgent.Agent.runtime_identity(session_id)
+    {:ok, events} = BeamAgent.goal_events(identity.goal_id, view: :internal)
+    {:ok, approval_policy} = BeamAgent.approval_policy(session_id)
+
+    initial_payload(session_id, config, %{
+      project_id: identity.project_id,
+      goal_id: identity.goal_id,
+      cursor: event_cursor(events),
+      events: events,
+      approval_policy: approval_policy
+    })
+  end
+
+  @doc false
+  def initial_payload(session_id, config, bootstrap) do
     %{
       type: "init",
       session_id: session_id,
+      project_id: bootstrap.project_id,
+      goal_id: bootstrap.goal_id,
+      cursor: bootstrap.cursor,
       workspace: config["workspace_root"],
       provider: config["provider"],
       profile: config["profile"],
       model: config["model"] || "built-in",
-      approval_mode: approval_mode(session_id, config),
-      entries: history(session_id),
+      approval_mode: approval_mode(bootstrap, config),
+      entries: history(bootstrap.events),
       context_stats: context_stats(session_id)
     }
   end
@@ -162,6 +181,24 @@ defmodule BeamAgent.CLI.TUI do
     :ok
   end
 
+  defp dispatch_action(
+         %{"type" => "command", "command" => "events", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:events, query})
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "models", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:models, query})
+    :ok
+  end
+
   defp dispatch_action(%{"type" => "command", "command" => command}, controller) do
     with {:ok, command} <- command_atom(command) do
       Controller.command(controller, command)
@@ -205,18 +242,22 @@ defmodule BeamAgent.CLI.TUI do
     error -> {:error, {:go_tui_write_failed, Exception.message(error)}}
   end
 
-  defp history(session_id) do
-    case BeamAgent.events(session_id) do
-      {:ok, events} -> Enum.reduce(events, [], &history_event/2)
-      {:error, _reason} -> []
-    end
-  end
+  defp history(events), do: Enum.reduce(events, [], &history_event/2)
 
-  defp history_event(%{"type" => "user_message", "data" => data}, entries) do
+  defp event_cursor([]), do: 0
+  defp event_cursor(events), do: List.last(events).goal_seq
+
+  defp history_event(
+         %{payload: %{type: "user_message", data: data}, scope: %{root?: true}},
+         entries
+       ) do
     entries ++ [%{kind: "user", content: data["content"]}]
   end
 
-  defp history_event(%{"type" => "assistant_message", "data" => data}, entries) do
+  defp history_event(
+         %{payload: %{type: "assistant_message", data: data}, scope: %{root?: true}},
+         entries
+       ) do
     if is_binary(data["content"]) and data["content"] != "" do
       entries ++ [%{kind: "assistant", content: data["content"]}]
     else
@@ -224,13 +265,13 @@ defmodule BeamAgent.CLI.TUI do
     end
   end
 
-  defp history_event(%{"type" => "tool_called", "data" => data}, entries) do
+  defp history_event(%{payload: %{type: "tool_called", data: data}, scope: scope}, entries) do
     entries ++
       [
         %{
           kind: "tool",
-          id: data["tool_call_id"],
-          name: data["name"],
+          id: tool_id(scope.session_id, data["tool_call_id"]),
+          name: tool_name(scope, data["name"]),
           arguments: data["arguments"] || %{},
           status: "running",
           content: nil,
@@ -239,8 +280,10 @@ defmodule BeamAgent.CLI.TUI do
       ]
   end
 
-  defp history_event(%{"type" => "tool_result", "data" => data}, entries) do
-    case Enum.find_index(entries, &(&1.kind == "tool" and &1.id == data["tool_call_id"])) do
+  defp history_event(%{payload: %{type: "tool_result", data: data}, scope: scope}, entries) do
+    id = tool_id(scope.session_id, data["tool_call_id"])
+
+    case Enum.find_index(entries, &(&1.kind == "tool" and &1.id == id)) do
       nil ->
         entries
 
@@ -255,7 +298,66 @@ defmodule BeamAgent.CLI.TUI do
     end
   end
 
-  defp history_event(_event, entries), do: entries
+  defp history_event(event, entries) do
+    case info_entry(event) do
+      nil -> entries
+      content -> entries ++ [%{kind: "info", content: content}]
+    end
+  end
+
+  defp info_entry(%{
+         payload: %{type: "session_started"},
+         scope: %{root?: true, goal_id: goal_id}
+       }),
+       do: "Goal started · #{short_id(goal_id)}"
+
+  defp info_entry(%{
+         payload: %{type: "agent_started", data: data},
+         scope: %{root?: true}
+       }) do
+    recovered = if data["recovered"], do: " · recovered", else: ""
+    "Model ready · #{data["provider"]}/#{data["model"] || "built-in"}#{recovered}"
+  end
+
+  defp info_entry(%{
+         payload: %{type: "subagent_spawned", data: data}
+       }),
+       do: "Subagent spawned · #{short_id(data["child_session_id"])}"
+
+  defp info_entry(%{
+         payload: %{type: "agent_started", data: data},
+         scope: %{root?: false, session_id: session_id}
+       }),
+       do:
+         "Subagent model · #{short_id(session_id)} · #{data["provider"]}/#{data["model"] || "built-in"}"
+
+  defp info_entry(%{
+         payload: %{type: "turn_finished", data: data},
+         scope: %{root?: false, session_id: session_id}
+       }),
+       do: "Subagent #{data["reason"]} · #{short_id(session_id)}"
+
+  defp info_entry(%{
+         payload: %{type: "model_response_failed"},
+         scope: %{session_id: session_id}
+       }),
+       do: "Model response failed · #{short_id(session_id)}"
+
+  defp info_entry(%{payload: %{type: "approval_policy_changed", data: data}}),
+    do: "Approval policy · #{data["from"]} → #{data["to"]}"
+
+  defp info_entry(%{payload: %{type: "tool_loop_stalled", data: data}}),
+    do: "Repeated tool result ×#{data["repetitions"]} · switching to answer-only"
+
+  defp info_entry(_event), do: nil
+
+  defp tool_id(session_id, tool_call_id), do: "#{session_id}:#{tool_call_id}"
+
+  defp tool_name(%{root?: true}, name), do: name
+  defp tool_name(%{session_id: session_id}, name), do: "#{short_id(session_id)} · #{name}"
+
+  defp short_id("session-" <> suffix), do: String.slice(suffix, 0, 8)
+  defp short_id(id), do: String.slice(to_string(id), 0, 8)
 
   defp context_stats(session_id) do
     case BeamAgent.conversation_context_stats(session_id) do
@@ -264,15 +366,10 @@ defmodule BeamAgent.CLI.TUI do
     end
   end
 
-  defp approval_mode(session_id, config) do
-    case BeamAgent.approval_policy(session_id) do
-      {:ok, policy} ->
-        to_string(policy)
+  defp approval_mode(%{approval_policy: policy}, _config), do: to_string(policy)
 
-      {:error, _reason} ->
-        config["approval_policy"] |> Config.approval_policy_atom() |> to_string()
-    end
-  end
+  defp approval_mode(_bootstrap, config),
+    do: config["approval_policy"] |> Config.approval_policy_atom() |> to_string()
 
   defp json_safe(%_{} = struct), do: struct |> Map.from_struct() |> json_safe()
 
@@ -282,6 +379,9 @@ defmodule BeamAgent.CLI.TUI do
 
   defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
   defp json_safe(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> json_safe()
+  defp json_safe(nil), do: nil
+  defp json_safe(true), do: true
+  defp json_safe(false), do: false
   defp json_safe(atom) when is_atom(atom), do: Atom.to_string(atom)
   defp json_safe(value), do: value
 
