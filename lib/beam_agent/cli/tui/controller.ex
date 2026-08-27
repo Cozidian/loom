@@ -31,6 +31,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       approval_policy: :ask,
       auto_fallback: :ask,
       current: nil,
+      verification: nil,
       compacting?: false
     }
 
@@ -71,7 +72,8 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   @impl true
-  def handle_cast({:submit, prompt}, %{current: nil} = state) when is_binary(prompt) do
+  def handle_cast({:submit, prompt}, %{current: nil, verification: nil} = state)
+      when is_binary(prompt) do
     case Runtime.submit(state.runtime, prompt) do
       :ok ->
         {:noreply, %{state | current: :running}}
@@ -85,6 +87,13 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_cast({:submit, _prompt}, state) do
     notify(state, {:notice, :warning, "A turn is already running"})
     {:noreply, state}
+  end
+
+  def handle_cast(:cancel, %{verification: %{pid: pid, monitor: monitor}} = state) do
+    _ = Runtime.cancel_verification(state.runtime)
+    if Process.alive?(pid), do: Process.exit(pid, :shutdown)
+    Process.demonitor(monitor, [:flush])
+    {:noreply, %{state | verification: nil}}
   end
 
   def handle_cast(:cancel, %{current: nil} = state) do
@@ -199,6 +208,33 @@ defmodule BeamAgent.CLI.TUI.Controller do
     {:noreply, %{state | compacting?: false}}
   end
 
+  def handle_info({:verification_result, ref, result}, %{verification: %{ref: ref}} = state) do
+    Process.demonitor(state.verification.monitor, [:flush])
+
+    case result do
+      {:ok, %{status: :passed, summary: summary}} ->
+        notify(state, {:notice, :success, "Verification passed · #{summary}"})
+
+      {:ok, %{status: :failed, summary: summary}} ->
+        notify(state, {:notice, :error, "Verification failed · #{summary}"})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    {:noreply, %{state | verification: nil}}
+  end
+
+  def handle_info({:verification_result, _ref, _result}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, pid, reason},
+        %{verification: %{monitor: monitor, pid: pid}} = state
+      ) do
+    notify(state, {:notice, :error, "Verification process exited · #{format_error(reason)}"})
+    {:noreply, %{state | verification: nil}}
+  end
+
   def handle_info(
         {:DOWN, monitor, :process, runtime, reason},
         %{runtime_monitor: monitor, runtime: runtime} = state
@@ -310,6 +346,28 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp run_command(:compact, state) do
     notify(state, {:notice, :warning, "Wait for the current operation before compacting"})
+    state
+  end
+
+  defp run_command(:verify, %{current: nil, verification: nil} = state) do
+    owner = self()
+    ref = make_ref()
+
+    case Task.start(fn ->
+           send(owner, {:verification_result, ref, Runtime.verify(state.runtime)})
+         end) do
+      {:ok, pid} ->
+        notify(state, {:notice, :muted, "Starting deterministic verification…"})
+        %{state | verification: %{pid: pid, monitor: Process.monitor(pid), ref: ref}}
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command(:verify, state) do
+    notify(state, {:notice, :warning, "Wait for the current operation before verifying"})
     state
   end
 
@@ -451,7 +509,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
-  defp run_command(:new, %{current: nil} = state) do
+  defp run_command(:new, %{current: nil, verification: nil} = state) do
     with {:ok, provider} <- Config.provider_atom(state.config["provider"]),
          {:ok, new_session_id} <- start_session(state.config, provider),
          {:ok, subscription} <-

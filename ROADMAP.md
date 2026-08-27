@@ -606,6 +606,17 @@ should follow on the stronger execution substrate.
       attach verification evidence automatically.
     - Generate completion reports from recorded evidence and refuse to claim a
       required check ran when no successful event proves it.
+    - First vertical slice delivered: a validated `VerificationPlan` loads
+      `.beam_agent/verification.json` or discovers conservative Git, Mix, and Go
+      checks. `/verify` runs the plan in a disposable goal-supervised verifier,
+      streams durable plan/check lifecycle events into the TUI, and attaches the
+      result to the latest task outcome. Shell pipelines use `pipefail`, non-zero
+      exits are tool errors, and the macOS sandbox provides only loopback IPC
+      plus permitted temporary storage so Mix and Go checks can run honestly.
+      A model final answer now records `completed/unverified`; attached passing
+      evidence promotes it to `succeeded`, while required failures mark it
+      `failed`. Automatic verification at every agent completion and
+      evidence-generated completion reports remain to be implemented.
 
 22. [ ] Improve routing from evidence
 

@@ -54,6 +54,8 @@ BeamAgent.Supervisor
                 ├── Goal.EventHub (GenServer, goal-wide replay and live fan-out)
                 ├── Goal.ResourceSupervisor (DynamicSupervisor)
                 │   └── MCP.Server (one per local stdio server)
+                ├── GoalVerificationSupervisor (Task.Supervisor)
+                │   └── Goal.Verifier task (temporary, on demand)
                 ├── MCP.Registry (GenServer, discovery and namespaced tools)
                 └── SessionSupervisor (:rest_for_one)
                     ├── EventLog (GenServer, append-only JSONL)
@@ -371,6 +373,15 @@ diagnostics.
 
 `TurnRunner` is now only a compatibility adapter over `BeamAgent.Runtime`; it no
 longer implements a second subscription, approval, timeout, and turn-task loop.
+
+Deterministic completion checks are represented by `VerificationPlan`. A
+project may define `.beam_agent/verification.json`; otherwise the runtime
+discovers conservative Mix, Go, and Git checks. `/verify` starts a disposable
+task beneath the goal's verification supervisor. Every plan/check lifecycle is
+recorded durably, command pipelines use `pipefail`, non-zero exits are errors,
+and successful or failed evidence updates the latest task outcome. Until such
+evidence exists, a final model response records the task as `completed` and
+`unverified`, not `succeeded`.
 
 ## Provider boundary
 

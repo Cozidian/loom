@@ -24,6 +24,7 @@ defmodule BeamAgent do
 
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub, ToolPolicy}
   alias BeamAgent.Goal.EventHub
+  alias BeamAgent.Goal.Verifier
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
@@ -143,6 +144,8 @@ defmodule BeamAgent do
   def sync_goal(goal_id), do: EventHub.sync(goal_id)
 
   def goal_tree(goal_id), do: EventHub.goal_tree(goal_id)
+  def verify(goal_id, plan \\ :auto), do: Verifier.run(goal_id, plan)
+  def cancel_verification(goal_id), do: Verifier.cancel(goal_id)
 
   def models(project_id), do: ModelRegistry.list(project_id)
   def model(project_id, endpoint_id), do: ModelRegistry.fetch(project_id, endpoint_id)

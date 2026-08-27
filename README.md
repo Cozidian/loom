@@ -104,10 +104,11 @@ idle). Approval dialogs default to deny and offer explicit once or durable
 scoped-always choices.
 
 The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`,
-`/auto`, `/compact`, `/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama,
-OpenAI, xAI/Grok, and Anthropic responses render as they arrive; deterministic
-or custom non-streaming providers render their final response through the same
-interface.
+`/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/events`, `/tree`, `/clear`,
+and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservative
+checks discovered from Mix, Go, and Git project files. Ollama, OpenAI, xAI/Grok,
+and Anthropic responses render as they arrive; deterministic or custom
+non-streaming providers render their final response through the same interface.
 Goal, model, subagent, failure, and policy lifecycle events appear as muted
 information entries in the transcript. Child tool calls are shown with their
 worker identifier, `/status` exposes the real project and goal IDs, and

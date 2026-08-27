@@ -8,17 +8,17 @@ defmodule BeamAgent.RuntimeEventView do
   """
 
   @safe_scalar_keys MapSet.new(~w(
-    access approval_id attempt cached_tokens cancelled category child_session_id command_id compacted_count
-    compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision
+    access approval_id attempt cached_tokens cancelled category check_count check_id child_session_id command_id compacted_count
+    compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision duration_ms
     decision_id endpoint_id estimated_cost estimated_tokens fingerprint from goal_id health id index is_error
     average_latency_ms best_verified_samples confidence eligible generated_at language latency_ms latency_preference
     limit locality measured_latency_ms minimum_verified_samples mode model name operational_samples
     operational_success_rate operational_successes outcome_id output_tokens quality_lower_bound
     parent_session_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
     recency_weighted_pass_rate recommended_endpoint_id recovered redaction request_id request_version
-    response_id retries root selected_endpoint_id server session_id state status step strategy stream success task_type
-    timeout to tool tool_call_id tool_count tools_required total_tokens turn type verified_pass_rate verified_passes
-    verified_samples version window_days window_tokens worker_id
+    exit_status failed_count passed_count response_id required retries root selected_endpoint_id server session_id source
+    state status step strategy stream success task_type timeout to tool tool_call_id tool_count tools_required total_tokens
+    truncated turn type verification_id verified_pass_rate verified_passes verified_samples version window_days window_tokens worker_id
   ))
 
   @safe_container_keys MapSet.new(~w(usage))

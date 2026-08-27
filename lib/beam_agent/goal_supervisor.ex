@@ -24,12 +24,21 @@ defmodule BeamAgent.GoalSupervisor do
 
   @impl true
   def init(opts) do
+    goal_id = Keyword.fetch!(opts, :goal_id)
+
     session =
       {SessionSupervisor, opts}
       |> Supervisor.child_spec(restart: :permanent)
 
     Supervisor.init(
-      [{Goal, opts}, {EventHub, opts}, {ResourceSupervisor, opts}, {Registry, opts}, session],
+      [
+        {Goal, opts},
+        {EventHub, opts},
+        {ResourceSupervisor, opts},
+        {Task.Supervisor, name: Names.via(:goal_verification_supervisor, goal_id)},
+        {Registry, opts},
+        session
+      ],
       strategy: :rest_for_one
     )
   end

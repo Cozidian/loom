@@ -340,6 +340,10 @@ defmodule BeamAgent.CLI do
             print_goal_tree(session_id)
             chat_loop(session_id, config)
 
+          "/verify" ->
+            verify_goal(session_id)
+            chat_loop(session_id, config)
+
           "/status" ->
             print_status(session_id, config)
             chat_loop(session_id, config)
@@ -470,6 +474,15 @@ defmodule BeamAgent.CLI do
       Enum.each(lines, &output("  #{&1}"))
       IO.puts("")
       0
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp verify_goal(session_id) do
+    with {:ok, goal} <- BeamAgent.goal(session_id),
+         {:ok, result} <- BeamAgent.verify(goal.goal_id) do
+      output("Verification #{result.status} · #{result.summary}")
     else
       {:error, reason} -> error(reason)
     end

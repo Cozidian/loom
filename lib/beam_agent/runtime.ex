@@ -57,6 +57,14 @@ defmodule BeamAgent.Runtime do
 
   def goal_tree(client), do: Client.goal_tree(client)
 
+  def verify(client, plan \\ :auto) do
+    with {:ok, goal_id} <- Client.goal_id(client), do: BeamAgent.verify(goal_id, plan)
+  end
+
+  def cancel_verification(client) do
+    with {:ok, goal_id} <- Client.goal_id(client), do: BeamAgent.cancel_verification(goal_id)
+  end
+
   def models(client), do: Client.models(client)
   def refresh_models(client, endpoint_id \\ :all), do: Client.refresh_models(client, endpoint_id)
   def permissions(client), do: Client.permissions(client)

@@ -161,7 +161,12 @@ defmodule BeamAgent.RuntimeEvent do
        when type in [
               "model_outcome_recorded",
               "task_outcome_recorded",
-              "verification_attached"
+              "verification_attached",
+              "verification_started",
+              "verification_check_started",
+              "verification_check_finished",
+              "verification_finished",
+              "verification_cancelled"
             ],
        do: :outcome
 

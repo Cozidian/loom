@@ -66,11 +66,13 @@ defmodule BeamAgent.OutcomeStore do
 
       record ->
         verification = verification(result)
+        status = verified_status(record, verification)
 
         entry = %{
           "type" => "verification_attached",
           "outcome_id" => outcome_id,
-          "verification" => stringify(verification)
+          "verification" => stringify(verification),
+          "status" => status
         }
 
         case append(state.path, entry) do
@@ -79,11 +81,15 @@ defmodule BeamAgent.OutcomeStore do
               EventLog.append(record.session_id, :verification_attached, %{
                 "outcome_id" => outcome_id,
                 "kind" => record.kind,
+                "status" => status,
                 "verification" => stringify(verification)
               })
 
             {:reply, :ok,
-             put_in(state.records[outcome_id], %{record | verification: verification})}
+             put_in(
+               state.records[outcome_id],
+               %{record | verification: verification, status: status}
+             )}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}
@@ -144,7 +150,16 @@ defmodule BeamAgent.OutcomeStore do
   defp verification(result) when is_map(result),
     do:
       result
-      |> Map.take([:status, :source, :summary, "status", "source", "summary"])
+      |> Map.take([
+        :status,
+        :source,
+        :summary,
+        :verification_id,
+        "status",
+        "source",
+        "summary",
+        "verification_id"
+      ])
       |> stringify()
 
   defp verification(result) when result in [:passed, :failed, :unverified],
@@ -171,9 +186,19 @@ defmodule BeamAgent.OutcomeStore do
         Map.put(records, record["id"], atomize_keys(record))
 
       {:ok,
-       %{"type" => "verification_attached", "outcome_id" => id, "verification" => verification}}
+       %{
+         "type" => "verification_attached",
+         "outcome_id" => id,
+         "verification" => verification
+       } = entry}
       when is_map_key(records, id) ->
-        put_in(records[id].verification, verification)
+        record = records[id]
+
+        Map.put(records, id, %{
+          record
+          | verification: verification,
+            status: entry["status"] || record.status
+        })
 
       _ ->
         records
@@ -222,6 +247,10 @@ defmodule BeamAgent.OutcomeStore do
   end
 
   defp failure_code(_value), do: "redacted_failure"
+
+  defp verified_status(%{kind: "task"}, %{"status" => "passed"}), do: "succeeded"
+  defp verified_status(%{kind: "task"}, %{"status" => "failed"}), do: "failed"
+  defp verified_status(record, _verification), do: record.status
 
   defp new_id,
     do: "outcome-" <> (:crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false))

@@ -10,7 +10,9 @@ defmodule Mix.Tasks.BeamAgent.Build do
 
     Mix.shell().info("Building Charm TUI")
 
-    case System.cmd(go, ["build", "-o", "beam_agent_tui", "./cmd/beam_agent_tui"],
+    case System.cmd(
+           go,
+           ["build", "-buildvcs=false", "-o", "beam_agent_tui", "./cmd/beam_agent_tui"],
            cd: root,
            into: IO.stream(:stdio, :line)
          ) do

@@ -22,6 +22,7 @@ defmodule BeamAgent.Goal do
        goal_id: Keyword.fetch!(opts, :goal_id),
        project_id: Keyword.fetch!(opts, :project_id),
        session_id: Keyword.fetch!(opts, :session_id),
+       workspace_root: Keyword.fetch!(opts, :workspace_root),
        objective: Keyword.get(opts, :objective),
        capability_envelope: Keyword.fetch!(opts, :capability_envelope)
      }}

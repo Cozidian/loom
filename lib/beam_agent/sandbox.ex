@@ -3,13 +3,25 @@ defmodule BeamAgent.Sandbox do
 
   def command(workspace_root, command) do
     shell = System.find_executable("zsh") || System.find_executable("sh")
+    command = "export TMPDIR=/private/tmp BEAM_AGENT_SANDBOX=1; #{command}"
 
-    case {:os.type(), shell} do
-      {{:unix, :darwin}, shell} when is_binary(shell) ->
+    case {System.get_env("BEAM_AGENT_SANDBOX"), :os.type(), shell} do
+      {"1", {:unix, :darwin}, shell} when is_binary(shell) ->
+        {:ok, shell, ["-o", "pipefail", "-lc", command]}
+
+      {_nested, {:unix, :darwin}, shell} when is_binary(shell) ->
         {:ok, "/usr/bin/sandbox-exec",
-         ["-p", macos_profile(workspace_root), shell, "-lc", command]}
+         [
+           "-p",
+           macos_profile(workspace_root),
+           shell,
+           "-o",
+           "pipefail",
+           "-lc",
+           command
+         ]}
 
-      {os, _shell} ->
+      {_nested, os, _shell} ->
         {:error, {:sandbox_unavailable, os}}
     end
   end
@@ -29,6 +41,9 @@ defmodule BeamAgent.Sandbox do
       (literal "/dev/null"))
     (allow sysctl-read)
     (allow mach-lookup)
+    (allow network-bind (local ip "localhost:*"))
+    (allow network-inbound (local ip "localhost:*"))
+    (allow network-outbound (remote ip "localhost:*"))
     """
   end
 

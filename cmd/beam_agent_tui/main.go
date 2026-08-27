@@ -162,6 +162,7 @@ var commands = []commandItem{
 	{ID: "skills", Label: "Project skills", Hint: "/skills"},
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
+	{ID: "verify", Label: "Verify workspace", Hint: "/verify"},
 	{ID: "events", Label: "Inspect goal events", Hint: "/events [filters]"},
 	{ID: "tree", Label: "Goal worker tree", Hint: "/tree"},
 	{ID: "toggle_tools", Label: "Expand or collapse tools", Hint: "ctrl+t"},
@@ -713,6 +714,16 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		return result
 	case "verification_attached":
 		return "Verification · " + verificationStatus(data)
+	case "verification_started":
+		return "Verification started · " + asString(data["check_count"]) + " checks · " + asString(data["source"])
+	case "verification_check_started":
+		return "Verifying · " + asString(data["check_id"])
+	case "verification_check_finished":
+		return "Verification check · " + asString(data["check_id"]) + " · " + asString(data["status"]) + " · " + asString(data["duration_ms"]) + " ms"
+	case "verification_finished":
+		return "Verification " + asString(data["status"]) + " · " + asString(data["passed_count"]) + "/" + asString(data["check_count"]) + " checks"
+	case "verification_cancelled":
+		return "Verification cancelled"
 	}
 	return ""
 }

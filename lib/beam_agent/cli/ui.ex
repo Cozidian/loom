@@ -153,6 +153,7 @@ defmodule BeamAgent.CLI.UI do
     command("/models", "list registered model endpoints; add refresh to check health")
     command("/auto", "toggle automatic approval of risky tools")
     command("/compact", "summarize older completed turns now")
+    command("/verify", "run the project's deterministic verification plan")
     command("/skills", "list skills discovered for this session")
     command("/reload", "reload project instructions and skill metadata")
     command("/events", "show the current event count and log path")

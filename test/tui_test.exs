@@ -59,7 +59,7 @@ defmodule BeamAgent.CLITUITest do
 
     assert hd(payload.entries).content =~ "Goal started"
     assert Enum.find(payload.entries, &(&1.kind == "assistant")).content == "echo(1): hello"
-    assert List.last(payload.entries).content == "Task outcome · succeeded · unverified"
+    assert List.last(payload.entries).content == "Task outcome · completed · unverified"
     assert is_map(payload.context_stats)
   end
 
@@ -224,6 +224,61 @@ defmodule BeamAgent.CLITUITest do
     assert {:ok, :ask} = BeamAgent.approval_policy(context.session_id)
   end
 
+  @tag :darwin
+  test "controller runs verification and streams check progress", context do
+    if :os.type() != {:unix, :darwin} do
+      :ok
+    else
+      verification_dir = Path.join(context.config["workspace_root"], ".beam_agent")
+      File.mkdir_p!(verification_dir)
+
+      File.write!(
+        Path.join(verification_dir, "verification.json"),
+        JSON.encode!(%{
+          version: 1,
+          checks: [%{id: "tui-pass", command: "printf verified", timeout_ms: 5_000}]
+        })
+      )
+
+      assert {:ok, _answer} = BeamAgent.ask(context.session_id, "implement something")
+
+      {:ok, controller} =
+        Controller.start_link(
+          client: self(),
+          session_id: context.session_id,
+          config: context.config
+        )
+
+      on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+
+      assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+      assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+      assert_receive {:beam_agent_tui, {:context_stats, _stats}}
+
+      Controller.command(controller, :verify)
+      messages = collect_until_verification_finished([])
+
+      assert Enum.any?(messages, fn
+               {:stream, %{payload: %{type: "verification_started"}}} -> true
+               _message -> false
+             end)
+
+      assert Enum.any?(messages, fn
+               {:stream,
+                %{
+                  payload: %{
+                    type: "verification_check_finished",
+                    data: %{"check_id" => "tui-pass", "status" => "passed"}
+                  }
+                }} ->
+                 true
+
+               _message ->
+                 false
+             end)
+    end
+  end
+
   test "no-tui always disables takeover and an explicit Go executable is discoverable" do
     previous = System.get_env("BEAM_AGENT_TUI_BIN")
     executable = System.find_executable("sh")
@@ -245,6 +300,18 @@ defmodule BeamAgent.CLITUITest do
       {:beam_agent_tui, message} -> collect_until_turn_finished([message | messages])
     after
       2_000 -> flunk("timed out waiting for the TUI controller turn")
+    end
+  end
+
+  defp collect_until_verification_finished(messages) do
+    receive do
+      {:beam_agent_tui, {:notice, :success, "Verification passed" <> _rest} = message} ->
+        Enum.reverse([message | messages])
+
+      {:beam_agent_tui, message} ->
+        collect_until_verification_finished([message | messages])
+    after
+      6_000 -> flunk("timed out waiting for the TUI controller verification")
     end
   end
 end

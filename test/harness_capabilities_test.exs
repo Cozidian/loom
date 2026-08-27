@@ -322,17 +322,42 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
       assert command_data["status"] == 0
       assert File.read!(Path.join(context.workspace, "command.txt")) == "inside"
 
-      outside = Path.join(context.root, "outside-command.txt")
+      if System.get_env("BEAM_AGENT_SANDBOX") != "1" do
+        outside = Path.join(context.root, "outside-command.txt")
 
-      assert {:ok, denied_result} =
+        assert {:error, {:command_failed, denied_data}} =
+                 RunCommand.execute(
+                   %{"command" => "printf outside > #{outside}", "timeout_ms" => 5_000},
+                   tool_context
+                 )
+
+        assert denied_data.status != 0
+        refute File.exists?(outside)
+      end
+
+      assert {:error, {:command_failed, piped_data}} =
                RunCommand.execute(
-                 %{"command" => "printf outside > #{outside}", "timeout_ms" => 5_000},
+                 %{"command" => "false | cat", "timeout_ms" => 5_000},
                  tool_context
                )
 
-      {:ok, denied_data} = JSON.decode(denied_result)
-      assert denied_data["status"] != 0
-      refute File.exists?(outside)
+      assert piped_data.status != 0
+
+      assert {:ok, mix_result} =
+               RunCommand.execute(
+                 %{"command" => "mix compile --warnings-as-errors", "timeout_ms" => 120_000},
+                 %{workspace_root: File.cwd!()}
+               )
+
+      assert JSON.decode!(mix_result)["status"] == 0
+
+      assert {:ok, temp_result} =
+               RunCommand.execute(
+                 %{"command" => "printf %s \"$TMPDIR\"", "timeout_ms" => 5_000},
+                 tool_context
+               )
+
+      assert JSON.decode!(temp_result)["output"] == "/private/tmp"
     end
   end
 end

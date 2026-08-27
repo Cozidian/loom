@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(auto status new sessions models skills reload compact events tree)a
+  @commands ~w(auto status new sessions models skills reload compact verify events tree)a
 
   def available?(override \\ nil)
 
@@ -367,6 +367,21 @@ defmodule BeamAgent.CLI.TUI do
 
   defp info_entry(%{payload: %{type: "verification_attached", data: data}}),
     do: outcome_label("Verification", data)
+
+  defp info_entry(%{payload: %{type: "verification_started", data: data}}),
+    do: "Verification started · #{data["check_count"]} checks · #{data["source"]}"
+
+  defp info_entry(%{payload: %{type: "verification_check_started", data: data}}),
+    do: "Verifying · #{data["check_id"]}"
+
+  defp info_entry(%{payload: %{type: "verification_check_finished", data: data}}),
+    do: "Verification check · #{data["check_id"]} · #{data["status"]} · #{data["duration_ms"]} ms"
+
+  defp info_entry(%{payload: %{type: "verification_finished", data: data}}),
+    do: "Verification #{data["status"]} · #{data["passed_count"]}/#{data["check_count"]} checks"
+
+  defp info_entry(%{payload: %{type: "verification_cancelled"}}),
+    do: "Verification cancelled"
 
   defp info_entry(_event), do: nil
 

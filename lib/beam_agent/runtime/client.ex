@@ -28,6 +28,7 @@ defmodule BeamAgent.Runtime.Client do
     do: GenServer.call(client, {:inspect_events, query, opts})
 
   def goal_tree(client), do: GenServer.call(client, :goal_tree)
+  def goal_id(client), do: GenServer.call(client, :goal_id)
 
   def models(client), do: GenServer.call(client, :models)
 
@@ -208,6 +209,8 @@ defmodule BeamAgent.Runtime.Client do
   def handle_call(:goal_tree, _from, state) do
     {:reply, BeamAgent.goal_tree(state.goal_id), state}
   end
+
+  def handle_call(:goal_id, _from, state), do: {:reply, {:ok, state.goal_id}, state}
 
   def handle_call(:models, _from, state),
     do: {:reply, BeamAgent.models(state.project_id), state}

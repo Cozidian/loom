@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "git-diff",
+      "command": "git diff --check",
+      "timeout_ms": 30000
+    },
+    {
+      "id": "elixir-compile",
+      "command": "mix compile --warnings-as-errors",
+      "timeout_ms": 120000
+    },
+    {
+      "id": "elixir-test",
+      "command": "mix test",
+      "timeout_ms": 120000
+    },
+    {
+      "id": "go-test",
+      "command": "go test ./...",
+      "timeout_ms": 120000
+    },
+    {
+      "id": "package-build",
+      "command": "mix beam_agent.build",
+      "timeout_ms": 120000
+    }
+  ]
+}

@@ -583,7 +583,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "turn" => turn,
              "reason" => "completed"
            }) do
-      record_task_outcome(context, turn, :succeeded, nil)
+      record_task_outcome(context, turn, :completed, nil)
       {:ok, answer}
     end
   end
