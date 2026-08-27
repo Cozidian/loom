@@ -332,6 +332,24 @@ defmodule BeamAgent.CLI.TUI do
        }),
        do: "Subagent spawned · #{short_id(data["child_session_id"])}"
 
+  defp info_entry(%{payload: %{type: "agent_construction_requested", data: data}}) do
+    requested = data["role_requested"] || data["template_requested"] || "dynamic specialist"
+    "Agent requested · #{requested} · #{short_id(data["target_session_id"])}"
+  end
+
+  defp info_entry(%{payload: %{type: "agent_constructed", data: data}}),
+    do:
+      "Agent constructed · #{data["role"]} · #{data["authority"]} authority · #{short_id(data["target_session_id"])}"
+
+  defp info_entry(%{
+         payload: %{type: "agent_spec_applied", data: data},
+         scope: %{session_id: session_id}
+       }),
+       do: "Agent ready · #{data["role"]} · #{short_id(session_id)}"
+
+  defp info_entry(%{payload: %{type: "agent_construction_failed", data: data}}),
+    do: "Agent construction failed · #{data["failure_code"]}"
+
   defp info_entry(%{
          payload: %{type: "agent_started", data: data},
          scope: %{root?: false, session_id: session_id}

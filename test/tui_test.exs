@@ -51,6 +51,8 @@ defmodule BeamAgent.CLITUITest do
     assert Enum.map(payload.entries, & &1.kind) == [
              "info",
              "info",
+             "info",
+             "info",
              "user",
              "info",
              "assistant",
@@ -58,6 +60,8 @@ defmodule BeamAgent.CLITUITest do
            ]
 
     assert hd(payload.entries).content =~ "Goal started"
+    assert Enum.any?(payload.entries, &(&1.content =~ "Agent constructed · Goal coordinator"))
+    assert Enum.any?(payload.entries, &(&1.content =~ "Agent ready · Goal coordinator"))
     assert Enum.find(payload.entries, &(&1.kind == "assistant")).content == "echo(1): hello"
     assert List.last(payload.entries).content == "Task outcome · completed · unverified"
     assert is_map(payload.context_stats)

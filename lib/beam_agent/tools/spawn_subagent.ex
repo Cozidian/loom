@@ -7,13 +7,49 @@ defmodule BeamAgent.Tools.SpawnSubagent do
 
   @impl true
   def description,
-    do: "Spawn a supervised child agent with its own durable session and await its answer."
+    do:
+      "Request a dynamically constructed specialist agent, then await its answer. The runtime controls its actual authority, resources, model eligibility, and lifecycle."
 
   @impl true
   def input_schema do
     %{
       type: "object",
-      properties: %{prompt: %{type: "string"}},
+      properties: %{
+        prompt: %{type: "string", description: "Specific delegated goal"},
+        role: %{type: "string", description: "Optional fit-for-purpose specialist role"},
+        instructions: %{
+          type: "array",
+          items: %{type: "string"},
+          description: "Optional behavioral instructions; these cannot grant authority"
+        },
+        template: %{type: "string", description: "Optional starting strategy name"},
+        capabilities: %{
+          type: "object",
+          description: "Optional capability reduction requested from the parent envelope",
+          properties: %{
+            tools: %{type: "array", items: %{type: "string"}},
+            paths: %{type: "array", items: %{type: "string"}},
+            commands: %{type: "array", items: %{type: "string"}},
+            hosts: %{type: "array", items: %{type: "string"}},
+            mcp_servers: %{type: "array", items: %{type: "string"}},
+            model_classes: %{type: "array", items: %{type: "string"}}
+          }
+        },
+        model_requirements: %{
+          type: "object",
+          properties: %{
+            reasoning: %{type: "string", enum: ["standard", "high"]},
+            locality: %{type: "string", enum: ["any", "local", "remote"]},
+            privacy: %{type: "string", enum: ["provider_allowed", "local"]},
+            cost: %{type: "string", enum: ["prefer_low", "balanced"]},
+            latency: %{type: "string", enum: ["interactive", "batch"]}
+          }
+        },
+        verification_requirements: %{
+          type: "object",
+          properties: %{required: %{type: "boolean"}}
+        }
+      },
       required: ["prompt"]
     }
   end
@@ -22,7 +58,8 @@ defmodule BeamAgent.Tools.SpawnSubagent do
   def access, do: :delegate
 
   @impl true
-  def execute(%{"prompt" => prompt}, context) when is_binary(prompt) and prompt != "" do
+  def execute(%{"prompt" => prompt} = arguments, context)
+      when is_binary(prompt) and prompt != "" do
     approval_policy =
       case BeamAgent.approval_policy(context.session_id) do
         {:ok, policy} -> policy
@@ -46,15 +83,32 @@ defmodule BeamAgent.Tools.SpawnSubagent do
       approval_handler: approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent,
-      capability_envelope: context.capability_envelope,
       model_strategy: context.model_strategy,
+      agent_proposal:
+        arguments
+        |> Map.take([
+          "role",
+          "instructions",
+          "template",
+          "capabilities",
+          "model_requirements",
+          "verification_requirements"
+        ])
+        |> Map.put("goal", prompt),
       correlation_id: context.runtime_command.correlation_id,
       causation_id: context.causation_id
     ]
 
     with {:ok, child_id} <- BeamAgent.spawn_subagent(context.session_id, opts),
-         {:ok, answer} <- BeamAgent.ask(child_id, prompt) do
-      {:ok, JSON.encode!(%{child_session_id: child_id, answer: answer})}
+         {:ok, answer} <- BeamAgent.ask(child_id, prompt),
+         {:ok, spec} <- BeamAgent.agent_spec(child_id) do
+      {:ok,
+       JSON.encode!(%{
+         child_session_id: child_id,
+         agent_spec_id: spec.spec_id,
+         role: spec.role,
+         answer: answer
+       })}
     end
   end
 

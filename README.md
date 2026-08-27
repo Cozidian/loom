@@ -109,9 +109,12 @@ and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservati
 checks discovered from Mix, Go, and Git project files. Ollama, OpenAI, xAI/Grok,
 and Anthropic responses render as they arrive; deterministic or custom
 non-streaming providers render their final response through the same interface.
-Goal, model, subagent, failure, and policy lifecycle events appear as muted
-information entries in the transcript. Child tool calls are shown with their
-worker identifier, `/status` exposes the real project and goal IDs, and
+Goal, model, dynamically constructed agent, failure, and policy lifecycle events
+appear as muted information entries in the transcript. Child agents receive a
+runtime-populated role, instructions, context references, model requirements,
+and an authority envelope that can only inherit or narrow parent capabilities.
+Child tool calls are shown with their worker identifier, `/tree` shows their
+constructed roles, `/status` exposes the real project and goal IDs, and
 `/events` shows the latest durable events aggregated across the goal tree,
 including their goal cursor, correlation, and causation identity.
 The event inspector accepts composable filters, for example:

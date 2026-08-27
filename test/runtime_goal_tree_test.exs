@@ -204,6 +204,38 @@ defmodule BeamAgent.RuntimeGoalTreeTest do
            ]
   end
 
+  test "renders dynamically constructed worker roles when specs are observable" do
+    events = [
+      rt_event(1, "session_started", %{"parent_session_id" => nil}),
+      rt_event(2, "agent_spec_applied", %{
+        "spec_id" => "agent-spec-root",
+        "role" => "Goal coordinator"
+      }),
+      rt_event(3, "subagent_spawned", %{
+        "child_session_id" => "dynamic-child",
+        "spec_id" => "agent-spec-child",
+        "role" => "Elixir debugging specialist"
+      }),
+      rt_event(4, "session_started", %{"parent_session_id" => "g"}, %{
+        session_id: "dynamic-child",
+        root?: false
+      }),
+      rt_event(
+        5,
+        "agent_spec_applied",
+        %{"spec_id" => "agent-spec-child", "role" => "Elixir debugging specialist"},
+        %{session_id: "dynamic-child", root?: false}
+      )
+    ]
+
+    tree = RuntimeGoalTree.project(events) |> RuntimeGoalTree.nest()
+
+    assert RuntimeGoalTree.render(tree) == [
+             "Goal g · idle · Goal coordinator",
+             "└── Elixir debugging specialist dynamic- · idle"
+           ]
+  end
+
   test "nests and renders descendants recursively" do
     events = [
       rt_event(1, "session_started", %{"parent_session_id" => nil}),

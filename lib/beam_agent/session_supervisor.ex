@@ -2,7 +2,7 @@ defmodule BeamAgent.SessionSupervisor do
   @moduledoc "One supervision subtree for one durable session."
   use Supervisor
 
-  alias BeamAgent.{Agent, CapabilityEnvelope, Names}
+  alias BeamAgent.{Agent, AgentConstructor, AgentSpec, Names}
 
   alias BeamAgent.Session.{
     ConversationContext,
@@ -31,49 +31,186 @@ defmodule BeamAgent.SessionSupervisor do
   end
 
   def spawn_subagent(parent_session_id, opts \\ []) do
-    with {:ok, identity} <- Agent.runtime_identity(parent_session_id),
+    with {:ok, parent} <- Agent.construction_context(parent_session_id),
          {:ok, supervisor} <- Names.pid(:subagent_supervisor, parent_session_id) do
       child_id = Keyword.get_lazy(opts, :session_id, &BeamAgent.new_session_id/0)
+      proposal = proposal(opts, parent_session_id)
 
-      with {:ok, child_envelope} <- child_envelope(identity.capability_envelope, opts) do
-        child_opts =
-          opts
-          |> Keyword.put(:session_id, child_id)
-          |> Keyword.put(:parent_session_id, parent_session_id)
-          |> Keyword.put(:project_id, identity.project_id)
-          |> Keyword.put(:goal_id, identity.goal_id)
-          |> Keyword.put(:workspace_root, identity.workspace_root)
-          |> Keyword.put_new(:data_dir, identity.data_dir)
-          |> Keyword.put(:capability_envelope, child_envelope)
-
-        case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
-          {:ok, child_pid} ->
-            case EventLog.append(parent_session_id, :subagent_spawned, %{
-                   "child_session_id" => child_id
-                 }) do
-              {:ok, _event} ->
-                {:ok, child_id}
-
-              {:error, reason} ->
-                Supervisor.stop(child_pid, :normal)
-                {:error, {:subagent_event_failed, reason}}
-            end
-
-          {:error, {:already_started, _pid}} ->
-            {:error, {:session_already_started, child_id}}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
+      with {:ok, _event} <-
+             EventLog.append(
+               parent_session_id,
+               :agent_construction_requested,
+               proposal_metadata(proposal, child_id)
+             ) do
+        construct_and_start(parent, supervisor, parent_session_id, child_id, proposal, opts)
       end
     end
   end
 
-  defp child_envelope(parent, opts) do
-    case Keyword.get(opts, :capabilities) do
-      nil -> {:ok, parent}
-      requested -> CapabilityEnvelope.restrict(parent, requested)
+  defp construct_and_start(parent, supervisor, parent_session_id, child_id, proposal, opts) do
+    case AgentConstructor.child(parent_session_id, proposal, opts) do
+      {:ok, spec} ->
+        with {:ok, _event} <-
+               EventLog.append(
+                 parent_session_id,
+                 :agent_constructed,
+                 AgentSpec.metadata(spec, child_id)
+               ) do
+          start_constructed_child(
+            parent,
+            supervisor,
+            parent_session_id,
+            child_id,
+            spec,
+            opts
+          )
+        end
+
+      {:error, reason} = error ->
+        _ =
+          EventLog.append(parent_session_id, :agent_construction_failed, %{
+            "target_session_id" => child_id,
+            "failure_code" => error_code(reason)
+          })
+
+        error
     end
+  end
+
+  defp start_constructed_child(
+         parent,
+         supervisor,
+         parent_session_id,
+         child_id,
+         spec,
+         opts
+       ) do
+    child_opts =
+      opts
+      |> Keyword.delete(:agent_proposal)
+      |> Keyword.put(:session_id, child_id)
+      |> Keyword.put(:parent_session_id, parent_session_id)
+      |> Keyword.put(:project_id, parent.project_id)
+      |> Keyword.put(:goal_id, parent.goal_id)
+      |> Keyword.put(:workspace_root, parent.workspace_root)
+      |> Keyword.put_new(:data_dir, parent.data_dir)
+      |> Keyword.put_new(:provider, parent.provider)
+      |> Keyword.put_new(:provider_profile, parent.provider_profile)
+      |> Keyword.put_new(:provider_options, parent.provider_options)
+      |> Keyword.put_new(:strategy, parent.strategy)
+      |> Keyword.put_new(:approval_policy, current_approval_policy(parent))
+      |> Keyword.put_new(:approval_handler, current_approval_handler(parent))
+      |> Keyword.put_new(:context_window_tokens, parent.context_window_tokens)
+      |> Keyword.put_new(
+        :compaction_threshold_percent,
+        parent.compaction_threshold_percent
+      )
+      |> Keyword.put_new(:model_strategy, parent.model_strategy)
+      |> Keyword.put(:capability_envelope, spec.effective_capabilities)
+      |> Keyword.put(:agent_spec, spec)
+
+    case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
+      {:ok, child_pid} ->
+        case EventLog.append(parent_session_id, :subagent_spawned, %{
+               "child_session_id" => child_id,
+               "spec_id" => spec.spec_id,
+               "role" => spec.role,
+               "template" => spec.template
+             }) do
+          {:ok, _event} ->
+            {:ok, child_id}
+
+          {:error, reason} ->
+            Supervisor.stop(child_pid, :normal)
+            {:error, {:subagent_event_failed, reason}}
+        end
+
+      {:error, {:already_started, _pid}} ->
+        {:error, {:session_already_started, child_id}}
+
+      {:error, reason} ->
+        _ =
+          EventLog.append(parent_session_id, :agent_construction_failed, %{
+            "target_session_id" => child_id,
+            "spec_id" => spec.spec_id,
+            "failure_code" => error_code(reason)
+          })
+
+        {:error, reason}
+    end
+  end
+
+  defp proposal(opts, parent_session_id) do
+    base =
+      case Keyword.get(opts, :agent_proposal) do
+        proposal when is_map(proposal) -> proposal
+        _other -> %{}
+      end
+
+    base
+    |> put_proposal_default(:goal, Keyword.get(opts, :goal))
+    |> put_proposal_default(
+      :goal,
+      "Complete delegated work requested by parent #{parent_session_id}"
+    )
+    |> put_proposal_default(:role, Keyword.get(opts, :role))
+    |> put_proposal_default(:instructions, Keyword.get(opts, :agent_instructions))
+    |> put_proposal_default(:template, Keyword.get(opts, :template))
+    |> put_proposal_default(:capabilities, Keyword.get(opts, :capabilities))
+    |> put_proposal_default(:model_requirements, Keyword.get(opts, :model_requirements))
+    |> put_proposal_default(
+      :verification_requirements,
+      Keyword.get(opts, :verification_requirements)
+    )
+  end
+
+  defp put_proposal_default(map, _key, nil), do: map
+
+  defp put_proposal_default(map, key, value) do
+    if Map.has_key?(map, key) or Map.has_key?(map, to_string(key)),
+      do: map,
+      else: Map.put(map, key, value)
+  end
+
+  defp proposal_metadata(proposal, child_id) do
+    instructions = proposal[:instructions] || proposal["instructions"] || []
+    instructions = if is_list(instructions), do: instructions, else: [instructions]
+
+    %{
+      "target_session_id" => child_id,
+      "role_requested" => proposal[:role] || proposal["role"],
+      "template_requested" => proposal[:template] || proposal["template"],
+      "goal_fingerprint" => hash_text(proposal[:goal] || proposal["goal"] || ""),
+      "instruction_count" => length(instructions),
+      "capabilities_requested" => not is_nil(proposal[:capabilities] || proposal["capabilities"])
+    }
+  end
+
+  defp current_approval_policy(parent) do
+    case BeamAgent.approval_policy(parent.session_id) do
+      {:ok, policy} -> policy
+      {:error, _reason} -> parent.approval_policy
+    end
+  end
+
+  defp current_approval_handler(parent) do
+    case BeamAgent.approval_handler(parent.session_id) do
+      {:ok, handler} -> handler
+      {:error, _reason} -> parent.approval_handler
+    end
+  end
+
+  defp error_code(reason) when is_atom(reason), do: to_string(reason)
+
+  defp error_code(reason) when is_tuple(reason) and is_atom(elem(reason, 0)),
+    do: to_string(elem(reason, 0))
+
+  defp error_code(_reason), do: "agent_construction_failed"
+
+  defp hash_text(text) do
+    :sha256
+    |> :crypto.hash(text)
+    |> Base.encode16(case: :lower)
   end
 
   @impl true

@@ -48,6 +48,7 @@ defmodule BeamAgent.ModelRouter do
         privacy_requirement: Map.get(input, :privacy_requirement, :provider_allowed),
         tools_required: input.tools != []
       })
+      |> apply_reasoning_requirement(Map.get(input, :reasoning_requirement))
 
     strategy = Map.get(input, :strategy, :manual)
     candidates = candidates(endpoints, input, strategy)
@@ -82,6 +83,10 @@ defmodule BeamAgent.ModelRouter do
     |> Enum.reject(&(&1.health.status == :unavailable))
     |> Enum.filter(fn endpoint ->
       strategy != :local_only or endpoint.claims.locality == :local
+    end)
+    |> Enum.filter(fn endpoint ->
+      locality = Map.get(input, :locality_requirement, :any)
+      locality == :any or endpoint.claims.locality == locality
     end)
     |> Enum.filter(fn endpoint ->
       Map.get(input, :privacy_requirement) != :local or endpoint.claims.privacy == :local
@@ -170,7 +175,11 @@ defmodule BeamAgent.ModelRouter do
         do: 70,
         else: 0
 
-    free = if endpoint.claims.cost_hint == :free, do: 15, else: 0
+    free =
+      if Map.get(input, :cost_preference, :prefer_low) == :prefer_low and
+           endpoint.claims.cost_hint == :free,
+         do: 15,
+         else: 0
 
     strong =
       if classification.reasoning == :high and :reasoning in endpoint.claims.capabilities,
@@ -185,9 +194,13 @@ defmodule BeamAgent.ModelRouter do
       end
 
     latency =
-      case endpoint.measurements[:latency_ms] || endpoint.measurements["latency_ms"] do
-        milliseconds when is_number(milliseconds) -> max(0, 20 - trunc(milliseconds / 250))
-        _unknown -> 0
+      if Map.get(input, :latency_preference, :interactive) == :interactive do
+        case endpoint.measurements[:latency_ms] || endpoint.measurements["latency_ms"] do
+          milliseconds when is_number(milliseconds) -> max(0, 20 - trunc(milliseconds / 250))
+          _unknown -> 0
+        end
+      else
+        0
       end
 
     preferred + available + local_simple + free + strong + context_fit + latency
@@ -254,12 +267,28 @@ defmodule BeamAgent.ModelRouter do
   end
 
   defp eligible_fallback(%{fallback_endpoint: %ModelEndpoint{} = endpoint} = input) do
-    if CapabilityEnvelope.authorize(Map.get(input, :capability_envelope), %{
-         model_classes: model_class(endpoint)
-       }) == :ok,
-       do: endpoint,
-       else: nil
+    if fallback_eligible?(endpoint, input),
+      do: endpoint,
+      else: nil
   end
 
   defp eligible_fallback(_input), do: nil
+
+  defp fallback_eligible?(endpoint, input) do
+    strategy = Map.get(input, :strategy, :manual)
+    locality = Map.get(input, :locality_requirement, :any)
+    privacy = Map.get(input, :privacy_requirement, :provider_allowed)
+
+    (strategy != :local_only or endpoint.claims.locality == :local) and
+      (locality == :any or endpoint.claims.locality == locality) and
+      (privacy != :local or endpoint.claims.privacy == :local) and
+      CapabilityEnvelope.authorize(Map.get(input, :capability_envelope), %{
+        model_classes: model_class(endpoint)
+      }) == :ok
+  end
+
+  defp apply_reasoning_requirement(classification, :high),
+    do: %{classification | reasoning: :high}
+
+  defp apply_reasoning_requirement(classification, _requirement), do: classification
 end

@@ -116,6 +116,18 @@ defmodule BeamAgent.RuntimeGoalTree do
     Map.put(nodes, session_id, node)
   end
 
+  defp update_nodes(nodes, "agent_spec_applied", data, event) do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+
+    node =
+      node
+      |> maybe_put(:agent_role, data["role"] || data[:role])
+      |> maybe_put(:spec_id, data["spec_id"] || data[:spec_id])
+
+    Map.put(nodes, session_id, node)
+  end
+
   defp update_nodes(nodes, "model_route_selected", data, event) do
     session_id = scope_session_id(event)
 
@@ -243,6 +255,8 @@ defmodule BeamAgent.RuntimeGoalTree do
       node =
         node
         |> Map.put(:role, :subagent)
+        |> maybe_put(:agent_role, data["role"] || data[:role])
+        |> maybe_put(:spec_id, data["spec_id"] || data[:spec_id])
         |> maybe_put_parent(parent_session_id)
 
       Map.put(nodes, child_id, node)
@@ -259,6 +273,8 @@ defmodule BeamAgent.RuntimeGoalTree do
       worker_id: session_id,
       parent_session_id: parent,
       role: role,
+      agent_role: nil,
+      spec_id: nil,
       state: :idle,
       last_routed: nil,
       last_tool: nil,
@@ -338,7 +354,8 @@ defmodule BeamAgent.RuntimeGoalTree do
   def render(%{root: nil}), do: ["No active goal tree"]
 
   def render(%{root: root}) do
-    header = "Goal #{short(root.session_id)} · #{root.state}"
+    role = if root.agent_role, do: " · #{root.agent_role}", else: ""
+    header = "Goal #{short(root.session_id)} · #{root.state}#{role}"
 
     header =
       case root.last_routed do
@@ -388,8 +405,12 @@ defmodule BeamAgent.RuntimeGoalTree do
   defp node_label(node) do
     base =
       case node.role do
-        :root -> "Goal #{short(node.session_id)} · #{node.state}"
-        :subagent -> "Subagent #{short(node.session_id)} · #{node.state}"
+        :root ->
+          "Goal #{short(node.session_id)} · #{node.state}"
+
+        :subagent ->
+          label = node.agent_role || "Subagent"
+          "#{label} #{short(node.session_id)} · #{node.state}"
       end
 
     routed =

@@ -674,6 +674,21 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		return result
 	case "subagent_spawned":
 		return "Subagent spawned · " + shortSession(asString(data["child_session_id"]))
+	case "agent_construction_requested":
+		requested := asString(data["role_requested"])
+		if requested == "" {
+			requested = asString(data["template_requested"])
+		}
+		if requested == "" {
+			requested = "dynamic specialist"
+		}
+		return "Agent requested · " + requested + " · " + shortSession(asString(data["target_session_id"]))
+	case "agent_constructed":
+		return "Agent constructed · " + asString(data["role"]) + " · " + asString(data["authority"]) + " authority · " + shortSession(asString(data["target_session_id"]))
+	case "agent_spec_applied":
+		return "Agent ready · " + asString(data["role"]) + " · " + shortSession(sessionID)
+	case "agent_construction_failed":
+		return "Agent construction failed · " + asString(data["failure_code"])
 	case "turn_finished":
 		if !root {
 			return "Subagent " + asString(data["reason"]) + " · " + shortSession(sessionID)

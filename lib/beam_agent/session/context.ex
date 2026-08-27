@@ -2,8 +2,9 @@ defmodule BeamAgent.Session.Context do
   @moduledoc "Session-owned immutable snapshot of project instructions and lazily activated skills."
   use GenServer
 
-  alias BeamAgent.{Names, ProjectContext}
+  alias BeamAgent.{AgentSpec, Names, ProjectContext}
   alias BeamAgent.Session.EventLog
+  alias BeamAgent.Tools.FileSupport
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -38,11 +39,13 @@ defmodule BeamAgent.Session.Context do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     workspace_root = Keyword.fetch!(opts, :workspace_root)
+    agent_spec = Keyword.fetch!(opts, :agent_spec)
 
-    with {:ok, snapshot} <- ProjectContext.load(workspace_root),
+    with {:ok, project_snapshot} <- ProjectContext.load(workspace_root),
+         snapshot <- apply_agent_spec(project_snapshot, agent_spec),
          {:ok, _event} <-
            EventLog.append(session_id, :context_loaded, event_data(snapshot, "session_start")) do
-      {:ok, Map.put(snapshot, :session_id, session_id)}
+      {:ok, snapshot |> Map.put(:session_id, session_id) |> Map.put(:agent_spec, agent_spec)}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -53,6 +56,7 @@ defmodule BeamAgent.Session.Context do
     public =
       state
       |> Map.drop([:session_id])
+      |> Map.update!(:agent_spec, &AgentSpec.to_map/1)
       |> Map.put(:skills, Enum.map(state.skills, &public_skill/1))
 
     {:reply, {:ok, public}, state}
@@ -63,10 +67,16 @@ defmodule BeamAgent.Session.Context do
   end
 
   def handle_call(:reload, _from, state) do
-    with {:ok, snapshot} <- ProjectContext.load(state.workspace_root),
+    with {:ok, project_snapshot} <- ProjectContext.load(state.workspace_root),
+         snapshot <- apply_agent_spec(project_snapshot, state.agent_spec),
          {:ok, _event} <-
            EventLog.append(state.session_id, :context_loaded, event_data(snapshot, "reload")) do
-      {:reply, {:ok, summary(snapshot)}, Map.put(snapshot, :session_id, state.session_id)}
+      next =
+        snapshot
+        |> Map.put(:session_id, state.session_id)
+        |> Map.put(:agent_spec, state.agent_spec)
+
+      {:reply, {:ok, summary(snapshot)}, next}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -96,6 +106,8 @@ defmodule BeamAgent.Session.Context do
   defp event_data(snapshot, reason) do
     %{
       "fingerprint" => snapshot.fingerprint,
+      "agent_spec_id" => snapshot.agent_spec_id,
+      "agent_role" => snapshot.agent_role,
       "reason" => reason,
       "instructions" => Enum.map(snapshot.instructions, &Map.take(&1, [:path, :sha256])),
       "skills" => Enum.map(snapshot.skills, &public_skill/1),
@@ -113,4 +125,14 @@ defmodule BeamAgent.Session.Context do
   end
 
   defp public_skill(skill), do: Map.take(skill, [:name, :description, :path, :sha256])
+
+  defp apply_agent_spec(snapshot, agent_spec) do
+    %{
+      snapshot
+      | fingerprint: FileSupport.sha256(snapshot.fingerprint <> ":" <> agent_spec.spec_id),
+        system_prompt: snapshot.system_prompt <> "\n\n" <> AgentSpec.system_prompt(agent_spec)
+    }
+    |> Map.put(:agent_spec_id, agent_spec.spec_id)
+    |> Map.put(:agent_role, agent_spec.role)
+  end
 end

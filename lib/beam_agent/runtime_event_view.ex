@@ -8,22 +8,27 @@ defmodule BeamAgent.RuntimeEventView do
   """
 
   @safe_scalar_keys MapSet.new(~w(
-    access approval_id attempt cached_tokens cancelled category check_count check_id child_session_id command_id compacted_count
+    access agent_role agent_spec_id approval_id attempt authority cached_tokens cancelled capabilities_requested category check_count check_id child_session_id command_id compacted_count
     compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision duration_ms
-    decision_id endpoint_id estimated_cost estimated_tokens fingerprint from goal_id health id index is_error
+    context_ref_count decision_id depth effective_capability_id endpoint_id estimated_cost estimated_tokens failure_code fingerprint from goal_fingerprint goal_id health id index instruction_count is_error
     average_latency_ms best_verified_samples confidence eligible generated_at language latency_ms latency_preference
     limit locality measured_latency_ms minimum_verified_samples mode model name operational_samples
     operational_success_rate operational_successes outcome_id output_tokens quality_lower_bound
-    parent_session_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
+    parent_capability_id parent_session_id parent_worker_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
     recency_weighted_pass_rate recommended_endpoint_id recovered redaction request_id request_version
     exit_status failed_count passed_count response_id required retries root selected_endpoint_id server session_id source
-    state status step strategy stream success task_type timeout to tool tool_call_id tool_count tools_required total_tokens
+    requested_capability_mode role role_requested state status step strategy stream success target_session_id task_type template template_requested timeout to tool tool_call_id tool_count tools_required total_tokens
     truncated turn type verification_id verified_pass_rate verified_passes verified_samples version window_days window_tokens worker_id
   ))
 
   @safe_container_keys MapSet.new(~w(usage))
   @safe_object_keys MapSet.new(~w(evidence inputs verification))
   @safe_list_keys MapSet.new(~w(candidate_endpoint_ids candidates endpoints))
+  @safe_provenance_sources MapSet.new(~w(
+    goal_default parent_allocation parent_inheritance parent_proposal
+    parent_proposal_runtime_constrained project_default project_state
+    runtime_context_selection runtime_default runtime_inference runtime_policy runtime_root user
+  ))
 
   @type view :: :public | :internal
 
@@ -68,6 +73,9 @@ defmodule BeamAgent.RuntimeEventView do
 
       MapSet.member?(@safe_container_keys, key) ->
         public_metrics(value)
+
+      key == "provenance" and is_map(value) ->
+        public_provenance(value)
 
       MapSet.member?(@safe_object_keys, key) and is_map(value) ->
         public_data(value)
@@ -118,6 +126,16 @@ defmodule BeamAgent.RuntimeEventView do
   end
 
   defp public_metrics(value), do: {redaction(value), not is_nil(value)}
+
+  defp public_provenance(value) do
+    Enum.reduce(value, {%{}, false}, fn {key, source}, {projected, redacted?} ->
+      if is_binary(source) and MapSet.member?(@safe_provenance_sources, source) do
+        {Map.put(projected, key, source), redacted?}
+      else
+        {Map.put(projected, key, redaction(source)), true}
+      end
+    end)
+  end
 
   defp redaction(nil), do: nil
 

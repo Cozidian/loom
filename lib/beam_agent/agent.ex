@@ -2,7 +2,7 @@ defmodule BeamAgent.Agent do
   @moduledoc "A mailbox-owning agent process whose model-visible state lives in its event log."
   use GenServer
 
-  alias BeamAgent.{CapabilityCatalog, Names, RuntimeCommand}
+  alias BeamAgent.{AgentSpec, CapabilityCatalog, Names, RuntimeCommand}
   alias BeamAgent.Session.{Context, EventLog}
 
   def start_link(opts) do
@@ -31,6 +31,18 @@ defmodule BeamAgent.Agent do
   def runtime_identity(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :runtime_identity)
+    end
+  end
+
+  def construction_context(session_id) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, :construction_context)
+    end
+  end
+
+  def spec(session_id) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, :agent_spec)
     end
   end
 
@@ -72,11 +84,32 @@ defmodule BeamAgent.Agent do
         approval_policy: Keyword.get(opts, :approval_policy, :ask),
         approval_handler: Keyword.get(opts, :approval_handler),
         capability_envelope: Keyword.fetch!(opts, :capability_envelope),
+        agent_spec: Keyword.fetch!(opts, :agent_spec),
         context_window_tokens: Keyword.get(opts, :context_window_tokens, 32_000),
         compaction_threshold_percent: Keyword.get(opts, :compaction_threshold_percent, 75),
         status: :idle,
         current_turn: nil
       }
+
+      if state.parent_session_id == nil and
+           not Enum.any?(existing, fn event ->
+             event["type"] == "agent_constructed" and
+               event["data"]["spec_id"] == state.agent_spec.spec_id
+           end) do
+        {:ok, _event} =
+          EventLog.append(
+            session_id,
+            :agent_constructed,
+            AgentSpec.metadata(state.agent_spec, session_id)
+          )
+      end
+
+      {:ok, _event} =
+        EventLog.append(
+          session_id,
+          :agent_spec_applied,
+          AgentSpec.metadata(state.agent_spec, session_id)
+        )
 
       {:ok, _} =
         EventLog.append(session_id, :agent_started, %{
@@ -155,6 +188,32 @@ defmodule BeamAgent.Agent do
     {:reply, {:ok, identity}, state}
   end
 
+  def handle_call(:construction_context, _from, state) do
+    context =
+      Map.take(state, [
+        :session_id,
+        :project_id,
+        :goal_id,
+        :workspace_root,
+        :data_dir,
+        :provider,
+        :provider_profile,
+        :provider_options,
+        :strategy,
+        :approval_policy,
+        :approval_handler,
+        :capability_envelope,
+        :agent_spec,
+        :context_window_tokens,
+        :compaction_threshold_percent,
+        :model_strategy
+      ])
+
+    {:reply, {:ok, context}, state}
+  end
+
+  def handle_call(:agent_spec, _from, state), do: {:reply, {:ok, state.agent_spec}, state}
+
   def handle_call(:context_options, _from, %{current_turn: nil} = state) do
     options =
       Map.take(state, [
@@ -163,7 +222,8 @@ defmodule BeamAgent.Agent do
         :context_window_tokens,
         :compaction_threshold_percent,
         :capability_envelope,
-        :model_strategy
+        :model_strategy,
+        :agent_spec
       ])
 
     {:reply, {:ok, options}, state}

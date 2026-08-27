@@ -9,6 +9,7 @@ defmodule BeamAgent do
 
   alias BeamAgent.{
     Agent,
+    AgentConstructor,
     CapabilityEnvelope,
     Goal,
     ModelRegistry,
@@ -88,9 +89,13 @@ defmodule BeamAgent do
           CapabilityEnvelope.root(Keyword.get(opts, :capabilities, :all))
         end)
 
-      case ProjectSupervisor.start_goal(project_id, goal_opts) do
-        {:ok, _pid} -> {:ok, goal_id}
-        {:error, reason} -> {:error, reason}
+      with {:ok, agent_spec} <- AgentConstructor.root(goal_opts) do
+        goal_opts = Keyword.put(goal_opts, :agent_spec, agent_spec)
+
+        case ProjectSupervisor.start_goal(project_id, goal_opts) do
+          {:ok, _pid} -> {:ok, goal_id}
+          {:error, reason} -> {:error, reason}
+        end
       end
     end
   end
@@ -102,6 +107,8 @@ defmodule BeamAgent do
   def spawn_subagent(parent_session_id, opts \\ []) do
     SessionSupervisor.spawn_subagent(parent_session_id, opts)
   end
+
+  def agent_spec(session_id), do: Agent.spec(session_id)
 
   def ask(session_id, prompt, timeout \\ :infinity), do: Agent.ask(session_id, prompt, timeout)
   def cancel(session_id), do: Agent.cancel(session_id)

@@ -82,6 +82,24 @@ dependent session from its event log; sibling goals remain isolated. Nested
 subagent sessions remain inside the root session for now and inherit the
 project and goal identity from their parent process.
 
+Every root and delegated worker receives a validated `AgentSpec` before its
+`Agent` process starts. The value keeps soft configuration—goal, role,
+instructions, context references, requested expertise, and template—separate
+from runtime-owned effective capabilities, restrictions, resources, model
+eligibility, verification requirements, and lifecycle. `AgentConstructor`
+populates root coordinators and dynamically inferred or explicitly requested
+specialists from parent state and project context. Capability requests may only
+inherit or attenuate the parent's immutable envelope; prompt fields named like
+hard configuration are ignored. Restricted workers receive only authorized
+tool schemas, not merely execution-time denial.
+
+Construction request, success, applied-spec, failure, and spawn events contain
+safe fingerprints, identifiers, role, authority disposition, and field
+provenance rather than goals or instructions. The complete spec stays in the
+runtime process/context, where its role, goal, and instructions become an
+agent-specific system-prompt section. `/tree` derives dynamic role names from
+the durable applied-spec events.
+
 Provider adapters and model endpoints are separate runtime concepts.
 `CapabilityCatalog` globally publishes stateless `LLMProvider` modules such as
 Ollama and xAI. Each long-lived project owns a `ModelRegistry` containing all

@@ -4,6 +4,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   alias BeamAgent.{
     CapabilityCatalog,
+    CapabilityEnvelope,
     MCP.Registry,
     ModelEndpoint,
     ModelInvocation,
@@ -47,7 +48,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
          {:ok, project_context} <- Context.snapshot(context.session_id),
          tool_schemas <-
            if(tools_enabled?,
-             do: CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id),
+             do: available_tool_schemas(context),
              else: []
            ),
          system_prompt <- recovery_prompt(project_context.system_prompt, tools_enabled?),
@@ -328,6 +329,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp route_model(context, tool_schemas, turn, step) do
     prompt = latest_user_prompt(context.session_id)
+    requirements = context.agent_spec.model_requirements
 
     input = %{
       prompt: prompt,
@@ -337,10 +339,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
       preferred_provider: context.provider,
       tools: tool_schemas,
       context_tokens: estimated_context_tokens(context.session_id),
-      latency_preference: :interactive,
-      cost_preference: :prefer_low,
-      privacy_requirement:
-        if(context.model_strategy == :local_only, do: :local, else: :provider_allowed),
+      latency_preference: requirements.latency,
+      cost_preference: requirements.cost,
+      reasoning_requirement: requirements.reasoning,
+      locality_requirement: requirements.locality,
+      privacy_requirement: requirements.privacy,
       capability_envelope: context.capability_envelope,
       fallback_endpoint: current_endpoint(context)
     }
@@ -500,6 +503,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp recovery_prompt(system_prompt, false),
     do: system_prompt <> "\n\n" <> @tool_loop_recovery_prompt
 
+  defp available_tool_schemas(context) do
+    (CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id))
+    |> Enum.filter(fn schema ->
+      CapabilityEnvelope.authorize(context.capability_envelope, %{tools: schema.name}) == :ok
+    end)
+  end
+
   defp validate_call(%{id: id, name: name, arguments: arguments})
        when is_binary(id) and is_binary(name) and is_map(arguments),
        do: :ok
@@ -540,6 +550,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :compaction_threshold_percent,
       :capability_envelope,
       :model_strategy,
+      :agent_spec,
       :runtime_command
     ])
     |> Map.put(:causation_id, causation_id)

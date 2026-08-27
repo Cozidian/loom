@@ -434,7 +434,7 @@ should follow on the stronger execution substrate.
 
 ### Foundation
 
-1. [ ] Define the runtime agent representation
+1. [x] Define the runtime agent representation
 
    - Introduce an interface-neutral `AgentSpec` or equivalent value describing
      goal, role, instructions, context references, requested capabilities,
@@ -443,8 +443,14 @@ should follow on the stronger execution substrate.
    - Keep the specification separate from process state and durable results.
    - Make provenance explicit: which fields came from the user, parent worker,
      template, policy, project defaults, or runtime decision.
+   - Delivered: `BeamAgent.AgentSpec` is a validated, interface-neutral value
+     separate from process state and outcomes. It carries goal, role,
+     instructions, context references, requested and effective capabilities,
+     restrictions, resources, model and verification requirements, parent,
+     lifecycle, template, and per-field provenance. Root and child agents expose
+     their applied spec through the runtime.
 
-2. [ ] Add dynamic agent construction and population
+2. [x] Add dynamic agent construction and population
 
    - Construct fit-for-purpose worker specifications from the current goal,
      parent worker, project state, context, policy, resources, templates, and
@@ -452,6 +458,15 @@ should follow on the stronger execution substrate.
    - Validate and normalize the specification before starting a process.
    - Emit safe construction events so the resulting configuration and its
      provenance are replayable and inspectable.
+   - Delivered: `BeamAgent.AgentConstructor` builds root coordinators and
+     fit-for-purpose child specialists from goal classification, optional parent
+     proposals, project context, inherited resources/model policy, and immutable
+     capability envelopes. Hard fields are runtime-populated; attempted authority
+     expansion fails before a process starts. Every request, constructed spec,
+     applied spec, failure, and spawn is durable and safely projected. The
+     constructed role/instructions populate the child system context, model
+     requirements constrain routing, and restricted agents see only tool schemas
+     they are authorized to execute.
 
 3. [ ] Represent agent templates and execution strategies
 

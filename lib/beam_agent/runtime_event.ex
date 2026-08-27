@@ -94,7 +94,11 @@ defmodule BeamAgent.RuntimeEvent do
               "agent_started",
               "turn_started",
               "turn_finished",
-              "subagent_spawned"
+              "subagent_spawned",
+              "agent_construction_requested",
+              "agent_constructed",
+              "agent_spec_applied",
+              "agent_construction_failed"
             ],
        do: :lifecycle
 
