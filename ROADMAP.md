@@ -13,16 +13,27 @@ produces better evidence.
 
 ## North star
 
+Build a living software runtime where goals dynamically create supervised,
+fit-for-purpose agents. Each agent receives only the context, intelligence,
+resources, and authority it needs; it may form new specialists as problems
+emerge and disappears when its purpose is complete.
+
 Models are resources available to the runtime, not the identity of an agent.
-Users should primarily specify goals. The runtime should decide when work is
-deterministic, when intelligence is needed, which available model is suitable,
-and whether useful work can proceed concurrently.
+Users should primarily specify goals. The runtime should decide which actors
+are needed, when work is deterministic, when intelligence is needed, which
+available model is suitable, and whether useful work can proceed concurrently.
 
 ```text
-Agent = process + goal + state + capabilities + mailbox + available intelligence
+Agent = process + goal + instructions + context + capabilities + constraints
+        + resources + intelligence + lifecycle
 
 Harness = processes + supervisors + tools + models + events + policies + schedulers
 ```
+
+The project is persistent. Agents are dynamically constructed, specialists
+emerge on demand, and workers are disposable. Authority is explicit,
+intelligence is a resource, autonomy is earned, failure is cheap, and
+verification unlocks action.
 
 OTP is the runtime model, not a reason to turn every module into a `GenServer`.
 A process is warranted when a component benefits from an independent lifecycle,
@@ -80,11 +91,165 @@ budgets, capabilities, cancellation, and completion. OTP supervision answers
 whether a worker is healthy; goal-level coordination answers whether it is
 doing the right work.
 
+The named workers above are examples, not a fixed organization. The runtime
+should be able to construct a specialist that did not exist as a predefined
+persona or workflow when the project was built.
+
+## Dynamic agent construction
+
+Agents are ephemeral OTP processes populated at runtime for the problem that
+caused them to exist. The process is the vessel; the goal explains why it
+exists; instructions guide behavior; context supplies current knowledge;
+capabilities determine what it can actually do; resources bound its cost and
+lifetime; the model router supplies appropriate intelligence; and supervision
+owns its lifecycle.
+
+```text
+Agent
+├── Goal
+├── Role / Instructions
+├── Context
+├── Capabilities
+├── Restrictions
+├── Resources / Budget
+├── Model Requirements
+├── Verification Requirements
+└── Lifecycle
+```
+
+### Dynamic population
+
+Worker construction should be a runtime decision derived from current state,
+not merely selection from a static list of personas.
+
+```text
+Current Goal
+      +
+Parent Worker
+      +
+Project State and Available Context
+      +
+Capability Policy and Available Resources
+      +
+Agent Templates / Execution Strategies
+      ↓
+Runtime Agent Instance
+```
+
+The resulting instance may receive a dynamically constructed role, bounded
+goal, instructions, relevant context, tools, capability envelope, filesystem
+and network scope, restrictions, budget, deadline, model requirements, and
+verification requirements.
+
+Workers with delegation authority may request more workers when they discover
+that additional expertise, isolation, or parallel work is useful. Those workers
+may delegate again when policy permits, allowing an organization to emerge from
+the problem rather than being declared in advance.
+
+```text
+Authentication Investigator
+├── PostgreSQL Concurrency Specialist
+│   └── Ecto Transaction Researcher
+├── Git History Investigator
+└── Reproduction Worker
+```
+
+A delegation request describes the desired specialist and requested authority;
+it does not grant that authority. A worker may request a database specialist
+with `database.schema.read`, but runtime policy decides whether that capability
+is granted, narrowed, leased temporarily, escalated for approval, or denied.
+
+### Templates are starting points
+
+Researcher, Implementer, Reviewer, Debugger, Test Investigator, and Security
+Reviewer are reusable templates or execution strategies, not the complete
+population of possible agents.
+
+```text
+Template + Goal + Context + Capabilities + Constraints + Budget + Policy
+                              ↓
+                    Specialized Agent Instance
+```
+
+The runtime must also be able to construct a new specialist on demand, such as
+a BEAM Scheduler Investigator with telemetry-read and repository-read authority,
+a small context, and a model requirement for strong Elixir/BEAM reasoning.
+
+### Soft configuration and hard authority
+
+Maintain a strict boundary between proposals made by intelligence and controls
+owned by the runtime.
+
+Soft configuration may be generated dynamically:
+
+- role, prompt, instructions, and reasoning strategy;
+- context selection and requested expertise;
+- decomposition and delegation proposals.
+
+Hard configuration remains runtime- and policy-controlled:
+
+- actual tools and capabilities;
+- filesystem, network, credential, secret, and production access;
+- model eligibility, budget, sandbox, deadline, lifetime, and delegation depth;
+- approval and verification gates.
+
+Prompts describe behavior. Capabilities determine reality. Delegation may
+request additional authority but cannot acquire it by changing instructions.
+
+### Cheap specialists and dynamic organization
+
+Agent creation should be inexpensive. A worker may live for ten seconds to
+identify files, thirty seconds to classify an error, two minutes to test one
+hypothesis, or longer to implement and coordinate a bounded change. Narrow
+goals, small contexts, limited capabilities, inexpensive models, and explicit
+budgets should make disposable specialists preferable to one indefinitely
+expanding conversation.
+
+```text
+Signal / User Request
+ ↓
+Goal
+ ↓
+Determine required work
+ ↓
+Construct initial agent
+ ↓
+Populate goal, instructions, context, capabilities, constraints,
+resources, intelligence, and verification requirements
+ ↓
+Work discovers additional need?
+ ├── no  ───────────────────────────┐
+ └── yes → request worker           │
+             ↓                      │
+          policy evaluation         │
+             ↓                      │
+          populate and delegate ────┘
+ ↓
+Verify → record outcome and useful knowledge → terminate organization
+```
+
+As the runtime evolves, apply this architectural test:
+
+> Can the runtime dynamically construct the actors it needs, give each one an
+> explicit goal, only the context and authority required for that goal, and
+> safely destroy them when their purpose is complete?
+
+Retain the broader OTP test:
+
+> Can this be expressed as an actor responding to a signal, pursuing a goal
+> using explicitly granted capabilities and resources?
+
 ## Work order
 
-### Foundation
+The phase numbers express architectural dependency groups, not a rule that
+every earlier item must finish before a high-value safety slice. Based on the
+2026-08-27 autonomous `/tree` experiment, item 21 (verified completion) is the
+immediate next implementation priority; item 1 (runtime agent representation)
+should follow on the stronger execution substrate.
 
-1. [x] Context budgeting and durable compaction
+### Delivered platform foundations
+
+- [x] Context budgeting and durable compaction
 
    - Estimate the complete model request, including system instructions, tool
      schemas, messages, and tool results.
@@ -98,7 +263,7 @@ doing the right work.
    - Evidence: `BeamAgent.Session.ConversationContext`, the tool-loop projection
      path, config migration version 5, and `test/conversation_context_test.exs`.
 
-2. [x] Establish project and goal runtime boundaries
+- [x] Establish project and goal runtime boundaries
 
    - Introduce one supervised project runtime per canonical workspace, separate
      from the lifecycle of an individual conversation or goal.
@@ -114,7 +279,7 @@ doing the right work.
      `BeamAgent.GoalSupervisor`, inherited child-session identity, and
      `test/project_goal_runtime_test.exs`.
 
-3. [x] Define the event and message architecture
+- [x] Define the event and message architecture
 
    - Create a versioned runtime event envelope with goal, worker, causation, and
      correlation identity plus timestamps and typed payloads.
@@ -143,7 +308,7 @@ doing the right work.
      category, type, worker/session, lineage, cursor range, redaction state,
      ordering, and bounded limits, exposed through the TUI's `/events` command.
 
-4. [x] Promote provider profiles into a model registry
+- [x] Promote provider profiles into a model registry
 
    - Keep `BeamAgent.LLMProvider` as the provider protocol seam while registering
      many usable model endpoints simultaneously.
@@ -168,7 +333,7 @@ doing the right work.
      finite timeouts, provider failures, and owner-process cancellation. Both
      tool-loop work and context compaction use the same invocation boundary.
 
-5. [x] Separate the runtime API from every interface
+- [x] Separate the runtime API from every interface
 
    - Extract the current controller boundary into an interface-neutral local
      runtime API for goals, subscriptions, approvals, cancellation, inspection,
@@ -189,7 +354,7 @@ doing the right work.
      ownership, and a replacement client can replay only facts after its last
      cursor.
 
-6. [x] Add resource-specific permissions and capability envelopes
+- [x] Add resource-specific permissions and capability envelopes
 
    - Replace the broad risky-tool choice with decisions scoped to a tool,
      command family, path, host, MCP server, model class, or other resource.
@@ -207,7 +372,7 @@ doing the right work.
      Capability denial runs before approval and never bypasses workspace,
      observed-state, or sandbox enforcement.
 
-7. [x] Add MCP servers as supervised resources
+- [x] Add MCP servers as supervised resources
 
    - Start with local stdio servers owned by the narrowest appropriate project
      or goal resource supervisor.
@@ -225,9 +390,9 @@ doing the right work.
      lifecycle events. MCP execution passes through the same capability and
      approval boundary as native tools. Remote transports remain deferred.
 
-### Intelligence
+### Delivered intelligence foundations
 
-8. [x] Introduce automatic model routing
+- [x] Introduce automatic model routing
 
    - Make `Auto` the preferred strategy while retaining specific model/provider,
      local-only, and custom-strategy overrides.
@@ -248,7 +413,7 @@ doing the right work.
      instead of an LLM. Every decision records safe inputs, candidates,
      selection, strategy, and a concise reason; the TUI renders it inline.
 
-9. [x] Capture model and task outcomes
+- [x] Capture model and task outcomes
 
    - Record task type, language, repository identity, model, latency, normalized
      usage, estimated cost, retries, failures, and cancellation.
@@ -263,10 +428,186 @@ doing the right work.
      latency, normalized usage, cost hint, retries, status, failure, and
      cancellation. Verification is an independently attached fact, initially
      `unverified`; public APIs support inspection, attachment, export, restart
-     recovery, retention limits, and complete telemetry opt-out. Item 10 now
-     consumes these measurements in shadow mode without changing live choices.
+     recovery, retention limits, and complete telemetry opt-out. The routing
+     evidence work below consumes these measurements in shadow mode without
+     changing live choices.
 
-10. [ ] Improve routing from evidence
+### Foundation
+
+1. [ ] Define the runtime agent representation
+
+   - Introduce an interface-neutral `AgentSpec` or equivalent value describing
+     goal, role, instructions, context references, requested capabilities,
+     restrictions, resource limits, model requirements, verification contract,
+     parent, and lifecycle policy.
+   - Keep the specification separate from process state and durable results.
+   - Make provenance explicit: which fields came from the user, parent worker,
+     template, policy, project defaults, or runtime decision.
+
+2. [ ] Add dynamic agent construction and population
+
+   - Construct fit-for-purpose worker specifications from the current goal,
+     parent worker, project state, context, policy, resources, templates, and
+     available intelligence.
+   - Validate and normalize the specification before starting a process.
+   - Emit safe construction events so the resulting configuration and its
+     provenance are replayable and inspectable.
+
+3. [ ] Represent agent templates and execution strategies
+
+   - Treat researcher, implementer, reviewer, debugger, and similar roles as
+     composable starting points rather than a fixed population.
+   - Allow runtime-generated specialists with no predefined persona.
+   - Version templates independently from the dynamically populated instance.
+
+4. [x] Represent capabilities independently from prompts
+
+   - `CapabilityEnvelope` already represents tool, path, command, host, MCP,
+     and model-class authority as runtime data.
+   - Continue extending this representation without allowing instructions or
+     model output to become an authorization mechanism.
+
+5. [x] Make worker execution capability-aware
+
+   - Existing root and child sessions enforce capability envelopes before
+     approvals and tool execution.
+   - Generalize this proven boundary to every dynamically constructed worker
+     and resource handle.
+
+6. [ ] Formalize the soft-configuration / hard-authority boundary
+
+   - Define which worker fields intelligence may propose and which only policy
+     may set or narrow.
+   - Record requested versus effective hard configuration and a concise policy
+     decision without leaking sensitive values.
+   - Reject prompt-based attempts to grant tools, credentials, production
+     access, budget, lifetime, or deeper delegation.
+
+7. [x] Preserve capability inheritance and attenuation
+
+   - Current child workers inherit or narrow their parent's immutable envelope;
+     silent authority expansion is rejected.
+   - Preserve this invariant across dynamic construction, templates, retries,
+     worktrees, remote nodes, and nested delegation.
+
+8. [ ] Add scoped and temporary capability leases
+
+   - Support authority bounded by worker, resource, operation count, deadline,
+     or goal phase.
+   - Revoke leases automatically when the owning worker or goal terminates.
+   - Keep durable grants distinct from temporary runtime leases.
+
+9. [ ] Add a capability request and escalation protocol
+
+   - Let workers request missing authority as structured data with purpose,
+     scope, duration, and fallback behavior.
+   - Route requests through deterministic policy and human approval where
+     required; denial must remain a normal observable outcome.
+   - Never let a delegate approve its own authority expansion.
+
+10. [ ] Represent budgets and resource allocations
+
+    - Give each goal and worker explicit limits for model cost/tokens, wall
+      time, retries, concurrency, shell/test use, and other scarce resources.
+    - Derive child allocations from the parent's remaining budget and policy.
+    - Make consumption, warnings, exhaustion, and release observable.
+
+11. [ ] Add secretless capability providers
+
+    - Prefer opaque resource handles, brokered credentials, and narrow service
+      capabilities over placing secrets in prompts, worker state, or tool input.
+    - Bind handles to worker identity, effective scope, and lifetime.
+    - Redact secret material from events while preserving useful audit facts.
+
+### Dynamic runtime
+
+12. [ ] Generalize dynamic worker spawning
+
+    - Evolve the existing `spawn_subagent` primitive from prompt-only child
+      sessions into validated runtime agent specifications.
+    - Start workers under the narrowest appropriate supervisor and return a
+      structured handle/result channel rather than only conversational text.
+    - Preserve nested spawning, replay, cancellation, and failure isolation.
+
+13. [ ] Make agent-to-agent delegation first-class
+
+    - Represent delegation requests, accepted work, progress, result, rejection,
+      cancellation, and escalation as explicit messages and events.
+    - Give every delegated task a bounded goal and completion criteria.
+    - Permit recursive delegation only when the effective capability and budget
+      policies allow it.
+
+14. [ ] Generate runtime specialists on demand
+
+    - Infer the expertise and model characteristics required for a discovered
+      subproblem without requiring a predefined role name.
+    - Construct focused instructions and context while runtime policy controls
+      actual authority and resources.
+    - Retain enough provenance to evaluate whether the specialization helped.
+
+15. [ ] Add goal-driven decomposition
+
+    - Let coordinators decompose goals into dependent or parallel bounded work
+      without hard-coding one universal workflow.
+    - Prefer deterministic dependency/state transitions and use models for the
+      semantic decisions that genuinely need intelligence.
+    - Re-plan or terminate branches cheaply when evidence invalidates them.
+
+16. [ ] Support temporary self-forming worker organizations
+
+    - Allow useful hierarchies to emerge through delegation rather than being
+      declared beforehand.
+    - Keep purpose, parentage, authority, budgets, blocking state, and result
+      flow inspectable throughout the organization.
+    - Retain validated results, then terminate and reclaim the ephemeral tree.
+
+17. [ ] Add runtime execution strategies
+
+    - Compose sequential, parallel, reviewer, investigator, retry, consensus,
+      and deterministic strategies independently from agent identity.
+    - Select strategies from goal characteristics, risk, resources, and policy.
+    - Keep strategy transitions explicit and observable.
+
+18. [ ] Add a model and resource scheduler
+
+    - Coordinate LLM calls, expensive reasoning, shell/tests, browsers, MCP,
+      embeddings, and CPU-heavy work through bounded pools.
+    - Schedule with priority, cost, rate limits, latency, machine resources, and
+      user-interaction needs.
+    - Apply backpressure instead of allowing delegation to create unbounded work.
+
+19. [ ] Support race-to-solution
+
+    - Spawn competing hypotheses, plans, implementations, tests, or reviews only
+      when expected value justifies the extra resources.
+    - Evaluate with deterministic evidence first and independent judgment when
+      necessary, then collapse losing branches safely.
+    - Preserve provenance and never merge a winner implicitly.
+
+20. [ ] Complete cancellation and resource reclamation
+
+    - Extend the current cancellable turn and child-session primitives across
+      dynamic organizations, model requests, tools, MCP, worktrees, leases, and
+      queued resources.
+    - Define deadline, parent-death, budget-exhaustion, and user-cancellation
+      propagation explicitly.
+    - Make cleanup reliable while retaining durable outcomes and diagnostics.
+
+### Runtime trust and supporting intelligence
+
+21. [ ] Enforce verified completion
+
+    - Separate `implemented`, `unverified`, `verification_failed`, `verified`,
+      and `blocked` instead of equating a final model response with task success.
+    - Represent verification requirements in the goal/agent contract and run
+      deterministic checks through a dedicated, capability-bounded verifier.
+    - Make command exit status trustworthy, prevent pipelines from masking
+      failures, provide sandbox-compatible temporary/runtime resources, and
+      attach verification evidence automatically.
+    - Generate completion reports from recorded evidence and refuse to claim a
+      required check ran when no successful event proves it.
+
+22. [ ] Improve routing from evidence
 
     - Compare models by task and environment rather than seeking one globally
       best model.
@@ -288,19 +629,9 @@ doing the right work.
       samples, pass rate, call count, and measured latency. Learned choices and
       bounded exploration remain disabled until shadow results are evaluated.
 
-### Agent runtime
+### Supporting runtime systems
 
-11. [ ] Make supervised task decomposition first-class
-
-    - Add named planner, research, implementation, verification, review, and
-      custom worker roles without hard-coding one universal workflow.
-    - Give every child a bounded goal, parent, capability set, budget, priority,
-      lifecycle, structured result channel, and completion criteria.
-    - Support dynamic spawn, cancellation, clean retry, and semantic escalation
-      while isolating operational failures to the smallest useful subtree.
-    - Do not require an LLM for deterministic coordination or state transitions.
-
-12. [ ] Build distributed working context
+23. [ ] Build distributed working context
 
     - Let repository, Git, diagnostics, tests, goals, and files own or derive the
       knowledge for which they are authoritative.
@@ -310,7 +641,7 @@ doing the right work.
     - Keep prompts as disposable projections of runtime knowledge, not the
       system's memory.
 
-13. [ ] Add reactive repository intelligence
+24. [ ] Add reactive repository intelligence
 
     - Maintain a project-level repository snapshot and react to filesystem and
       Git changes rather than repeatedly rediscovering the tree.
@@ -322,7 +653,7 @@ doing the right work.
     - Prevent stale analysis from overwriting results derived from newer file
       versions.
 
-14. [ ] Strengthen the deterministic coding substrate
+25. [ ] Strengthen the deterministic coding substrate
 
     - Add patch-native edits, Git-aware inspection, streamed shell execution,
       language-aware symbols and diagnostics, and structured test results.
@@ -331,20 +662,9 @@ doing the right work.
     - Publish repository, diagnostic, and test changes as runtime events so
       interested workers can react without polling or prompt rediscovery.
 
-15. [ ] Govern resources and apply backpressure
-
-    - Add separately configurable pools for LLM calls, expensive reasoning,
-      shell commands, tests, browsers, MCP calls, embeddings, and CPU-heavy jobs.
-    - Schedule with explicit priority, budget, rate limit, user-interaction
-      latency, and machine-resource constraints.
-    - Queue or reject work predictably when capacity is exhausted; autonomous
-      workers must not create unbounded process or external-service load.
-    - Make budget warnings, blocking reasons, queue time, cancellation, and
-      resource use observable.
-
 ### Advanced capabilities
 
-16. [ ] Isolate implementation workers with Git worktrees
+26. [ ] Isolate implementation workers with Git worktrees
 
     - Give concurrent or risky coding workers explicit worktree ownership and a
       restricted writable scope.
@@ -353,7 +673,7 @@ doing the right work.
     - Make cleanup reliable and make abandoned work recoverable or deliberately
       disposable.
 
-17. [ ] Support speculative execution and evaluation
+27. [ ] Support speculative execution and evaluation
 
     - Implement `spawn alternatives -> evaluate -> collapse` for tasks where the
       expected value justifies extra cost.
@@ -364,17 +684,17 @@ doing the right work.
     - Never merge a winner implicitly; retain provenance and require the same
       capability and approval checks as ordinary implementation.
 
-18. [ ] Extend capability security across the process hierarchy
+28. [ ] Harden capability security across every resource hierarchy
 
-    - Enforce capability inheritance at runtime rather than relying only on
-      prompts or role names.
+    - Extend the existing runtime-enforced worker envelopes to filesystem, Git,
+      shell, network, browser, MCP, model, secret, and approval handles.
     - Separate filesystem, Git, shell, network, browser, MCP, model, secret, and
       approval authority.
     - Bind resource handles to worker identity and revoke them when the owning
       process terminates.
     - Add adversarial tests for confused-deputy behavior and authority expansion.
 
-19. [ ] Explore distributed execution across BEAM nodes
+29. [ ] Explore distributed execution across BEAM nodes
 
     - Distribute only after local process ownership, event identity, scheduling,
       and capability boundaries are stable.
@@ -384,7 +704,7 @@ doing the right work.
 
 ### Product layer
 
-20. [ ] Expose the live process and task tree
+30. [ ] Expose the live process and task tree
 
     - Show each goal and worker's purpose, state, parent and children, selected
       model, tools, touched files, usage, cost, duration, failures, restarts,
@@ -405,21 +725,21 @@ doing the right work.
     - Intentionally deferred: full duration aggregation, restart counts wiring,
       multi-goal trees, file/usage/cost enrichment, LiveView, external clients.
 
-21. [ ] Build a LiveView control plane
+31. [ ] Build a LiveView control plane
 
     - Add project and goal views, live task trees, approvals, cancellation,
       budgets, event inspection, model routing visibility, and result review.
     - Keep the web application a client of the runtime API so closing a browser
       never owns or terminates autonomous work accidentally.
 
-22. [ ] Add CLI, editor, and external API clients
+32. [ ] Add CLI, editor, and external API clients
 
     - Continue improving the TUI as the primary near-term interface.
     - Add stable CLI automation, then Emacs/VS Code integrations and an external
       API over the same goal, event, approval, and cancellation contracts.
     - Support reconnect and multiple simultaneous observers consistently.
 
-23. [ ] Persist useful project intelligence
+33. [ ] Persist useful project intelligence
 
     - Retain validated repository summaries, model/task outcomes, test history,
       dependency knowledge, and project preferences across goals.
@@ -445,6 +765,12 @@ doing the right work.
 
 ## Decision notes
 
+- Static personas and workflows are optional templates, not the runtime's agent
+  model. Goals and evidence should drive fit-for-purpose construction.
+- Intelligence may propose roles, instructions, context, and delegation, but
+  only runtime policy may grant authority, resources, secrets, or lifetime.
+- A model response is not evidence of successful software work. Verification is
+  an independent runtime fact and gates claims or actions that require it.
 - The existing session supervisor and event log are foundations to evolve, not
   constraints that every future resource must live inside one conversation.
 - Event identity and lifecycle boundaries come before broad autonomous
