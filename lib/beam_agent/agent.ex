@@ -28,6 +28,12 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  def runtime_identity(session_id) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, :runtime_identity)
+    end
+  end
+
   def cancel(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :cancel)
@@ -51,6 +57,8 @@ defmodule BeamAgent.Agent do
       state = %{
         session_id: session_id,
         parent_session_id: Keyword.get(opts, :parent_session_id),
+        project_id: Keyword.fetch!(opts, :project_id),
+        goal_id: Keyword.fetch!(opts, :goal_id),
         provider: provider,
         provider_profile: Keyword.get(opts, :provider_profile),
         provider_module: provider_module,
@@ -72,7 +80,9 @@ defmodule BeamAgent.Agent do
           "recovered" => Enum.any?(existing, &(&1["type"] == "agent_started")),
           "provider" => to_string(provider),
           "provider_profile" => Keyword.get(opts, :provider_profile),
-          "model" => state.provider_options[:model]
+          "model" => state.provider_options[:model],
+          "project_id" => state.project_id,
+          "goal_id" => state.goal_id
         })
 
       {:ok, state}
@@ -121,6 +131,13 @@ defmodule BeamAgent.Agent do
 
   def handle_call({:ask, _prompt}, _from, state), do: {:reply, {:error, :empty_prompt}, state}
   def handle_call(:status, _from, state), do: {:reply, {:ok, state.status}, state}
+
+  def handle_call(:runtime_identity, _from, state) do
+    identity =
+      Map.take(state, [:session_id, :project_id, :goal_id, :workspace_root])
+
+    {:reply, {:ok, identity}, state}
+  end
 
   def handle_call(:context_options, _from, %{current_turn: nil} = state) do
     options =

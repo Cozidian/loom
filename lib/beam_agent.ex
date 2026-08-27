@@ -2,34 +2,84 @@ defmodule BeamAgent do
   @moduledoc """
   Public API for the OTP-native agent harness.
 
-  A session is a supervision subtree, an agent is a GenServer, and its durable
-  source of truth is an append-only event log.
+  A project owns ephemeral goal subtrees. A goal is initially backed by one
+  durable root session, whose agent is a GenServer and whose source of truth is
+  an append-only event log.
   """
 
-  alias BeamAgent.{Agent, Names, SessionSupervisor, Workspace}
+  alias BeamAgent.{
+    Agent,
+    Goal,
+    Names,
+    Project,
+    ProjectRootSupervisor,
+    ProjectSupervisor,
+    SessionSupervisor,
+    Workspace
+  }
+
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub, ToolPolicy}
 
   def start_session(opts \\ []) do
     id = Keyword.get_lazy(opts, :session_id, &new_session_id/0)
-
     workspace_root = Keyword.get(opts, :workspace_root, File.cwd!())
 
     with :ok <- validate_session_id(id),
-         {:ok, workspace_root} <- Workspace.canonical_root(workspace_root) do
-      data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
-
-      child_opts =
+         {:ok, workspace_root} <- Workspace.canonical_root(workspace_root),
+         {:ok, project_id} <- start_project(workspace_root: workspace_root) do
+      opts =
         opts
         |> Keyword.put(:session_id, id)
-        |> Keyword.put(:data_dir, data_dir)
+        |> Keyword.put(:goal_id, id)
         |> Keyword.put(:workspace_root, workspace_root)
 
-      case DynamicSupervisor.start_child(
-             BeamAgent.SessionRootSupervisor,
-             {SessionSupervisor, child_opts}
-           ) do
-        {:ok, _pid} -> {:ok, id}
-        {:error, {:already_started, _pid}} -> {:error, {:session_already_started, id}}
+      case start_goal(project_id, opts) do
+        {:ok, ^id} -> {:ok, id}
+        {:error, {:goal_already_started, ^id}} -> {:error, {:session_already_started, id}}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  def start_project(opts \\ []) do
+    workspace_root = Keyword.get(opts, :workspace_root, File.cwd!())
+
+    with {:ok, workspace_root} <- Workspace.canonical_root(workspace_root) do
+      project_id = Project.id_for_workspace(workspace_root)
+
+      project_opts =
+        opts
+        |> Keyword.put(:project_id, project_id)
+        |> Keyword.put(:workspace_root, workspace_root)
+
+      with {:ok, _pid} <- ProjectRootSupervisor.start_project(project_opts),
+           {:ok, %{workspace_root: ^workspace_root}} <- Project.snapshot(project_id) do
+        {:ok, project_id}
+      end
+    end
+  end
+
+  def start_goal(project_id, opts \\ []) do
+    goal_id = Keyword.get_lazy(opts, :goal_id, &new_goal_id/0)
+    session_id = Keyword.get(opts, :session_id, goal_id)
+
+    with :ok <- validate_session_id(goal_id),
+         :ok <- validate_session_id(session_id),
+         :ok <- validate_goal_session_identity(goal_id, session_id),
+         {:ok, project} <- Project.snapshot(project_id),
+         :ok <- validate_goal_workspace(opts, project.workspace_root) do
+      data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
+
+      goal_opts =
+        opts
+        |> Keyword.put(:goal_id, goal_id)
+        |> Keyword.put(:session_id, session_id)
+        |> Keyword.put(:project_id, project_id)
+        |> Keyword.put(:workspace_root, project.workspace_root)
+        |> Keyword.put(:data_dir, data_dir)
+
+      case ProjectSupervisor.start_goal(project_id, goal_opts) do
+        {:ok, _pid} -> {:ok, goal_id}
         {:error, reason} -> {:error, reason}
       end
     end
@@ -97,12 +147,38 @@ defmodule BeamAgent do
   def tool_policy_pid(session_id), do: Names.pid(:tool_policy, session_id)
   def context_pid(session_id), do: Names.pid(:context, session_id)
   def conversation_context_pid(session_id), do: Names.pid(:conversation_context, session_id)
+  def project_pid(project_id), do: Names.pid(:project, project_id)
+  def project_supervisor_pid(project_id), do: Names.pid(:project_supervisor, project_id)
+  def goal_pid(goal_id), do: Names.pid(:goal, goal_id)
+  def goal_supervisor_pid(goal_id), do: Names.pid(:goal_supervisor, goal_id)
+  def project(project_id), do: Project.snapshot(project_id)
+  def goal(goal_id), do: Goal.snapshot(goal_id)
 
   def stop_session(session_id) do
-    with {:ok, pid} <- Names.pid(:session_supervisor, session_id) do
+    case stop_goal(session_id) do
+      :ok ->
+        :ok
+
+      {:error, :not_found} ->
+        with {:ok, pid} <- Names.pid(:session_supervisor, session_id) do
+          Supervisor.stop(pid, :normal)
+        end
+    end
+  end
+
+  def stop_goal(goal_id) do
+    with {:ok, pid} <- Names.pid(:goal_supervisor, goal_id) do
       Supervisor.stop(pid, :normal)
     end
   end
+
+  def stop_project(project_id) do
+    with {:ok, pid} <- Names.pid(:project_supervisor, project_id) do
+      Supervisor.stop(pid, :normal)
+    end
+  end
+
+  def new_goal_id, do: new_session_id()
 
   def new_session_id do
     suffix = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
@@ -114,4 +190,23 @@ defmodule BeamAgent do
   end
 
   defp validate_session_id(_id), do: {:error, :invalid_session_id}
+
+  defp validate_goal_session_identity(id, id), do: :ok
+
+  defp validate_goal_session_identity(goal_id, session_id),
+    do: {:error, {:goal_session_id_mismatch, goal_id, session_id}}
+
+  defp validate_goal_workspace(opts, expected) do
+    case Keyword.fetch(opts, :workspace_root) do
+      {:ok, workspace_root} ->
+        case Workspace.canonical_root(workspace_root) do
+          {:ok, ^expected} -> :ok
+          {:ok, actual} -> {:error, {:project_workspace_mismatch, expected, actual}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      :error ->
+        :ok
+    end
+  end
 end

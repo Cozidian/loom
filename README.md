@@ -7,7 +7,8 @@ context.
 
 It includes:
 
-- dynamically supervised session subtrees;
+- one long-lived supervised project runtime per canonical workspace;
+- project-owned, ephemeral goal trees backed by durable session subtrees;
 - mailbox-owning agent processes;
 - replaceable LLM-provider, tool, and agent-strategy behaviours;
 - a Registry-backed capability catalog;
@@ -298,6 +299,10 @@ behaviour remains available for a real model adapter.
 
 Use a stable `session_id` and the same `data_dir` with
 `BeamAgent.resume_session/2` to reconstruct the model history from disk.
+`start_session/1` is the compatibility API: it opens or reuses the workspace's
+project runtime and creates a goal with the same identifier as its durable root
+session. Embedders can use `start_project/1` and `start_goal/2` directly when
+they need explicit lifecycle control.
 
 See [docs/architecture.md](docs/architecture.md) for the DeepSeek Harness to OTP
 mapping, process tree, and deliberate differences from Cordis.

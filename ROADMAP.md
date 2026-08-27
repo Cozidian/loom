@@ -95,7 +95,7 @@ doing the right work.
    - Evidence: `BeamAgent.Session.ConversationContext`, the tool-loop projection
      path, config migration version 5, and `test/conversation_context_test.exs`.
 
-2. [ ] Establish project and goal runtime boundaries
+2. [x] Establish project and goal runtime boundaries
 
    - Introduce one supervised project runtime per canonical workspace, separate
      from the lifecycle of an individual conversation or goal.
@@ -107,6 +107,9 @@ doing the right work.
      large rewrite.
    - Validate recovery at every boundary, including project-resource failure,
      goal-coordinator failure, and disposable worker failure.
+   - Evidence: `BeamAgent.ProjectRootSupervisor`, `BeamAgent.ProjectSupervisor`,
+     `BeamAgent.GoalSupervisor`, inherited child-session identity, and
+     `test/project_goal_runtime_test.exs`.
 
 3. [ ] Define the event and message architecture
 

@@ -7,7 +7,7 @@ defmodule BeamAgent.Application do
     children = [
       {Registry, keys: :unique, name: BeamAgent.Registry},
       BeamAgent.CapabilityCatalog,
-      {DynamicSupervisor, strategy: :one_for_one, name: BeamAgent.SessionRootSupervisor}
+      BeamAgent.ProjectRootSupervisor
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: BeamAgent.Supervisor)

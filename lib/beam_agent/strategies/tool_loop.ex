@@ -184,6 +184,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
     Map.take(context, [
       :session_id,
       :parent_session_id,
+      :project_id,
+      :goal_id,
       :provider,
       :provider_profile,
       :provider_options,

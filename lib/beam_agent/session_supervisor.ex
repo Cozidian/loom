@@ -2,7 +2,7 @@ defmodule BeamAgent.SessionSupervisor do
   @moduledoc "One supervision subtree for one durable session."
   use Supervisor
 
-  alias BeamAgent.Names
+  alias BeamAgent.{Agent, Names}
 
   alias BeamAgent.Session.{
     ConversationContext,
@@ -31,13 +31,17 @@ defmodule BeamAgent.SessionSupervisor do
   end
 
   def spawn_subagent(parent_session_id, opts \\ []) do
-    with {:ok, supervisor} <- Names.pid(:subagent_supervisor, parent_session_id) do
+    with {:ok, identity} <- Agent.runtime_identity(parent_session_id),
+         {:ok, supervisor} <- Names.pid(:subagent_supervisor, parent_session_id) do
       child_id = Keyword.get_lazy(opts, :session_id, &BeamAgent.new_session_id/0)
 
       child_opts =
         opts
         |> Keyword.put(:session_id, child_id)
         |> Keyword.put(:parent_session_id, parent_session_id)
+        |> Keyword.put(:project_id, identity.project_id)
+        |> Keyword.put(:goal_id, identity.goal_id)
+        |> Keyword.put(:workspace_root, identity.workspace_root)
 
       case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
         {:ok, _pid} -> {:ok, child_id}

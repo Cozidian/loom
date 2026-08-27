@@ -41,6 +41,8 @@ defmodule BeamAgent.Session.EventLog do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     parent_session_id = Keyword.get(opts, :parent_session_id)
+    project_id = Keyword.fetch!(opts, :project_id)
+    goal_id = Keyword.fetch!(opts, :goal_id)
     data_dir = Keyword.fetch!(opts, :data_dir)
     directory = Path.join(data_dir, session_id)
     path = Path.join(directory, "events.jsonl")
@@ -49,7 +51,14 @@ defmodule BeamAgent.Session.EventLog do
          {:ok, events} <- load(path),
          {:ok, io} <- File.open(path, [:append, :binary, :utf8]) do
       state = %{session_id: session_id, path: path, io: io, events: events}
-      initialize_log(state, parent_session_id, Keyword.fetch!(opts, :workspace_root))
+
+      initialize_log(
+        state,
+        parent_session_id,
+        Keyword.fetch!(opts, :workspace_root),
+        project_id,
+        goal_id
+      )
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -127,17 +136,34 @@ defmodule BeamAgent.Session.EventLog do
     end
   end
 
-  defp initialize_log(%{events: []} = state, parent_session_id, workspace_root) do
+  defp initialize_log(
+         %{events: []} = state,
+         parent_session_id,
+         workspace_root,
+         project_id,
+         goal_id
+       ) do
     case persist(state, :session_started, %{
            "parent_session_id" => parent_session_id,
-           "workspace_root" => workspace_root
+           "workspace_root" => workspace_root,
+           "project_id" => project_id,
+           "goal_id" => goal_id
          }) do
       {:ok, _event, state} -> {:ok, state}
       {:error, reason} -> close_and_stop(state, reason)
     end
   end
 
-  defp initialize_log(state, _parent_session_id, workspace_root) do
+  defp initialize_log(state, _parent_session_id, workspace_root, project_id, goal_id) do
+    with {:ok, state} <- ensure_workspace_binding(state, workspace_root),
+         {:ok, state} <- ensure_goal_binding(state, project_id, goal_id) do
+      {:ok, state}
+    else
+      {:error, reason} -> close_and_stop(state, reason)
+    end
+  end
+
+  defp ensure_workspace_binding(state, workspace_root) do
     case bound_workspace(state.events) do
       nil ->
         case persist(state, :workspace_bound, %{
@@ -145,14 +171,34 @@ defmodule BeamAgent.Session.EventLog do
                "reason" => "legacy_session"
              }) do
           {:ok, _event, state} -> {:ok, state}
-          {:error, reason} -> close_and_stop(state, reason)
+          {:error, reason} -> {:error, reason}
         end
 
       ^workspace_root ->
         {:ok, state}
 
       existing ->
-        close_and_stop(state, {:workspace_mismatch, existing, workspace_root})
+        {:error, {:workspace_mismatch, existing, workspace_root}}
+    end
+  end
+
+  defp ensure_goal_binding(state, project_id, goal_id) do
+    case bound_goal(state.events) do
+      nil ->
+        case persist(state, :goal_bound, %{
+               "project_id" => project_id,
+               "goal_id" => goal_id,
+               "reason" => "legacy_session"
+             }) do
+          {:ok, _event, state} -> {:ok, state}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {^project_id, ^goal_id} ->
+        {:ok, state}
+
+      {existing_project_id, existing_goal_id} ->
+        {:error, {:goal_mismatch, existing_project_id, existing_goal_id, project_id, goal_id}}
     end
   end
 
@@ -161,6 +207,21 @@ defmodule BeamAgent.Session.EventLog do
       %{"type" => type, "data" => %{"workspace_root" => root}}
       when type in ["session_started", "workspace_bound"] and is_binary(root) ->
         root
+
+      _event ->
+        nil
+    end)
+  end
+
+  defp bound_goal(events) do
+    Enum.find_value(events, fn
+      %{
+        "type" => type,
+        "data" => %{"project_id" => project_id, "goal_id" => goal_id}
+      }
+      when type in ["session_started", "goal_bound"] and is_binary(project_id) and
+             is_binary(goal_id) ->
+        {project_id, goal_id}
 
       _event ->
         nil

@@ -27,6 +27,8 @@ Primary references:
 | Session event source of truth | Session-owned append-only JSONL `EventLog` process |
 | Live event fan-out | Session-owned, subscriber-monitoring `StreamHub` process |
 | In-process subagent provider | Dynamically supervised child session subtree |
+| Long-lived workspace runtime | One registered `ProjectSupervisor` per canonical workspace |
+| Ephemeral user objective | A project-owned `GoalSupervisor` with explicit identity |
 | Scoped/stateful capability | A process under the session's `ResourceSupervisor` |
 | Dependency disposal/reload | Links plus `:rest_for_one` restart ordering |
 
@@ -36,18 +38,36 @@ Primary references:
 BeamAgent.Supervisor
 ├── BeamAgent.Registry
 ├── BeamAgent.CapabilityCatalog
-└── BeamAgent.SessionRootSupervisor (DynamicSupervisor)
-    └── SessionSupervisor (one per root session, :rest_for_one)
-        ├── EventLog (GenServer, append-only JSONL)
-        ├── StreamHub (GenServer, live fan-out and checkpoint batches)
-        ├── ResourceSupervisor (DynamicSupervisor)
-        ├── Context (GenServer, project instructions and skill snapshot)
-        ├── ConversationContext (GenServer, budgeted model projection)
-        ├── ToolPolicy (GenServer, approvals and pending callers)
-        ├── SubagentSupervisor (DynamicSupervisor)
-        │   └── SessionSupervisor (one per child, recursively)
-        └── Agent (GenServer)
+└── ProjectRootSupervisor (DynamicSupervisor)
+    └── ProjectSupervisor (one per canonical workspace, :one_for_one)
+        ├── Project (GenServer, identity and project-lived state)
+        └── GoalRootSupervisor (DynamicSupervisor)
+            └── GoalSupervisor (one per root goal, :rest_for_one)
+                ├── Goal (GenServer, identity and goal-lived state)
+                └── SessionSupervisor (:rest_for_one)
+                    ├── EventLog (GenServer, append-only JSONL)
+                    ├── StreamHub (GenServer, live fan-out and checkpoints)
+                    ├── ResourceSupervisor (DynamicSupervisor)
+                    ├── Context (GenServer, instructions and skill snapshot)
+                    ├── ConversationContext (GenServer, model projection)
+                    ├── ToolPolicy (GenServer, approvals and pending callers)
+                    ├── SubagentSupervisor (DynamicSupervisor)
+                    │   └── SessionSupervisor (one per child, recursively)
+                    └── Agent (GenServer)
 ```
+
+The canonical workspace determines a stable project identity, so separate goals
+for the same workspace share one long-lived project runtime. A project state
+process can restart without disturbing its goal supervisor. Stopping the
+project intentionally terminates every ephemeral goal it owns.
+
+A root goal currently wraps the existing durable session subtree: its goal and
+session identifiers are equal during this compatibility phase.
+`BeamAgent.start_session/1` opens or reuses the project and starts a goal, so
+existing clients do not need to change. A goal-state failure rebuilds the
+dependent session from its event log; sibling goals remain isolated. Nested
+subagent sessions remain inside the root session for now and inherit the
+project and goal identity from their parent process.
 
 The event log comes first because every model-visible fact depends on it. If the
 agent crashes, only the agent restarts and reconstructs messages by replaying the
@@ -95,12 +115,13 @@ also takes its in-flight worker down rather than leaving orphan work behind.
 
 ## Workspace and tool execution
 
-Every session receives one canonical, immutable workspace root. Model paths must
-be relative; lexical traversal and symlink resolution are both checked before a
-tool sees an absolute path. Child sessions inherit the root rather than resolving
-their own ambient current directory. The root is bound into the durable event
-log and validated on resume; older logs acquire a one-time `workspace_bound`
-event so they cannot silently move on later resumes.
+Every project receives one canonical, immutable workspace root, and every goal
+and session inherits it. Model paths must be relative; lexical traversal and
+symlink resolution are both checked before a tool sees an absolute path. Child
+sessions inherit project and goal identity from the parent process rather than
+trusting caller-supplied identity. The workspace, project, and goal are bound
+into the durable event log and validated on resume; older logs acquire one-time
+`workspace_bound` and `goal_bound` events so they cannot silently move later.
 
 ```text
 assistant tool call
