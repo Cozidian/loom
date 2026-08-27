@@ -152,6 +152,9 @@ defmodule BeamAgent do
   def route_model(project_id, input), do: BeamAgent.ModelRouter.route(project_id, input)
   def outcomes(project_id, opts \\ []), do: OutcomeStore.list(project_id, opts)
 
+  def routing_evidence(project_id, opts \\ []),
+    do: OutcomeStore.routing_evidence(project_id, opts)
+
   def attach_verification(project_id, outcome_id, result),
     do: OutcomeStore.attach_verification(project_id, outcome_id, result)
 

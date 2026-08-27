@@ -471,7 +471,8 @@ defmodule BeamAgent.CLI do
 
   defp print_session_models(session_id, config) do
     with {:ok, identity} <- BeamAgent.Agent.runtime_identity(session_id),
-         {:ok, endpoints} <- BeamAgent.models(identity.project_id) do
+         {:ok, endpoints} <- BeamAgent.models(identity.project_id),
+         {:ok, evidence} <- BeamAgent.routing_evidence(identity.project_id) do
       IO.puts("")
       output("Model registry")
 
@@ -479,9 +480,10 @@ defmodule BeamAgent.CLI do
         marker = if endpoint.id == config["profile"], do: "*", else: " "
         model = endpoint.model || "provider default"
         capabilities = endpoint.claims.capabilities |> Enum.map(&to_string/1) |> Enum.join(",")
+        empirical = Enum.find(evidence.endpoints, &(&1.endpoint_id == endpoint.id))
 
         output(
-          "#{marker} #{endpoint.id}  #{endpoint.provider}/#{model}  #{endpoint.claims.locality}  #{endpoint.health.status}  #{capabilities}"
+          "#{marker} #{endpoint.id}  #{endpoint.provider}/#{model}  #{endpoint.claims.locality}  #{endpoint.health.status}  #{capabilities}#{cli_model_evidence(empirical)}"
         )
       end)
 
@@ -490,6 +492,22 @@ defmodule BeamAgent.CLI do
     else
       {:error, reason} -> error(reason)
     end
+  end
+
+  defp cli_model_evidence(nil), do: "  evidence=0 verified"
+
+  defp cli_model_evidence(evidence) do
+    pass_rate =
+      if is_number(evidence.verified_pass_rate),
+        do: " pass=#{round(evidence.verified_pass_rate * 100)}%",
+        else: ""
+
+    latency =
+      if is_number(evidence.average_latency_ms),
+        do: " latency=#{evidence.average_latency_ms}ms",
+        else: ""
+
+    "  evidence=#{evidence.verified_samples}/#{evidence.operational_samples}#{pass_rate}#{latency}"
   end
 
   defp refresh_session_models(session_id, endpoint_id) do

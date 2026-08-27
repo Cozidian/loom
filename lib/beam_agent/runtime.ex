@@ -66,6 +66,7 @@ defmodule BeamAgent.Runtime do
   def start_mcp_server(client, spec), do: Client.start_mcp_server(client, spec)
   def stop_mcp_server(client, name), do: Client.stop_mcp_server(client, name)
   def outcomes(client, opts \\ []), do: Client.outcomes(client, opts)
+  def routing_evidence(client, opts \\ []), do: Client.routing_evidence(client, opts)
 
   def attach_verification(client, outcome_id, result),
     do: Client.attach_verification(client, outcome_id, result)

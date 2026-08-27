@@ -134,14 +134,18 @@ Public connections use redacted events unless a trusted in-process client
 explicitly requests `view: :internal`.
 
 `/models` lists every configured profile registered in the current project,
-including provider/model, locality, health, and declared capabilities. Use
+including provider/model, locality, health, declared capabilities, verified
+sample count, verified pass rate, call count, and observed latency. Use
 `/models refresh` to run supervised provider health checks, or `/models PROFILE`
 to refresh one endpoint.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
 profile only or `--model-strategy local_only` to prohibit remote models. Each
-choice appears as a `Model routed` information event in the chat.
+choice appears as a `Model routed` information event in the chat. Recent
+verified outcomes also produce a shadow recommendation. It remains advisory
+until enough comparative evidence has been evaluated; unverified provider
+success never counts as model-quality evidence.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
 
@@ -218,6 +222,8 @@ do not enter runtime configuration or events. Model and task outcome records are
 available through `BeamAgent.outcomes/2`; verification is attached separately
 with `BeamAgent.attach_verification/3`, and `BeamAgent.export_outcomes/1`
 returns a redacted JSONL export without prompts or model content.
+`BeamAgent.routing_evidence/2` returns project-local empirical summaries and the
+current shadow recommendation.
 
 ## Project instructions and skills
 

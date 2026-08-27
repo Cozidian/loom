@@ -88,9 +88,10 @@ provider module, model, transport location, and credential environment-variable
 reference; credential values are never copied into the registry.
 
 Endpoint `claims` describe configured or provider-declared capabilities,
-modalities, locality, privacy, context limit, and cost hints. `measurements` are
-a separate empty runtime-owned field reserved for observed outcomes, preventing
-future routing from confusing declarations with evidence. Availability starts
+modalities, locality, privacy, context limit, and cost hints. Runtime evidence
+remains separate from these declarations: endpoint-local measurements can hold
+immediate observations, while durable model/task outcomes are summarized by the
+project's evidence layer. Availability starts
 as `unknown`; explicit refreshes run provider health checks beneath a
 project-owned `Task.Supervisor` and update it to `checking`, `available`, or
 `unavailable` without blocking or coupling goal processes. A registry crash
@@ -101,9 +102,15 @@ makes an inspectable decision for each intelligence request; Auto prefers local,
 free endpoints for simple work, keeps preferred capable endpoints competitive
 for orchestration, rejects unavailable/privacy-incompatible endpoints, and can
 select deterministic ordinary computation. Manual, local-only, and custom
-strategies remain explicit overrides. Durable `model_route_selected` events
-carry safe decision inputs, candidates, selection, and reason. `/models`
-exposes the inventory and health checks; the Go TUI remains presentation-only.
+strategies remain explicit overrides. `RoutingEvidence` compares recent outcomes
+by task, language, and endpoint using minimum verified samples, recency weighting,
+confidence, and a conservative task-to-model attribution rule. It currently
+produces shadow recommendations only: the deterministic selection remains
+authoritative until those recommendations have been evaluated. Durable
+`model_route_selected` events carry safe decision inputs, candidates, selection,
+reason, and aggregate evidence. `/models` exposes inventory, health, verified
+pass rate, sample count, and observed latency; the Go TUI remains
+presentation-only.
 
 All provider execution enters through a versioned `ModelRequest`, including
 ordinary tool-loop steps and context compaction. It explicitly carries request
@@ -297,7 +304,9 @@ conversation logs. Records contain task/repository classification, endpoint,
 latency, normalized usage, cost hint, retries, status, failures, and cancellation
 but never prompts or model content. Verification starts as `unverified` and is
 attached later as its own fact. Retention, export, restart recovery, and opt-out
-are explicit; routing does not consume these records until roadmap item 10.
+are explicit. `RoutingEvidence` reads the ledger without owning mutable state;
+ordinary successful responses affect operational reliability and latency but do
+not affect quality rankings until verification exists.
 
 ## Deliberate non-port
 

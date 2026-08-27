@@ -44,6 +44,7 @@ defmodule BeamAgent.Runtime.Client do
 
   def stop_mcp_server(client, name), do: GenServer.call(client, {:stop_mcp_server, name})
   def outcomes(client, opts), do: GenServer.call(client, {:outcomes, opts})
+  def routing_evidence(client, opts), do: GenServer.call(client, {:routing_evidence, opts})
 
   def attach_verification(client, outcome_id, result),
     do: GenServer.call(client, {:attach_verification, outcome_id, result})
@@ -225,6 +226,9 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call({:outcomes, opts}, _from, state),
     do: {:reply, BeamAgent.outcomes(state.project_id, opts), state}
+
+  def handle_call({:routing_evidence, opts}, _from, state),
+    do: {:reply, BeamAgent.routing_evidence(state.project_id, opts), state}
 
   def handle_call({:attach_verification, id, result}, _from, state),
     do: {:reply, BeamAgent.attach_verification(state.project_id, id, result), state}

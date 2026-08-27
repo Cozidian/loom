@@ -264,6 +264,12 @@ func TestRoutingAndResourceEventsRenderInline(t *testing.T) {
 	m.applyStream(runtimeEvent("model_route_selected", map[string]any{
 		"selected_endpoint_id": "ollama",
 		"reason":               "local free endpoint preferred for simple work",
+		"evidence": map[string]any{
+			"state":                    "insufficient_evidence",
+			"best_verified_samples":    float64(2),
+			"minimum_verified_samples": float64(5),
+			"recommended_endpoint_id":  nil,
+		},
 	}, "session-root", true))
 	m.applyStream(runtimeEvent("mcp_server_started", map[string]any{
 		"server":     "repo",
@@ -273,7 +279,7 @@ func TestRoutingAndResourceEventsRenderInline(t *testing.T) {
 	if len(m.entries) != 2 || m.entries[0].Kind != "info" || m.entries[1].Kind != "info" {
 		t.Fatalf("expected routing and resource info entries, got %#v", m.entries)
 	}
-	if m.entries[0].Content != "Model routed · ollama · local free endpoint preferred for simple work" {
+	if m.entries[0].Content != "Model routed · ollama · local free endpoint preferred for simple work · evidence warming 2/5 verified" {
 		t.Fatalf("unexpected routing info: %q", m.entries[0].Content)
 	}
 }

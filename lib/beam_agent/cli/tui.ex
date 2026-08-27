@@ -349,6 +349,11 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: "tool_loop_stalled", data: data}}),
     do: "Repeated tool result ×#{data["repetitions"]} · switching to answer-only"
 
+  defp info_entry(%{payload: %{type: "model_route_selected", data: data}}) do
+    selected = data["selected_endpoint_id"] || "deterministic"
+    "Model routed · #{selected} · #{data["reason"]}#{routing_evidence_suffix(data)}"
+  end
+
   defp info_entry(%{payload: %{type: "task_outcome_recorded", data: data}}),
     do: outcome_label("Task outcome", data)
 
@@ -365,6 +370,18 @@ defmodule BeamAgent.CLI.TUI do
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join(" · ")
   end
+
+  defp routing_evidence_suffix(%{"evidence" => %{"state" => "ready"} = evidence}),
+    do: " · shadow prefers #{evidence["recommended_endpoint_id"]}"
+
+  defp routing_evidence_suffix(%{"evidence" => %{"state" => "insufficient_evidence"} = evidence}) do
+    " · evidence warming #{evidence["best_verified_samples"] || 0}/#{evidence["minimum_verified_samples"] || 5} verified"
+  end
+
+  defp routing_evidence_suffix(%{"evidence" => %{"state" => "unavailable"}}),
+    do: " · evidence unavailable"
+
+  defp routing_evidence_suffix(_data), do: ""
 
   defp tool_id(session_id, tool_call_id), do: "#{session_id}:#{tool_call_id}"
 

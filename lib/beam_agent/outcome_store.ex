@@ -2,7 +2,7 @@ defmodule BeamAgent.OutcomeStore do
   @moduledoc "Project-owned, append-only model/task outcome ledger without prompt content."
   use GenServer
 
-  alias BeamAgent.Names
+  alias BeamAgent.{Names, RoutingEvidence}
   alias BeamAgent.Session.EventLog
 
   @record_keys ~w(version redaction id kind project_id goal_id session_id turn step task_type language endpoint_id provider model latency_ms usage estimated_cost retries status failure cancelled verification route_decision_id recorded_at)a
@@ -18,6 +18,7 @@ defmodule BeamAgent.OutcomeStore do
     do: call(project_id, {:verify, outcome_id, result})
 
   def list(project_id, opts \\ []), do: call(project_id, {:list, opts})
+  def routing_evidence(project_id, opts \\ []), do: call(project_id, {:routing_evidence, opts})
   def export(project_id), do: call(project_id, :export)
   def path(project_id), do: call(project_id, :path)
 
@@ -98,6 +99,11 @@ defmodule BeamAgent.OutcomeStore do
 
     records = if limit = opts[:limit], do: Enum.take(records, limit), else: records
     {:reply, {:ok, records}, state}
+  end
+
+  def handle_call({:routing_evidence, opts}, _from, state) do
+    evidence = state.records |> Map.values() |> RoutingEvidence.summarize(opts)
+    {:reply, {:ok, evidence}, state}
   end
 
   def handle_call(:export, _from, state) do

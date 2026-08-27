@@ -2,7 +2,14 @@ defmodule BeamAgent.ModelRouter do
   @moduledoc "Project-owned deterministic router for individual intelligence requests."
   use GenServer
 
-  alias BeamAgent.{CapabilityEnvelope, ModelEndpoint, ModelRegistry, Names, TaskClassifier}
+  alias BeamAgent.{
+    CapabilityEnvelope,
+    ModelEndpoint,
+    ModelRegistry,
+    Names,
+    OutcomeStore,
+    TaskClassifier
+  }
 
   def start_link(opts) do
     project_id = Keyword.fetch!(opts, :project_id)
@@ -20,7 +27,14 @@ defmodule BeamAgent.ModelRouter do
   @impl true
   def handle_call({:route, input}, _from, state) do
     {:ok, endpoints} = ModelRegistry.list(state.project_id)
-    {:reply, choose(endpoints, input), state}
+
+    result =
+      case choose(endpoints, input) do
+        {:ok, decision} -> {:ok, add_routing_evidence(state.project_id, decision, input)}
+        {:error, _reason} = error -> error
+      end
+
+    {:reply, result, state}
   end
 
   defp choose(endpoints, input) do
@@ -190,6 +204,36 @@ defmodule BeamAgent.ModelRouter do
       inputs: Map.drop(classification, [:deterministic_answer]),
       reason: reason,
       deterministic_answer: deterministic_answer
+    }
+  end
+
+  defp add_routing_evidence(project_id, decision, input) do
+    if Map.get(input, :strategy, :manual) == :auto and decision.endpoint do
+      opts = [
+        task_type: decision.inputs.task_type,
+        language: decision.inputs.language,
+        endpoint_ids: decision.candidate_endpoint_ids
+      ]
+
+      evidence =
+        case OutcomeStore.routing_evidence(project_id, opts) do
+          {:ok, evidence} -> evidence
+          {:error, _reason} -> unavailable_evidence()
+        end
+
+      Map.put(decision, :evidence, evidence)
+    else
+      decision
+    end
+  end
+
+  defp unavailable_evidence do
+    %{
+      mode: "shadow",
+      state: "unavailable",
+      recommended_endpoint_id: nil,
+      reason: "outcome evidence is unavailable; deterministic policy remains authoritative",
+      endpoints: []
     }
   end
 

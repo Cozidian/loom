@@ -47,7 +47,16 @@ defmodule BeamAgent.CLITUITest do
     assert payload.profile == "echo"
     assert payload.model == "built-in"
     assert payload.approval_mode == "ask"
-    assert Enum.map(payload.entries, & &1.kind) == ["info", "info", "user", "assistant", "info"]
+
+    assert Enum.map(payload.entries, & &1.kind) == [
+             "info",
+             "info",
+             "user",
+             "info",
+             "assistant",
+             "info"
+           ]
+
     assert hd(payload.entries).content =~ "Goal started"
     assert Enum.find(payload.entries, &(&1.kind == "assistant")).content == "echo(1): hello"
     assert List.last(payload.entries).content == "Task outcome · succeeded · unverified"

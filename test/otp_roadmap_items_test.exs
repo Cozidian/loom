@@ -1,7 +1,7 @@
 defmodule BeamAgent.OTPRoadmapItemsTest do
   use ExUnit.Case, async: false
 
-  alias BeamAgent.{CapabilityEnvelope, MCP.Registry, Session.ToolPolicy}
+  alias BeamAgent.{CapabilityEnvelope, MCP.Registry, OutcomeStore, Session.ToolPolicy}
 
   defmodule RemoteProvider do
     @behaviour BeamAgent.LLMProvider
@@ -263,6 +263,9 @@ defmodule BeamAgent.OTPRoadmapItemsTest do
     assert route["data"]["selected_endpoint_id"] == "local"
     assert route["data"]["candidate_endpoint_ids"] == ["local", "remote"]
     assert Enum.any?(route["data"]["candidates"], &(&1["locality"] == "local"))
+    assert route["data"]["evidence"]["mode"] == "shadow"
+    assert route["data"]["evidence"]["state"] == "insufficient_evidence"
+    assert route["data"]["evidence"]["recommended_endpoint_id"] == nil
   end
 
   test "one goal can route its parent and child requests to different providers", context do
@@ -341,6 +344,67 @@ defmodule BeamAgent.OTPRoadmapItemsTest do
     {:ok, events} = BeamAgent.events(session_id)
     route = Enum.find(events, &(&1["type"] == "model_route_selected"))
     assert route["data"]["selected_endpoint_id"] == nil
+  end
+
+  test "verified outcome evidence produces a shadow recommendation without changing Auto",
+       context do
+    endpoints = [
+      %{id: "remote", provider: :roadmap_remote, provider_module: RemoteProvider},
+      %{id: "local", provider: :roadmap_local, provider_module: LocalProvider}
+    ]
+
+    {:ok, project_id} =
+      BeamAgent.start_project(
+        workspace_root: context.workspace,
+        data_dir: context.data_dir,
+        model_endpoints: endpoints
+      )
+
+    Enum.each(1..5, fn sample ->
+      assert {:ok, _} =
+               OutcomeStore.record(project_id, %{
+                 kind: :model,
+                 session_id: "session-remote-#{sample}",
+                 turn: 1,
+                 task_type: :simple,
+                 language: :elixir,
+                 endpoint_id: "remote",
+                 provider: :roadmap_remote,
+                 latency_ms: 500,
+                 status: :succeeded,
+                 verification: %{status: :passed}
+               })
+
+      assert {:ok, _} =
+               OutcomeStore.record(project_id, %{
+                 kind: :model,
+                 session_id: "session-local-#{sample}",
+                 turn: 1,
+                 task_type: :simple,
+                 language: :elixir,
+                 endpoint_id: "local",
+                 provider: :roadmap_local,
+                 latency_ms: 50,
+                 status: :succeeded,
+                 verification: %{status: :failed}
+               })
+    end)
+
+    input = %{
+      prompt: "Give me a short Elixir greeting",
+      workspace_root: context.workspace,
+      preferred_endpoint_id: "remote",
+      preferred_provider: :roadmap_remote,
+      strategy: :auto,
+      tools: [],
+      capability_envelope: CapabilityEnvelope.root()
+    }
+
+    assert {:ok, route} = BeamAgent.route_model(project_id, input)
+    assert route.selected_endpoint_id == "local"
+    assert route.evidence.state == "ready"
+    assert route.evidence.recommended_endpoint_id == "remote"
+    assert route.evidence.mode == "shadow"
   end
 
   test "outcomes are redacted, exportable, and accept later verification", context do

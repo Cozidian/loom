@@ -687,7 +687,7 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		if selected == "" {
 			selected = "deterministic"
 		}
-		return "Model routed · " + selected + " · " + asString(data["reason"])
+		return "Model routed · " + selected + " · " + asString(data["reason"]) + routingEvidenceSuffix(data)
 	case "mcp_server_started":
 		return "MCP ready · " + asString(data["server"]) + " · " + asString(data["tool_count"]) + " tools"
 	case "mcp_server_restarted":
@@ -714,6 +714,20 @@ func runtimeInfo(eventType string, data map[string]any, sessionID string, root b
 		return "Verification · " + verificationStatus(data)
 	}
 	return ""
+}
+
+func routingEvidenceSuffix(data map[string]any) string {
+	evidence := asMap(data["evidence"])
+	switch asString(evidence["state"]) {
+	case "ready":
+		return " · shadow prefers " + asString(evidence["recommended_endpoint_id"])
+	case "insufficient_evidence":
+		return " · evidence warming " + asString(evidence["best_verified_samples"]) + "/" + asString(evidence["minimum_verified_samples"]) + " verified"
+	case "unavailable":
+		return " · evidence unavailable"
+	default:
+		return ""
+	}
 }
 
 func verificationStatus(data map[string]any) string {

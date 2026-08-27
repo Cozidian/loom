@@ -40,11 +40,14 @@ their model projection after a crash, and in-flight turns are supervised and
 cancellable. Session-scoped auto mode can approve all risky tool requests for
 an active chat; the default remains ask.
 
-This is a useful foundation, but it is still session- and model-loop-centered.
-A session currently resolves one provider profile, and child agents inherit it.
-The next architecture should preserve the proven supervision and persistence
-mechanisms while making projects, goals, workers, models, and resources explicit
-runtime concepts.
+The runtime now has explicit project and goal boundaries. Every intelligence
+request can route across the project's registered endpoints; child agents
+inherit a default profile and capability envelope rather than being bound to
+that model. Sessions and the sequential model/tool loop still carry more
+coordination responsibility than the target worker architecture. The next
+slices should preserve the proven supervision and persistence mechanisms while
+making specialized workers, distributed context, and governed resources more
+explicit.
 
 ## Target runtime shape
 
@@ -260,8 +263,8 @@ doing the right work.
      latency, normalized usage, cost hint, retries, status, failure, and
      cancellation. Verification is an independently attached fact, initially
      `unverified`; public APIs support inspection, attachment, export, restart
-     recovery, retention limits, and complete telemetry opt-out. Learned routing
-     remains item 10 and does not yet consume these measurements.
+     recovery, retention limits, and complete telemetry opt-out. Item 10 now
+     consumes these measurements in shadow mode without changing live choices.
 
 10. [ ] Improve routing from evidence
 
@@ -273,6 +276,17 @@ doing the right work.
       exclusions or preferences.
     - Evaluate routing quality offline before allowing learned policy to change
       production choices automatically.
+    - First vertical slice delivered: `BeamAgent.RoutingEvidence` computes
+      project-local, task- and language-scoped summaries over a bounded recent
+      window. Operational reliability and latency remain distinct from model
+      quality; quality requires explicit verification and task verification is
+      attributed only when one endpoint owned the turn. Minimum verified sample
+      sizes, recency weighting, Wilson lower bounds, and confidence prevent
+      sparse evidence from looking authoritative. Auto decisions include a
+      durable shadow recommendation or an `evidence warming` state, while the
+      deterministic policy remains authoritative. `/models` exposes verified
+      samples, pass rate, call count, and measured latency. Learned choices and
+      bounded exploration remain disabled until shadow results are evaluated.
 
 ### Agent runtime
 

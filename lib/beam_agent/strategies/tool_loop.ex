@@ -356,7 +356,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "candidates" => route.candidates,
              "selected_endpoint_id" => route.selected_endpoint_id,
              "inputs" => route.inputs,
-             "reason" => route.reason
+             "reason" => route.reason,
+             "evidence" => Map.get(route, :evidence)
            }) do
       {:ok, route}
     end

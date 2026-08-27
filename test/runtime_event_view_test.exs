@@ -141,4 +141,35 @@ defmodule BeamAgent.RuntimeEventViewTest do
     assert usage["usage"]["provider_note"]["redacted"]
     refute JSON.encode!(public) =~ "SECRET_"
   end
+
+  test "public routing evidence exposes aggregate metrics without outcome content" do
+    event = %{
+      payload: %{
+        type: "model_route_selected",
+        data: %{
+          "selected_endpoint_id" => "local",
+          "evidence" => %{
+            "mode" => "shadow",
+            "state" => "ready",
+            "recommended_endpoint_id" => "remote",
+            "minimum_verified_samples" => 5,
+            "endpoints" => [
+              %{
+                "endpoint_id" => "remote",
+                "verified_samples" => 8,
+                "verified_pass_rate" => 0.875,
+                "average_latency_ms" => 420
+              }
+            ]
+          }
+        }
+      }
+    }
+
+    public = RuntimeEventView.project(event, :public)
+    evidence = public.payload.data["evidence"]
+    assert evidence["recommended_endpoint_id"] == "remote"
+    assert hd(evidence["endpoints"])["verified_samples"] == 8
+    refute public.redacted?
+  end
 end

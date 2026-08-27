@@ -334,11 +334,20 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp run_command({:models, ""}, state) do
     case Runtime.models(state.runtime) do
       {:ok, endpoints} ->
+        evidence =
+          case Runtime.routing_evidence(state.runtime) do
+            {:ok, evidence} -> evidence
+            {:error, _reason} -> %{endpoints: []}
+          end
+
         lines =
           if endpoints == [] do
             ["No model endpoints registered"]
           else
-            Enum.map(endpoints, &format_model_endpoint(&1, state.config["profile"]))
+            Enum.map(
+              endpoints,
+              &format_model_endpoint(&1, state.config["profile"], evidence)
+            )
           end
 
         notify(state, {:panel, "Model registry · #{length(endpoints)} endpoints", lines})
@@ -558,12 +567,30 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp event_filter_error({:invalid_event_filter, token}), do: "Invalid filter: #{token}"
   defp event_filter_error(reason), do: format_error(reason)
 
-  defp format_model_endpoint(endpoint, active_profile) do
+  defp format_model_endpoint(endpoint, active_profile, evidence) do
     marker = if endpoint.id == active_profile, do: "●", else: "○"
     model = endpoint.model || "provider default"
     capabilities = endpoint.claims.capabilities |> Enum.map(&to_string/1) |> Enum.join(",")
+    empirical = Enum.find(evidence.endpoints, &(&1.endpoint_id == endpoint.id))
 
-    "#{marker} #{endpoint.id} · #{endpoint.provider}/#{model} · #{endpoint.claims.locality} · #{endpoint.health.status} · #{capabilities}"
+    "#{marker} #{endpoint.id} · #{endpoint.provider}/#{model} · #{endpoint.claims.locality} · #{endpoint.health.status} · #{capabilities}#{format_model_evidence(empirical)}"
+  end
+
+  defp format_model_evidence(nil), do: " · evidence 0 verified"
+
+  defp format_model_evidence(evidence) do
+    quality =
+      case evidence.verified_pass_rate do
+        rate when is_number(rate) -> " · #{round(rate * 100)}% verified pass"
+        _unknown -> ""
+      end
+
+    latency =
+      if is_number(evidence.average_latency_ms),
+        do: " · #{evidence.average_latency_ms} ms avg",
+        else: ""
+
+    " · evidence #{evidence.verified_samples} verified/#{evidence.operational_samples} calls#{quality}#{latency}"
   end
 
   defp short_id(id) do
