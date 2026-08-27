@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(auto status new sessions models skills reload compact events)a
+  @commands ~w(auto status new sessions models skills reload compact events tree)a
 
   def available?(override \\ nil)
 
@@ -196,6 +196,14 @@ defmodule BeamAgent.CLI.TUI do
        )
        when is_binary(query) do
     Controller.command(controller, {:models, query})
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "tree", "query" => _query},
+         controller
+       ) do
+    Controller.command(controller, :tree)
     :ok
   end
 

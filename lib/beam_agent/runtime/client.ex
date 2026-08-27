@@ -27,6 +27,8 @@ defmodule BeamAgent.Runtime.Client do
   def inspect_events(client, query, opts),
     do: GenServer.call(client, {:inspect_events, query, opts})
 
+  def goal_tree(client), do: GenServer.call(client, :goal_tree)
+
   def models(client), do: GenServer.call(client, :models)
 
   def refresh_models(client, endpoint_id),
@@ -201,6 +203,10 @@ defmodule BeamAgent.Runtime.Client do
   def handle_call({:inspect_events, query, opts}, _from, state)
       when is_binary(query) and is_list(opts) do
     {:reply, BeamAgent.inspect_goal_events(state.goal_id, query, opts), state}
+  end
+
+  def handle_call(:goal_tree, _from, state) do
+    {:reply, BeamAgent.goal_tree(state.goal_id), state}
   end
 
   def handle_call(:models, _from, state),

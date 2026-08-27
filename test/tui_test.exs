@@ -187,6 +187,11 @@ defmodule BeamAgent.CLITUITest do
     assert models_title =~ "Model registry"
     assert Enum.any?(model_lines, &(&1 =~ "● echo · echo/provider default · local · unknown"))
 
+    Controller.command(controller, :tree)
+    assert_receive {:beam_agent_tui, {:panel, tree_title, tree_lines}}
+    assert tree_title =~ "Goal tree"
+    assert Enum.any?(tree_lines, &(&1 =~ "Goal" and &1 =~ "completed"))
+
     Controller.command(controller, {:models, "refresh"})
     assert_receive {:beam_agent_tui, {:notice, :muted, refresh_message}}
     assert refresh_message =~ "Checking 1 model endpoints"

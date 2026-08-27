@@ -392,6 +392,17 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp run_command(:events, state), do: run_command({:events, ""}, state)
 
+  defp run_command(:tree, state) do
+    with {:ok, tree} <- Runtime.goal_tree(state.runtime) do
+      lines = BeamAgent.RuntimeGoalTree.render(tree)
+      notify(state, {:panel, "Goal tree", lines})
+    else
+      {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
   defp run_command({:events, "help"}, state) do
     notify(state, {:panel, "Event inspector filters", RuntimeEventQuery.usage()})
     state

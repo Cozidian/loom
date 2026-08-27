@@ -55,6 +55,8 @@ defmodule BeamAgent.Runtime do
   def inspect_events(client, query \\ "", opts \\ []),
     do: Client.inspect_events(client, query, opts)
 
+  def goal_tree(client), do: Client.goal_tree(client)
+
   def models(client), do: Client.models(client)
   def refresh_models(client, endpoint_id \\ :all), do: Client.refresh_models(client, endpoint_id)
   def permissions(client), do: Client.permissions(client)

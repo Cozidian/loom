@@ -163,6 +163,7 @@ var commands = []commandItem{
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
 	{ID: "events", Label: "Inspect goal events", Hint: "/events [filters]"},
+	{ID: "tree", Label: "Goal worker tree", Hint: "/tree"},
 	{ID: "toggle_tools", Label: "Expand or collapse tools", Hint: "ctrl+t"},
 	{ID: "clear", Label: "Clear transcript", Hint: "/clear"},
 	{ID: "exit", Label: "Leave chat", Hint: "/exit"},

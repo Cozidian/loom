@@ -336,6 +336,10 @@ defmodule BeamAgent.CLI do
             print_event_summary(session_id)
             chat_loop(session_id, config)
 
+          "/tree" ->
+            print_goal_tree(session_id)
+            chat_loop(session_id, config)
+
           "/status" ->
             print_status(session_id, config)
             chat_loop(session_id, config)
@@ -452,6 +456,20 @@ defmodule BeamAgent.CLI do
     with {:ok, events} <- BeamAgent.events(session_id),
          {:ok, path} <- BeamAgent.event_log_path(session_id) do
       output("#{length(events)} events at #{path}")
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp print_goal_tree(session_id) do
+    with {:ok, goal} <- BeamAgent.goal(session_id),
+         {:ok, tree} <- BeamAgent.goal_tree(goal.goal_id) do
+      lines = BeamAgent.RuntimeGoalTree.render(tree)
+      IO.puts("")
+      output("Goal tree")
+      Enum.each(lines, &output("  #{&1}"))
+      IO.puts("")
+      0
     else
       {:error, reason} -> error(reason)
     end

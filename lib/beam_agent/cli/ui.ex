@@ -156,6 +156,7 @@ defmodule BeamAgent.CLI.UI do
     command("/skills", "list skills discovered for this session")
     command("/reload", "reload project instructions and skill metadata")
     command("/events", "show the current event count and log path")
+    command("/tree", "show goal worker tree (root + subagents)")
     command("/clear", "clear the terminal and redraw the session")
     command("/help", "show this command list")
     command("/exit", "leave the chat; the session stays resumable")

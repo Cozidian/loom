@@ -123,6 +123,36 @@ defmodule BeamAgent.RuntimeClientTest do
     assert user_message.payload.data["content"]["kind"] == "text"
   end
 
+  test "public goal tree survives event-hub replay and client reconnect", context do
+    assert {:ok, "echo(1): tree replay"} = BeamAgent.ask(context.session_id, "tree replay")
+
+    assert {:ok, first} = Runtime.connect(context.session_id)
+    assert {:ok, live_tree} = Runtime.goal_tree(first)
+    assert live_tree.root.state == :completed
+    Runtime.disconnect(first)
+
+    assert {:ok, old_hub} = BeamAgent.goal_event_hub_pid(context.session_id)
+    Process.exit(old_hub, :kill)
+
+    assert eventually(fn ->
+             case BeamAgent.goal_event_hub_pid(context.session_id) do
+               {:ok, new_hub} -> new_hub != old_hub
+               _other -> false
+             end
+           end)
+
+    assert eventually(fn ->
+             match?({:ok, %{root: %{state: :completed}}}, BeamAgent.goal_tree(context.session_id))
+           end)
+
+    assert eventually(fn -> match?({:ok, _agent}, BeamAgent.agent_pid(context.session_id)) end)
+
+    assert {:ok, reconnected} = Runtime.connect(context.session_id)
+    on_exit(fn -> Runtime.disconnect(reconnected) end)
+    assert {:ok, replayed_tree} = Runtime.goal_tree(reconnected)
+    assert replayed_tree == live_tree
+  end
+
   test "a connected client can rebind to a new goal", context do
     assert {:ok, runtime} = Runtime.connect(context.session_id, view: :internal, after: :latest)
     on_exit(fn -> Runtime.disconnect(runtime) end)

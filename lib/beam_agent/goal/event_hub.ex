@@ -79,6 +79,13 @@ defmodule BeamAgent.Goal.EventHub do
     end
   end
 
+  def goal_tree(goal_id) do
+    with {:ok, events} <- events(goal_id, view: :public) do
+      tree = events |> BeamAgent.RuntimeGoalTree.project() |> BeamAgent.RuntimeGoalTree.nest()
+      {:ok, tree}
+    end
+  end
+
   def next_sequence(goal_id) do
     with {:ok, pid} <- Names.pid(:goal_event_hub, goal_id) do
       GenServer.call(pid, :next_sequence)

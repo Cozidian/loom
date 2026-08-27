@@ -142,6 +142,8 @@ defmodule BeamAgent do
 
   def sync_goal(goal_id), do: EventHub.sync(goal_id)
 
+  def goal_tree(goal_id), do: EventHub.goal_tree(goal_id)
+
   def models(project_id), do: ModelRegistry.list(project_id)
   def model(project_id, endpoint_id), do: ModelRegistry.fetch(project_id, endpoint_id)
   def register_model(project_id, endpoint), do: ModelRegistry.register(project_id, endpoint)

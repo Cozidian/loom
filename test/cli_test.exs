@@ -82,7 +82,7 @@ defmodule BeamAgent.CLITest do
     {status, output} =
       run_stdout(
         ["run", "--config", context.config_path],
-        "hello\n/status\n/models\n/models refresh\n/compact\n/skills\n/reload\n/help\n/nope\n/events\n/exit\n"
+        "hello\n/status\n/models\n/models refresh\n/compact\n/skills\n/reload\n/help\n/nope\n/events\n/tree\n/exit\n"
       )
 
     assert status == 0
@@ -102,6 +102,8 @@ defmodule BeamAgent.CLITest do
     assert output =~ "Checking 1 model endpoints"
     assert output =~ "Unknown command /nope"
     assert output =~ "events at"
+    assert output =~ "Goal tree"
+    assert output =~ "Goal" or output =~ "completed"
   end
 
   test "auto mode can be configured and toggled during chat", context do

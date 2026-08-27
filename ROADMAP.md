@@ -393,6 +393,18 @@ doing the right work.
       provenance inspectable without exposing secrets or private reasoning.
     - Build on the runtime event stream rather than adding interface-owned state.
 
+    First slice delivered (pure projection + runtime API + /tree):
+    - Added BeamAgent.RuntimeGoalTree (pure fold over durable goal events only).
+    - Added interface-neutral BeamAgent.goal_tree/1 and Runtime.goal_tree/1.
+    - /tree in terminal CLI (chat), TUI command palette and panel render.
+    - Compact nested render (Goal/Subagent lines, routed model, last tool, state).
+    - Regression tests for root-only, subagent+model, running/failed/cancelled,
+      routed vs default model, safe projection, replay equivalence, /tree surfaces.
+    - Go TUI remains presentation-only; all state derived in Elixir.
+    - Replay/reconnect use the same event fold as live observation.
+    - Intentionally deferred: full duration aggregation, restart counts wiring,
+      multi-goal trees, file/usage/cost enrichment, LiveView, external clients.
+
 21. [ ] Build a LiveView control plane
 
     - Add project and goal views, live task trees, approvals, cancellation,
