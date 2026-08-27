@@ -193,7 +193,7 @@ defmodule BeamAgent.CLI do
       opts[:approval] ||
         maybe_prompt(
           interactive,
-          "Risky tool policy (ask/deny/allow)",
+          "Risky tool policy (ask/deny/auto)",
           defaults["approval_policy"]
         )
 
@@ -271,7 +271,7 @@ defmodule BeamAgent.CLI do
       context_window_tokens: config["context_window_tokens"],
       compaction_threshold_percent: config["compaction_threshold_percent"],
       workspace_root: config["workspace_root"],
-      approval_policy: String.to_existing_atom(config["approval_policy"]),
+      approval_policy: Config.approval_policy_atom(config["approval_policy"]),
       approval_handler: self()
     )
   end
@@ -290,7 +290,7 @@ defmodule BeamAgent.CLI do
           context_window_tokens: config["context_window_tokens"],
           compaction_threshold_percent: config["compaction_threshold_percent"],
           workspace_root: config["workspace_root"],
-          approval_policy: String.to_existing_atom(config["approval_policy"]),
+          approval_policy: Config.approval_policy_atom(config["approval_policy"]),
           approval_handler: self()
         )
     end
@@ -330,6 +330,9 @@ defmodule BeamAgent.CLI do
           "/status" ->
             print_status(session_id, config)
             chat_loop(session_id, config)
+
+          "/auto" ->
+            chat_loop(session_id, toggle_auto_mode(session_id, config))
 
           "/compact" ->
             compact_session_context(session_id)
@@ -436,11 +439,52 @@ defmodule BeamAgent.CLI do
   defp print_status(session_id, config) do
     with {:ok, path} <- BeamAgent.event_log_path(session_id),
          {:ok, context} <- BeamAgent.context_snapshot(session_id),
-         {:ok, context_stats} <- BeamAgent.conversation_context_stats(session_id) do
+         {:ok, context_stats} <- BeamAgent.conversation_context_stats(session_id),
+         {:ok, approval_policy} <- BeamAgent.approval_policy(session_id) do
+      config = Map.put(config, "approval_policy", to_string(approval_policy))
       UI.status(config, session_id, path, context, context_stats)
     else
       {:error, reason} -> error(reason)
     end
+  end
+
+  defp toggle_auto_mode(session_id, config) do
+    with {:ok, current} <- BeamAgent.approval_policy(session_id) do
+      {next, config} = next_auto_policy(current, config)
+
+      case BeamAgent.set_approval_policy(session_id, next) do
+        :ok ->
+          if next == :auto do
+            UI.warning("Auto mode enabled · risky tool requests will be approved")
+          else
+            UI.success("Auto mode disabled · risky tools will ask for approval")
+          end
+
+          Map.put(config, "approval_policy", to_string(next))
+
+        {:error, reason} ->
+          _ = error(reason)
+          config
+      end
+    else
+      {:error, reason} ->
+        _ = error(reason)
+        config
+    end
+  end
+
+  defp next_auto_policy(:auto, config) do
+    policy =
+      config
+      |> Map.get("approval_policy_before_auto", "ask")
+      |> Config.approval_policy_atom()
+
+    policy = if policy == :auto, do: :ask, else: policy
+    {policy, Map.delete(config, "approval_policy_before_auto")}
+  end
+
+  defp next_auto_policy(current, config) do
+    {:auto, Map.put(config, "approval_policy_before_auto", to_string(current))}
   end
 
   defp compact_session_context(session_id) do
@@ -878,7 +922,7 @@ defmodule BeamAgent.CLI do
       --base-url URL                         override the provider endpoint
       --api-key-env VARIABLE                 credential environment variable
       --workspace PATH                       root visible to file and command tools
-      --approval ask|allow|deny              risky tool policy
+      --approval ask|auto|deny               risky tool policy (`allow` is an alias)
       --context-window TOKENS                estimated model context capacity
       --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
@@ -899,7 +943,7 @@ defmodule BeamAgent.CLI do
       --model MODEL          required for real LLM providers
       --base-url URL         provider endpoint or compatible proxy
       --api-key-env NAME     environment variable containing the credential
-      --approval POLICY      ask, deny, or allow risky tools
+      --approval POLICY      ask, deny, or auto-approve risky tools
       --data-dir PATH        durable session directory
       --context-window N     estimated model context capacity in tokens
       --compact-at PERCENT   automatic compaction threshold (50-95)

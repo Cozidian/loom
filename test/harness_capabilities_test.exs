@@ -244,6 +244,67 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     send(replacement, :stop)
   end
 
+  test "auto mode releases pending approval and approves future risky tools", context do
+    {:ok, session_id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        approval_policy: :ask,
+        approval_handler: self()
+      )
+
+    pending =
+      Task.async(fn ->
+        BeamAgent.Session.ToolPolicy.authorize(
+          session_id,
+          "create_file",
+          %{"path" => "pending.txt"},
+          :write
+        )
+      end)
+
+    assert_receive {:beam_agent_approval, request}
+    assert request.tool == "create_file"
+    assert :ok = BeamAgent.set_approval_policy(session_id, :auto)
+    assert Task.await(pending) == :ok
+    assert {:ok, :auto} = BeamAgent.approval_policy(session_id)
+
+    assert :ok =
+             BeamAgent.Session.ToolPolicy.authorize(
+               session_id,
+               "run_command",
+               %{"command" => "mix test"},
+               :execute
+             )
+
+    refute_receive {:beam_agent_approval, _request}
+
+    {:ok, events} = BeamAgent.events(session_id)
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "approval_policy_changed" and event["data"]["to"] == "auto"
+           end)
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "tool_approval_granted" and
+               event["data"]["reason"] == "auto_mode_enabled"
+           end)
+
+    assert :ok = BeamAgent.stop_session(session_id)
+
+    assert {:ok, ^session_id} =
+             BeamAgent.resume_session(session_id,
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               approval_policy: :ask,
+               approval_handler: self()
+             )
+
+    assert {:ok, :auto} = BeamAgent.approval_policy(session_id)
+  end
+
   test "sandboxed commands can write inside but not outside the workspace", context do
     tool_context = %{workspace_root: context.workspace}
 

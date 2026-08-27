@@ -15,7 +15,7 @@ defmodule BeamAgent.Tool do
           required(:strategy) => module(),
           required(:data_dir) => String.t(),
           required(:workspace_root) => String.t(),
-          required(:approval_policy) => :ask | :allow | :deny,
+          required(:approval_policy) => :auto | :ask | :allow | :deny,
           required(:approval_handler) => pid() | nil
         }
 

@@ -51,6 +51,7 @@ type packet struct {
 	Prompt       string         `json:"prompt,omitempty"`
 	Command      string         `json:"command,omitempty"`
 	ApprovalID   string         `json:"approval_id,omitempty"`
+	ApprovalMode string         `json:"approval_mode,omitempty"`
 	Decision     string         `json:"decision,omitempty"`
 	OK           bool           `json:"ok,omitempty"`
 	Error        string         `json:"error,omitempty"`
@@ -149,6 +150,7 @@ type commandItem struct {
 }
 
 var commands = []commandItem{
+	{ID: "auto", Label: "Toggle auto approval", Hint: "/auto"},
 	{ID: "status", Label: "Session status", Hint: "/status"},
 	{ID: "new", Label: "New session", Hint: "/new"},
 	{ID: "sessions", Label: "Durable sessions", Hint: "/sessions"},
@@ -182,6 +184,7 @@ type model struct {
 	palette       bool
 	paletteIndex  int
 	approval      *approval
+	approvalMode  string
 	toolsExpanded bool
 }
 
@@ -214,6 +217,7 @@ func newModel(initial packet, bridge *protocol) model {
 		status:       "ready",
 		entries:      initial.Entries,
 		contextStats: initial.ContextStats,
+		approvalMode: initial.ApprovalMode,
 	}
 	m.refreshTranscript(true)
 	return m
@@ -504,6 +508,11 @@ func (m *model) applyBackend(message packet) {
 		} else {
 			m.notice, m.noticeTone = "Tool denied", "warning"
 		}
+	case "approval_mode":
+		m.approvalMode = message.ApprovalMode
+		if m.approvalMode == "auto" {
+			m.approval = nil
+		}
 	case "notice":
 		m.notice, m.noticeTone = message.Message, message.Tone
 	case "panel":
@@ -647,6 +656,9 @@ func (m model) renderHeader() string {
 		context = fmt.Sprintf("   ctx %.0f%%", usage)
 	}
 	right := fmt.Sprintf("%s  %s   %s/%s%s", mark, status, m.profile, m.llmModel, context)
+	if m.approvalMode == "auto" {
+		right = "AUTO  " + right
+	}
 	line1 := headerStyle.Render(joinEdges("BEAM AGENT", right, m.width))
 	line2 := subheaderStyle.Render(joinEdges(m.workspace+"  /  "+shortSession(m.sessionID), m.provider, m.width))
 	line3 := mutedStyle.Render(strings.Repeat("─", m.width))

@@ -100,6 +100,40 @@ defmodule BeamAgent.CLITest do
     assert output =~ "events at"
   end
 
+  test "auto mode can be configured and toggled during chat", context do
+    {status, setup_output} =
+      run_stdout([
+        "init",
+        "--config",
+        context.config_path,
+        "--provider",
+        "echo",
+        "--data-dir",
+        context.data_dir,
+        "--approval",
+        "auto",
+        "--non-interactive"
+      ])
+
+    assert status == 0
+    assert setup_output =~ "approval:   auto"
+    assert {:ok, config} = BeamAgent.CLI.Config.load(context.config_path)
+    assert config["approval_policy"] == "auto"
+
+    {status, output} =
+      run_stdout(
+        ["run", "--config", context.config_path],
+        "/status\n/auto\n/status\n/auto\n/status\n/help\n/exit\n"
+      )
+
+    assert status == 0
+    assert output =~ "approval  auto"
+    assert output =~ "Auto mode disabled"
+    assert output =~ "approval  ask"
+    assert output =~ "Auto mode enabled"
+    assert output =~ "/auto"
+  end
+
   test "running without configuration starts setup and then opens chat", context do
     input = "echo\n#{context.data_dir}\n"
 

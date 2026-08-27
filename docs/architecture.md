@@ -123,6 +123,10 @@ returns the complete selected `SKILL.md` and records `skill_activated`.
 The catalog still owns trusted, stateless tool modules. Runtime authority is
 session-scoped: read tools are allowed by default, mutations and commands follow
 the configured risky-tool policy, and approvals grant exactly one pending call.
+The session policy can switch between `ask` and `auto` at runtime. Enabling
+auto releases already-pending approvals, records an `approval_policy_changed`
+event, and affects future risky calls and child sessions without weakening the
+workspace or command sandbox boundaries.
 The CLI does not execute approvals inside the model-call task; it owns the human
 mailbox, answers `ToolPolicy`, and continues awaiting the supervised turn.
 

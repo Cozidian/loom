@@ -14,7 +14,7 @@ It includes:
 - a cancellable multi-step tool-calling loop without an arbitrary step ceiling;
 - an immutable, canonical workspace per session;
 - supervised project instructions and lazily activated `SKILL.md` workflows;
-- session-owned allow/ask/deny policy with monitored one-shot approvals;
+- session-owned auto/ask/deny policy with monitored one-shot approvals;
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
@@ -95,10 +95,11 @@ line in the composer, `Ctrl+T` to expand tool results, `Page Up`/`Page Down` to
 move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
 idle). Approval dialogs default to deny and require an explicit one-shot choice.
 
-The useful slash commands remain `/new`, `/sessions`, `/status`, `/compact`,
-`/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama, OpenAI, xAI/Grok, and
-Anthropic responses render as they arrive; deterministic or custom
-non-streaming providers render their final response through the same interface.
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/auto`,
+`/compact`, `/skills`, `/reload`, `/events`, `/clear`, and `/exit`. Ollama,
+OpenAI, xAI/Grok, and Anthropic responses render as they arrive; deterministic
+or custom non-streaming providers render their final response through the same
+interface.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
 
@@ -148,13 +149,17 @@ setup or overridden for one run:
 ```sh
 ./beam_agent --approval deny       # read-only tools plus delegation
 ./beam_agent --approval ask        # recommended interactive default
-./beam_agent --approval allow      # no prompts for writes or commands
+./beam_agent --approval auto       # auto-approve writes and commands
 ```
 
-`allow` is intentionally explicit because it grants model-selected writes and
-commands. Command confinement currently has a macOS Seatbelt backend; other
-platforms fail closed with `sandbox_unavailable` until an enforcing backend is
-added. Run `./beam_agent tools` to inspect the active tool catalog.
+`/auto` toggles that policy for the active session, and the TUI displays `AUTO`
+prominently while it is enabled. The older `allow` spelling remains accepted as
+an alias. Auto mode is intentionally explicit because it grants model-selected
+writes and commands. It does not disable workspace confinement, observed-file
+checks, or command sandboxing. Command confinement currently has a macOS
+Seatbelt backend; other platforms fail closed with `sandbox_unavailable` until
+an enforcing backend is added. Run `./beam_agent tools` to inspect the active
+tool catalog.
 
 ## Project instructions and skills
 

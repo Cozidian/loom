@@ -45,6 +45,7 @@ defmodule BeamAgent.CLITUITest do
     assert payload.workspace == context.config["workspace_root"]
     assert payload.profile == "echo"
     assert payload.model == "built-in"
+    assert payload.approval_mode == "ask"
     assert Enum.map(payload.entries, & &1.kind) == ["user", "assistant"]
     assert List.last(payload.entries).content == "echo(1): hello"
     assert is_map(payload.context_stats)
@@ -84,6 +85,7 @@ defmodule BeamAgent.CLITUITest do
     on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
 
     assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
     assert_receive {:beam_agent_tui, {:context_stats, _stats}}
 
     Controller.submit(controller, "hello")
@@ -108,6 +110,33 @@ defmodule BeamAgent.CLITUITest do
            end)
 
     assert Enum.any?(messages, &match?({:turn_finished, {:ok, "echo(1): hello"}}, &1))
+  end
+
+  test "controller toggles visible session auto mode", context do
+    {:ok, controller} =
+      Controller.start_link(
+        client: self(),
+        session_id: context.session_id,
+        config: context.config
+      )
+
+    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+
+    assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+    assert_receive {:beam_agent_tui, {:context_stats, _stats}}
+
+    Controller.command(controller, :auto)
+    assert_receive {:beam_agent_tui, {:approval_mode, :auto}}
+    assert_receive {:beam_agent_tui, {:notice, :warning, message}}
+    assert message =~ "Auto mode enabled"
+    assert {:ok, :auto} = BeamAgent.approval_policy(context.session_id)
+
+    Controller.command(controller, :auto)
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+    assert_receive {:beam_agent_tui, {:notice, :success, message}}
+    assert message =~ "Auto mode disabled"
+    assert {:ok, :ask} = BeamAgent.approval_policy(context.session_id)
   end
 
   test "no-tui always disables takeover and an explicit Go executable is discoverable" do

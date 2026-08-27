@@ -164,6 +164,10 @@ defmodule BeamAgent.CLI.Config do
     with {:ok, provider} <- Providers.fetch(name), do: {:ok, provider.id}
   end
 
+  def approval_policy_atom(policy) when policy in ["auto", "allow"], do: :auto
+  def approval_policy_atom("ask"), do: :ask
+  def approval_policy_atom("deny"), do: :deny
+
   def provider_options(config) do
     [
       model: config["model"],
@@ -354,7 +358,9 @@ defmodule BeamAgent.CLI.Config do
 
   defp validate_url(_url), do: {:error, {:invalid_config_value, "base_url"}}
 
-  defp validate_approval_policy(policy) when policy in ["ask", "allow", "deny"], do: :ok
+  defp validate_approval_policy(policy) when policy in ["auto", "ask", "allow", "deny"],
+    do: :ok
+
   defp validate_approval_policy(_policy), do: {:error, {:invalid_config_value, "approval_policy"}}
 
   defp maybe_reset_provider_defaults(config, nil), do: config

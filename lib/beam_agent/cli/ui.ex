@@ -150,6 +150,7 @@ defmodule BeamAgent.CLI.UI do
     command("/new", "start a fresh session")
     command("/sessions", "list durable sessions")
     command("/status", "show provider, model, session, and event log")
+    command("/auto", "toggle automatic approval of risky tools")
     command("/compact", "summarize older completed turns now")
     command("/skills", "list skills discovered for this session")
     command("/reload", "reload project instructions and skill metadata")

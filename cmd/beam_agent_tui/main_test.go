@@ -107,14 +107,38 @@ func TestApprovalStartsFailClosed(t *testing.T) {
 	}
 }
 
+func TestAutoModeIsVisibleAndClearsApproval(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-1",
+			"tool":        "run_command",
+			"access":      "execute",
+		},
+	})
+	m.applyBackend(packet{Type: "approval_mode", ApprovalMode: "auto"})
+
+	if m.approval != nil {
+		t.Fatal("auto mode should dismiss a pending approval")
+	}
+	if m.approvalMode != "auto" {
+		t.Fatalf("expected auto mode, got %q", m.approvalMode)
+	}
+	if !bytes.Contains([]byte(m.View().Content), []byte("AUTO")) {
+		t.Fatal("auto mode must be visible in the header")
+	}
+}
+
 func testModel(writer *bytes.Buffer) model {
 	bridge := newProtocol(bytes.NewReader(nil), writer)
 	return newModel(packet{
-		Type:      "init",
-		SessionID: "session-123456789",
-		Workspace: "/tmp/elixir-harness",
-		Provider:  "echo",
-		Profile:   "echo",
-		Model:     "built-in",
+		Type:         "init",
+		SessionID:    "session-123456789",
+		Workspace:    "/tmp/elixir-harness",
+		Provider:     "echo",
+		Profile:      "echo",
+		Model:        "built-in",
+		ApprovalMode: "ask",
 	}, bridge)
 }

@@ -20,13 +20,23 @@ defmodule BeamAgent.CLI.TUI.Controller do
       client: Keyword.fetch!(opts, :client),
       session_id: Keyword.fetch!(opts, :session_id),
       config: Keyword.fetch!(opts, :config),
+      approval_policy: :ask,
+      auto_fallback: :ask,
       current: nil,
       compacting?: false
     }
 
     with :ok <- BeamAgent.subscribe(state.session_id),
-         :ok <- BeamAgent.set_approval_handler(state.session_id, self()) do
+         :ok <- BeamAgent.set_approval_handler(state.session_id, self()),
+         {:ok, approval_policy} <- BeamAgent.approval_policy(state.session_id) do
+      state = %{
+        state
+        | approval_policy: approval_policy,
+          auto_fallback: auto_fallback(approval_policy, state.config)
+      }
+
       notify(state, {:controller_ready, self()})
+      notify(state, {:approval_mode, approval_policy})
       notify_context_stats(state)
       {:ok, state}
     else
@@ -161,6 +171,40 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
+  defp run_command(:auto, state) do
+    next = if state.approval_policy == :auto, do: state.auto_fallback, else: :auto
+
+    case BeamAgent.set_approval_policy(state.session_id, next) do
+      :ok ->
+        config = Map.put(state.config, "approval_policy", to_string(next))
+
+        state = %{
+          state
+          | approval_policy: next,
+            auto_fallback:
+              if(next == :auto, do: state.approval_policy, else: state.auto_fallback),
+            config: config
+        }
+
+        notify(state, {:approval_mode, next})
+
+        if next == :auto do
+          notify(state, {:notice, :warning, "Auto mode enabled · risky tools are approved"})
+        else
+          notify(
+            state,
+            {:notice, :success, "Auto mode disabled · restored #{state.approval_policy} policy"}
+          )
+        end
+
+        state
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
   defp run_command(:status, state) do
     with {:ok, path} <- BeamAgent.event_log_path(state.session_id),
          {:ok, context} <- BeamAgent.context_snapshot(state.session_id),
@@ -175,7 +219,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
           "model     #{state.config["model"] || "built-in"}",
           "session   #{state.session_id}",
           "workspace #{state.config["workspace_root"]}",
-          "approval  #{state.config["approval_policy"]}",
+          "approval  #{state.approval_policy}",
           "project   #{String.slice(context.fingerprint, 0, 12)}",
           "context   #{context_stats.estimated_tokens}/#{context_stats.window_tokens} est. tokens (#{context_stats.utilization_percent}%)",
           "compacted #{context_stats.compaction_count} times",
@@ -294,7 +338,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       context_window_tokens: config["context_window_tokens"] || 32_000,
       compaction_threshold_percent: config["compaction_threshold_percent"] || 75,
       workspace_root: config["workspace_root"],
-      approval_policy: String.to_existing_atom(config["approval_policy"]),
+      approval_policy: Config.approval_policy_atom(config["approval_policy"]),
       approval_handler: self()
     )
   end
@@ -310,6 +354,15 @@ defmodule BeamAgent.CLI.TUI.Controller do
     send(state.client, {:beam_agent_tui, message})
     :ok
   end
+
+  defp auto_fallback(:auto, config) do
+    case Config.approval_policy_atom(config["approval_policy"]) do
+      :auto -> :ask
+      policy -> policy
+    end
+  end
+
+  defp auto_fallback(policy, _config), do: policy
 
   defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
 end

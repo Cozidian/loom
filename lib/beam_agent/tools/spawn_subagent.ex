@@ -25,6 +25,12 @@ defmodule BeamAgent.Tools.SpawnSubagent do
 
   @impl true
   def execute(%{"prompt" => prompt}, context) when is_binary(prompt) and prompt != "" do
+    approval_policy =
+      case BeamAgent.approval_policy(context.session_id) do
+        {:ok, policy} -> policy
+        {:error, _reason} -> context.approval_policy
+      end
+
     opts = [
       provider: context.provider,
       provider_profile: context.provider_profile,
@@ -32,7 +38,7 @@ defmodule BeamAgent.Tools.SpawnSubagent do
       strategy: context.strategy,
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
-      approval_policy: context.approval_policy,
+      approval_policy: approval_policy,
       approval_handler: context.approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent

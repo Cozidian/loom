@@ -1,9 +1,10 @@
 defmodule BeamAgent.CLI.TUI do
   @moduledoc false
 
+  alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(status new sessions skills reload compact events)a
+  @commands ~w(auto status new sessions skills reload compact events)a
 
   def available?(override \\ nil)
 
@@ -58,6 +59,7 @@ defmodule BeamAgent.CLI.TUI do
       provider: config["provider"],
       profile: config["profile"],
       model: config["model"] || "built-in",
+      approval_mode: approval_mode(session_id, config),
       entries: history(session_id),
       context_stats: context_stats(session_id)
     }
@@ -100,6 +102,9 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:context_stats, stats}),
     do: %{type: "context_stats", stats: json_safe(stats)}
+
+  def notification_payload({:approval_mode, policy}),
+    do: %{type: "approval_mode", approval_mode: to_string(policy)}
 
   def notification_payload({:controller_ready, _controller}), do: nil
   def notification_payload(_message), do: nil
@@ -256,6 +261,16 @@ defmodule BeamAgent.CLI.TUI do
     case BeamAgent.conversation_context_stats(session_id) do
       {:ok, stats} -> json_safe(stats)
       {:error, _reason} -> nil
+    end
+  end
+
+  defp approval_mode(session_id, config) do
+    case BeamAgent.approval_policy(session_id) do
+      {:ok, policy} ->
+        to_string(policy)
+
+      {:error, _reason} ->
+        config["approval_policy"] |> Config.approval_policy_atom() |> to_string()
     end
   end
 

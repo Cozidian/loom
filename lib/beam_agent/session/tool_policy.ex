@@ -1,5 +1,5 @@
 defmodule BeamAgent.Session.ToolPolicy do
-  @moduledoc "Session-owned allow/ask/deny policy and pending approval lifecycle."
+  @moduledoc "Session-owned auto/ask/deny policy and pending approval lifecycle."
   use GenServer
 
   alias BeamAgent.Names
@@ -30,17 +30,36 @@ defmodule BeamAgent.Session.ToolPolicy do
     end
   end
 
+  def policy(session_id) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
+      GenServer.call(pid, :policy)
+    end
+  end
+
+  def set_policy(session_id, policy) when policy in [:auto, :allow, :ask, :deny] do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
+      GenServer.call(pid, {:set_policy, normalize_policy(policy)})
+    end
+  end
+
   @impl true
   def init(opts) do
     handler = Keyword.get(opts, :approval_handler)
     monitor = if is_pid(handler), do: Process.monitor(handler)
+    session_id = Keyword.fetch!(opts, :session_id)
+
+    approval_policy =
+      opts
+      |> Keyword.get(:approval_policy, :ask)
+      |> normalize_policy()
+      |> then(&recovered_policy(session_id, &1))
 
     {:ok,
      %{
-       session_id: Keyword.fetch!(opts, :session_id),
+       session_id: session_id,
        handler: handler,
        handler_monitor: monitor,
-       approval_policy: Keyword.get(opts, :approval_policy, :ask),
+       approval_policy: approval_policy,
        tool_permissions: Map.new(Keyword.get(opts, :tool_permissions, %{})),
        pending: %{}
      }}
@@ -120,6 +139,22 @@ defmodule BeamAgent.Session.ToolPolicy do
     {:reply, :ok, %{state | handler: handler, handler_monitor: Process.monitor(handler)}}
   end
 
+  def handle_call(:policy, _from, state), do: {:reply, {:ok, state.approval_policy}, state}
+
+  def handle_call({:set_policy, policy}, _from, state) do
+    previous = state.approval_policy
+
+    case record_policy_change(state, previous, policy) do
+      :ok ->
+        state = %{state | approval_policy: policy}
+        state = if policy == :auto, do: approve_pending(state), else: state
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, {:approval_policy_change_failed, reason}}, state}
+    end
+  end
+
   @impl true
   def handle_info({:DOWN, monitor, :process, handler, _reason}, state)
       when monitor == state.handler_monitor and handler == state.handler do
@@ -160,7 +195,7 @@ defmodule BeamAgent.Session.ToolPolicy do
   end
 
   defp default_decision(_policy, access) when access in [:read, :trusted, :delegate], do: :allow
-  defp default_decision(:allow, _access), do: :allow
+  defp default_decision(policy, _access) when policy in [:auto, :allow], do: :allow
   defp default_decision(:deny, _access), do: :deny
   defp default_decision(:ask, _access), do: :ask
 
@@ -168,6 +203,58 @@ defmodule BeamAgent.Session.ToolPolicy do
     data = Map.merge(%{"tool" => tool, "arguments" => arguments}, extra)
     _ = EventLog.append(state.session_id, type, data)
     :ok
+  end
+
+  defp approve_pending(state) do
+    Enum.each(state.pending, fn {approval_id,
+                                 %{
+                                   from: waiting,
+                                   caller_monitor: caller_monitor,
+                                   request: request
+                                 }} ->
+      Process.demonitor(caller_monitor, [:flush])
+
+      record(state, :tool_approval_granted, request.tool, request.arguments, %{
+        "approval_id" => approval_id,
+        "reason" => "auto_mode_enabled"
+      })
+
+      GenServer.reply(waiting, :ok)
+    end)
+
+    %{state | pending: %{}}
+  end
+
+  defp record_policy_change(_state, policy, policy), do: :ok
+
+  defp record_policy_change(state, previous, policy) do
+    case EventLog.append(state.session_id, :approval_policy_changed, %{
+           "from" => to_string(previous),
+           "to" => to_string(policy)
+         }) do
+      {:ok, _event} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_policy(:allow), do: :auto
+  defp normalize_policy(policy), do: policy
+
+  defp recovered_policy(session_id, configured) do
+    case EventLog.events(session_id) do
+      {:ok, events} ->
+        Enum.reduce(events, configured, fn
+          %{"type" => "approval_policy_changed", "data" => %{"to" => policy}}, _current
+          when policy in ["auto", "ask", "deny"] ->
+            String.to_existing_atom(policy)
+
+          _event, current ->
+            current
+        end)
+
+      {:error, _reason} ->
+        configured
+    end
   end
 
   defp approval_id do
