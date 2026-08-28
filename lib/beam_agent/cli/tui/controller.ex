@@ -3,7 +3,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   use GenServer
 
   alias BeamAgent.CLI.Config
-  alias BeamAgent.{Runtime, RuntimeEventQuery}
+  alias BeamAgent.{Providers, Runtime, RuntimeEventQuery}
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def bootstrap(controller), do: GenServer.call(controller, :bootstrap)
@@ -28,15 +28,20 @@ defmodule BeamAgent.CLI.TUI.Controller do
       cursor: 0,
       bootstrap_events: [],
       config: Keyword.fetch!(opts, :config),
+      config_path: Keyword.get(opts, :config_path, Config.path()),
+      codex_app_server: Keyword.get(opts, :codex_app_server, BeamAgent.CodexAppServer),
       approval_policy: :ask,
       auto_fallback: :ask,
       current: nil,
       verification: nil,
-      compacting?: false
+      compacting?: false,
+      auth_session: nil,
+      auth_target_profile: nil
     }
 
     with {:ok, runtime} <-
            Runtime.connect(state.session_id, subscriber: self(), view: :internal),
+         :ok <- BeamAgent.Auth.subscribe(),
          {:ok, subscription} <- Runtime.bootstrap(runtime) do
       state = %{
         state
@@ -228,6 +233,80 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_info({:verification_result, _ref, _result}, state), do: {:noreply, state}
 
   def handle_info(
+        {:beam_agent_auth, session, %{type: :auth_user_action_required, data: action}},
+        %{auth_session: session} = state
+      ) do
+    _ = open_browser(action.verification_uri_complete || action.verification_uri)
+
+    action_lines =
+      if action.user_code,
+        do: ["Enter code: #{action.user_code}", ""],
+        else: ["Complete sign-in in the browser.", ""]
+
+    notify(state, {
+      :panel,
+      "Provider login",
+      [
+        "Open #{action.verification_uri}"
+      ] ++
+        action_lines ++
+        [
+          "BeamAgent will keep waiting until the provider completes or expires this code."
+        ]
+    })
+
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:beam_agent_auth, session, %{type: :auth_completed}},
+        %{auth_session: session} = state
+      ) do
+    case BeamAgent.Auth.await(session) do
+      {:ok, result} ->
+        case persist_authentication(state, result) do
+          {:ok, state} ->
+            notify(state, {:notice, :success, "Provider login completed"})
+            state = %{state | auth_session: nil, auth_target_profile: nil}
+            {:noreply, if(state.current == nil, do: run_command(:new, state), else: state)}
+
+          {:error, reason} ->
+            notify(state, {:notice, :error, format_error(reason)})
+            {:noreply, %{state | auth_session: nil, auth_target_profile: nil}}
+        end
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        {:noreply, %{state | auth_session: nil, auth_target_profile: nil}}
+    end
+  end
+
+  def handle_info(
+        {:beam_agent_auth, session, %{type: :auth_failed, data: data}},
+        %{auth_session: session} = state
+      ) do
+    notify(state, {:notice, :error, "Provider login failed · #{data.reason}"})
+    {:noreply, %{state | auth_session: nil, auth_target_profile: nil}}
+  end
+
+  def handle_info(
+        {:beam_agent_auth, _broker, %{type: :auth_token_refreshed, data: data}},
+        state
+      ) do
+    notify(state, {
+      :notice,
+      :muted,
+      "Provider credential refreshed · #{data.provider || state.config["provider"]}"
+    })
+
+    {:noreply, state}
+  end
+
+  def handle_info({:beam_agent_auth, _session, _event}, state), do: {:noreply, state}
+
+  def handle_info({:codex_app_server, _client, _event}, state), do: {:noreply, state}
+
+  def handle_info(
         {:DOWN, monitor, :process, pid, reason},
         %{verification: %{monitor: monitor, pid: pid}} = state
       ) do
@@ -249,6 +328,10 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def terminate(_reason, state) do
     if state.runtime_monitor, do: Process.demonitor(state.runtime_monitor, [:flush])
     if state.runtime, do: Runtime.disconnect(state.runtime)
+
+    if is_pid(state.auth_session) and Process.alive?(state.auth_session),
+      do: BeamAgent.Auth.cancel(state.auth_session)
+
     :ok
   end
 
@@ -261,6 +344,41 @@ defmodule BeamAgent.CLI.TUI.Controller do
         notify(state, {:notice, :error, format_error(reason)})
     end
 
+    state
+  end
+
+  defp run_command(:connect, %{auth_session: session} = state) when is_pid(session) do
+    notify(state, {:notice, :warning, "Provider login is already in progress"})
+    state
+  end
+
+  defp run_command({:connect, "chatgpt"}, %{config: %{"provider" => "openai"}} = state) do
+    connect_chatgpt_profile(state, state.config["profile"])
+  end
+
+  defp run_command({:connect, "chatgpt"}, state) do
+    notify(state, {:notice, :error, "ChatGPT login is available only for OpenAI profiles"})
+    state
+  end
+
+  defp run_command(:connect, state) do
+    case provider_picker(state) do
+      {:ok, providers} ->
+        notify(state, {:provider_picker, providers})
+        state
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command({:connect, "profile:" <> profile}, state) do
+    connect_profile(state, profile)
+  end
+
+  defp run_command({:connect, query}, state) do
+    notify(state, {:notice, :warning, "Unsupported provider selection: #{query}"})
     state
   end
 
@@ -619,7 +737,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
           current: nil
       }
 
-      notify(state, {:session_changed, new_session_id})
+      notify(state, {:session_changed, new_session_id, state.config})
       Enum.each(subscription.events, &notify(state, {:stream, &1}))
       notify_context_stats(state)
       state
@@ -640,6 +758,162 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
+  defp provider_picker(state) do
+    with {:ok, config} <- Config.load(state.config_path) do
+      chatgpt_available? = chatgpt_account?(state)
+
+      providers =
+        Enum.map(Config.profiles(config), fn {profile, provider_config} ->
+          %{
+            profile: profile,
+            provider: provider_config["provider"],
+            model: provider_config["model"] || "provider default",
+            auth: auth_label(provider_config),
+            status: profile_status(provider_config, chatgpt_available?),
+            connected: profile_connected?(provider_config, chatgpt_available?),
+            active: profile == config["active_profile"]
+          }
+        end)
+
+      {:ok, providers}
+    end
+  end
+
+  defp connect_profile(%{current: current} = state, _profile) when not is_nil(current) do
+    notify(state, {:notice, :warning, "Cancel the running turn before changing providers"})
+    state
+  end
+
+  defp connect_profile(state, profile) do
+    with {:ok, config} <- Config.load(state.config_path),
+         {:ok, runtime} <- Config.runtime(config, profile) do
+      cond do
+        runtime["provider"] == "openai" and get_in(runtime, ["auth", "type"]) != "api_key" ->
+          connect_chatgpt_profile(state, profile)
+
+        profile_ready?(runtime) ->
+          activate_profile(state, config, profile)
+
+        true ->
+          notify(state, {
+            :panel,
+            "Connect #{profile}",
+            [
+              "#{runtime["provider"]} requires an API key.",
+              "",
+              "Run `beam_agent auth login #{profile} --api-key`, then open `/connect` again."
+            ]
+          })
+
+          state
+      end
+    else
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp connect_chatgpt_profile(state, profile) do
+    with {:ok, config} <- Config.load(state.config_path),
+         {:ok, %{"provider" => "openai"}} <- Config.runtime(config, profile) do
+      state = %{state | auth_target_profile: profile}
+
+      if chatgpt_account?(state) do
+        result = %{
+          auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+          credential_reference: nil
+        }
+
+        case persist_authentication(state, result) do
+          {:ok, state} ->
+            notify(state, {:notice, :success, "Connected #{profile} through ChatGPT"})
+            run_command(:new, %{state | auth_target_profile: nil})
+
+          {:error, reason} ->
+            notify(state, {:notice, :error, format_error(reason)})
+            %{state | auth_target_profile: nil}
+        end
+      else
+        start_chatgpt_login(state, profile)
+      end
+    else
+      {:ok, _runtime} ->
+        notify(state, {:notice, :error, "ChatGPT login is available only for OpenAI profiles"})
+        state
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp start_chatgpt_login(state, profile) do
+    case BeamAgent.Auth.start_chatgpt_login(profile, :openai, owner: self()) do
+      {:ok, session} ->
+        notify(state, {:notice, :muted, "Starting ChatGPT login…"})
+        %{state | auth_session: session, auth_target_profile: profile}
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        %{state | auth_target_profile: nil}
+    end
+  end
+
+  defp activate_profile(state, config, profile) do
+    with {:ok, config} <- Config.use_profile(config, profile),
+         {:ok, _path} <- Config.write(config, state.config_path),
+         {:ok, state} <- apply_runtime_profile(state, config, profile) do
+      notify(state, {:notice, :success, "Using provider profile #{profile}"})
+      run_command(:new, state)
+    else
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp chatgpt_account?(state) do
+    match?(
+      {:ok, %{"account" => %{"type" => "chatgpt"}}},
+      state.codex_app_server.account()
+    )
+  end
+
+  defp auth_label(%{"auth" => %{"type" => "chatgpt"}}), do: "ChatGPT subscription"
+  defp auth_label(%{"auth" => %{"type" => "api_key"}}), do: "API key"
+  defp auth_label(%{"auth" => %{"type" => "device_code"}}), do: "Browser code"
+  defp auth_label(%{"provider" => "openai"}), do: "ChatGPT or API key"
+  defp auth_label(%{"api_key_env" => env}) when is_binary(env), do: "API key"
+  defp auth_label(_profile), do: "Local"
+
+  defp profile_status(%{"auth" => %{"type" => "chatgpt"}}, true), do: "connected"
+  defp profile_status(%{"provider" => "openai"}, true), do: "ChatGPT available"
+
+  defp profile_status(profile, _chatgpt_available?) do
+    if profile_ready?(profile), do: "ready", else: "API key required"
+  end
+
+  defp profile_connected?(%{"auth" => %{"type" => "chatgpt"}}, available?), do: available?
+  defp profile_connected?(profile, _available?), do: profile_ready?(profile)
+
+  defp profile_ready?(%{"credential_ref" => reference})
+       when is_binary(reference) and reference != "",
+       do: true
+
+  defp profile_ready?(%{"api_key_env" => environment})
+       when is_binary(environment) and environment != "",
+       do: present?(System.get_env(environment))
+
+  defp profile_ready?(profile) do
+    case Providers.fetch(profile["provider"]) do
+      {:ok, provider} -> is_nil(provider[:default_api_key_env])
+      {:error, _reason} -> false
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and value != ""
+
   defp start_session(config, provider) do
     BeamAgent.start_session(
       provider: provider,
@@ -654,6 +928,51 @@ defmodule BeamAgent.CLI.TUI.Controller do
       approval_handler: self(),
       model_endpoints: config["model_endpoints"] || []
     )
+  end
+
+  defp persist_authentication(state, result) do
+    auth = Map.get(result, :auth) || state.config["auth"]
+    profile = state.auth_target_profile || state.config["profile"]
+
+    with {:ok, config} <- Config.load(state.config_path),
+         {:ok, config} <-
+           Config.put_profile_auth(
+             config,
+             profile,
+             result.credential_reference,
+             auth
+           ),
+         {:ok, config} <- Config.use_profile(config, profile),
+         {:ok, _path} <- Config.write(config, state.config_path),
+         {:ok, state} <- apply_runtime_profile(state, config, profile) do
+      {:ok, state}
+    end
+  end
+
+  defp apply_runtime_profile(state, config, profile) do
+    with {:ok, runtime} <- Config.runtime(config, profile) do
+      runtime =
+        state.config
+        |> Map.merge(runtime)
+        |> Map.put("model_endpoints", Config.model_endpoints(config, runtime))
+
+      {:ok, %{state | config: runtime}}
+    end
+  end
+
+  defp open_browser(url) do
+    executable =
+      case :os.type() do
+        {:unix, :darwin} -> System.find_executable("open")
+        _ -> System.find_executable("xdg-open")
+      end
+
+    if executable do
+      Task.start(fn -> System.cmd(executable, [url], stderr_to_stdout: true) end)
+      :ok
+    else
+      {:error, :browser_launcher_unavailable}
+    end
   end
 
   defp notify_context_stats(state) do

@@ -17,6 +17,7 @@ defmodule BeamAgent.ModelEndpoint do
     :model,
     :transport,
     :credential,
+    :auth,
     :claims,
     :measurements,
     :health
@@ -43,6 +44,7 @@ defmodule BeamAgent.ModelEndpoint do
          model: value(spec, :model) || Map.get(configuration, :default_model),
          transport: transport(spec, configuration),
          credential: credential(spec, configuration),
+         auth: value(spec, :auth),
          claims: claims(configuration, value(spec, :claims)),
          measurements: value(spec, :measurements) || %{},
          health: value(spec, :health) || initial_health()
@@ -57,6 +59,8 @@ defmodule BeamAgent.ModelEndpoint do
       model: endpoint.model,
       base_url: endpoint.transport.base_url,
       api_key_env: credential_environment(endpoint.credential),
+      credential_ref: credential_reference(endpoint.credential),
+      auth: endpoint.auth,
       profile: endpoint.id
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -67,8 +71,16 @@ defmodule BeamAgent.ModelEndpoint do
   end
 
   def same_configuration?(%__MODULE__{} = left, %__MODULE__{} = right) do
-    Map.take(left, [:provider, :provider_module, :model, :transport, :credential, :claims]) ==
-      Map.take(right, [:provider, :provider_module, :model, :transport, :credential, :claims])
+    Map.take(left, [:provider, :provider_module, :model, :transport, :credential, :auth, :claims]) ==
+      Map.take(right, [
+        :provider,
+        :provider_module,
+        :model,
+        :transport,
+        :credential,
+        :auth,
+        :claims
+      ])
   end
 
   defp provider_module(provider, module)
@@ -115,14 +127,22 @@ defmodule BeamAgent.ModelEndpoint do
   end
 
   defp credential(spec, configuration) do
-    case value(spec, :api_key_env) || Map.get(configuration, :default_api_key_env) do
-      name when is_binary(name) and name != "" -> %{type: :environment, name: name}
-      _missing -> %{type: :none}
+    case value(spec, :credential_ref) do
+      reference when is_binary(reference) and reference != "" ->
+        %{type: :stored, reference: reference}
+
+      _missing ->
+        case value(spec, :api_key_env) || Map.get(configuration, :default_api_key_env) do
+          name when is_binary(name) and name != "" -> %{type: :environment, name: name}
+          _missing -> %{type: :none}
+        end
     end
   end
 
   defp credential_environment(%{type: :environment, name: name}), do: name
   defp credential_environment(_credential), do: nil
+  defp credential_reference(%{type: :stored, reference: reference}), do: reference
+  defp credential_reference(_credential), do: nil
 
   defp initial_health do
     %{status: :unknown, checked_at: nil}

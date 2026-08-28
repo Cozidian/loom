@@ -303,6 +303,10 @@ event, and affects future risky calls and child sessions without weakening the
 workspace or command sandbox boundaries.
 The CLI does not execute approvals inside the model-call task; it owns the human
 mailbox, answers `ToolPolicy`, and continues awaiting the supervised turn.
+Approval waits have no wall-clock deadline. A disconnected interface releases
+its subscription, not the pending decision; a replacement interface receives
+the same approval ID, while explicit turn cancellation or caller death removes
+the request.
 
 File edits use observed-state concurrency rather than blind overwrite:
 `read_file` returns a SHA-256 version and `edit_file` must present it while also
@@ -371,7 +375,7 @@ turn task, cancellation, approvals, and session rebinding. The thin
 to terminal payloads. Go retains stdin and
 stdout for terminal presentation while Erlang's port driver reserves file
 descriptors 3 and 4 for the private protocol; the view explicitly leaves mouse
-reporting disabled.
+reporting limited to cell motion so wheel events scroll only the transcript.
 
 The bridge subscribes to the goal-wide runtime event projection used by future
 views; it does not interpret provider protocols or own conversation state. It
@@ -429,13 +433,27 @@ inherit that resolved profile rather than consulting mutable global config.
 | CLI provider | API protocol | Authentication |
 | --- | --- | --- |
 | `ollama` | Native [`/api/chat`](https://docs.ollama.com/api/chat) tool calling | None by default |
-| `openai` | [OpenAI Chat Completions](https://developers.openai.com/api/reference/cli/resources/chat/subresources/completions) function tools | Bearer token from `OPENAI_API_KEY` |
-| `anthropic` | Native [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) content blocks and tool results | `x-api-key` from `ANTHROPIC_API_KEY` |
-| `xai` / `grok` | [xAI Chat Completions](https://docs.x.ai/developers/rest-api-reference/inference/chat) function tools | Bearer token from `XAI_API_KEY` |
+| `openai` | OpenAI Chat Completions for API keys, or the official Codex App Server dynamic-tool protocol for ChatGPT plans | ChatGPT browser login, OS-keyring API key, or `OPENAI_API_KEY` |
+| `anthropic` | Native [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) content blocks and tool results | Keyring credential or `ANTHROPIC_API_KEY` via `x-api-key` |
+| `xai` / `grok` | [xAI Chat Completions](https://docs.x.ai/developers/rest-api-reference/inference/chat) function tools | Bearer credential from the OS keyring or `XAI_API_KEY` |
 
 Ollama and Anthropic use native adapters because their tool-history formats are
-materially different. OpenAI and xAI share the Chat Completions wire adapter,
-but keep separate provider modules and defaults. This is the smallest common
-cross-provider seam today; a native OpenAI Responses adapter can be added behind
-the same behaviour without changing sessions, persistence, CLI orchestration, or
-tools.
+materially different. OpenAI API-key profiles and xAI share the Chat
+Completions wire adapter but keep separate provider modules and defaults.
+OpenAI ChatGPT-plan profiles launch the official Codex App Server as an
+OTP-owned temporary port process. App Server owns browser OAuth, persistence,
+refresh, and model access. Each invocation receives an isolated empty working
+directory, no Codex shell/web/apps/plugins/subagents, and only BeamAgent's
+authorized dynamic-tool schemas. A Codex tool request is returned to the normal
+BeamAgent tool loop, where capability, approval, sandbox, event, and durable
+conversation policy remain authoritative.
+
+API-key and generic device-flow credentials are resolved by the supervised
+`Auth.CredentialStore`. Configuration and model-endpoint descriptors carry only
+opaque keyring references or a secret-free ChatGPT transport marker. API keys
+and generic OAuth access/refresh tokens remain in macOS Keychain or Linux Secret
+Service; provider processes receive only the currently resolved credential.
+OpenAI ChatGPT credentials never enter BeamAgent and remain under Codex App
+Server's supported credential lifecycle. OAuth login processes are temporary
+and emit only secret-free lifecycle events. An environment variable remains a
+fallback when no stored credential is selected.

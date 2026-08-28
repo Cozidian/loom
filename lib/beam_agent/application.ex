@@ -7,6 +7,8 @@ defmodule BeamAgent.Application do
     children = [
       {Registry, keys: :unique, name: BeamAgent.Registry},
       BeamAgent.CapabilityCatalog,
+      BeamAgent.Auth.CredentialStore,
+      BeamAgent.Auth.SessionSupervisor,
       BeamAgent.ProjectRootSupervisor
     ]
 

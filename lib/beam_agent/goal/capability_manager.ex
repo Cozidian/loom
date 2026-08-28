@@ -366,6 +366,6 @@ defmodule BeamAgent.Goal.CapabilityManager do
 
   defp call(goal_id, message) do
     with {:ok, pid} <- Names.pid(:goal_capability_manager, goal_id),
-         do: GenServer.call(pid, message, 300_000)
+         do: GenServer.call(pid, message, :infinity)
   end
 end

@@ -25,7 +25,7 @@ func TestProtocolRoundTrip(t *testing.T) {
 	}
 }
 
-func TestViewOwnsAltScreenWithoutMouseTracking(t *testing.T) {
+func TestViewOwnsAltScreenWithTranscriptMouseTracking(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	m.resize(90, 28)
 	view := m.View()
@@ -33,11 +33,49 @@ func TestViewOwnsAltScreenWithoutMouseTracking(t *testing.T) {
 	if !view.AltScreen {
 		t.Fatal("expected alternate screen")
 	}
-	if view.MouseMode != tea.MouseModeNone {
-		t.Fatalf("mouse tracking must stay disabled, got %v", view.MouseMode)
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("expected wheel-capable mouse tracking, got %v", view.MouseMode)
 	}
 	if !bytes.Contains([]byte(view.Content), []byte("BEAM AGENT")) {
 		t.Fatal("expected product header")
+	}
+}
+
+func TestTranscriptScrollDoesNotStealComposerInput(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.resize(90, 12)
+	for i := 0; i < 30; i++ {
+		m.entries = append(m.entries, entry{Kind: "system", Content: "line"})
+	}
+	m.refreshTranscript(true)
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	scrolled := next.(model)
+	if scrolled.viewport.AtBottom() {
+		t.Fatal("expected Page Up to move the transcript viewport")
+	}
+
+	next, _ = scrolled.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	typed := next.(model)
+	if typed.composer.Value() != "j" {
+		t.Fatalf("expected normal typing to remain in the composer, got %q", typed.composer.Value())
+	}
+}
+
+func TestTranscriptKeepsScrollPositionWhileNewEventsArrive(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.resize(90, 12)
+	for i := 0; i < 30; i++ {
+		m.entries = append(m.entries, entry{Kind: "system", Content: "line"})
+	}
+	m.refreshTranscript(true)
+	m.viewport.PageUp()
+	offset := m.viewport.YOffset()
+
+	m.entries = append(m.entries, entry{Kind: "system", Content: "new line"})
+	m.refreshTranscript(true)
+	if m.viewport.YOffset() != offset {
+		t.Fatalf("expected transcript offset %d to be preserved, got %d", offset, m.viewport.YOffset())
 	}
 }
 
@@ -115,6 +153,59 @@ func TestModelsSlashCommandForwardsHealthRefresh(t *testing.T) {
 	}
 	if action.Command != "models" || action.Query != "refresh" {
 		t.Fatalf("unexpected models action: %#v", action)
+	}
+}
+
+func TestProviderPickerSelectsAProfileThroughTheRuntime(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+	m.applyBackend(packet{
+		Type: "provider_picker",
+		Providers: []providerOption{
+			{Profile: "grok", Provider: "xai", Model: "grok", Auth: "API key", Status: "ready", Connected: true, Active: true},
+			{Profile: "openai-chatgpt", Provider: "openai", Model: "gpt-5.4", Auth: "ChatGPT subscription", Status: "ChatGPT available"},
+		},
+	})
+
+	if !m.providerPicker || !bytes.Contains([]byte(m.View().Content), []byte("Connect a provider")) {
+		t.Fatalf("expected provider picker modal, got %#v", m)
+	}
+
+	next, _ := m.updateProviderPicker("down")
+	selected := next.(model)
+	next, cmd := selected.updateProviderPicker("enter")
+	if cmd == nil {
+		t.Fatal("expected provider selection bridge command")
+	}
+	cmd()
+
+	updated := next.(model)
+	if updated.providerPicker {
+		t.Fatal("provider picker should close after selection")
+	}
+
+	reader := newProtocol(&wire, &bytes.Buffer{})
+	action, err := reader.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Command != "connect" || action.Query != "profile:openai-chatgpt" {
+		t.Fatalf("unexpected provider action: %#v", action)
+	}
+}
+
+func TestSessionChangeRefreshesTheVisibleProvider(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type:      "session_changed",
+		SessionID: "session-new",
+		Provider:  "openai",
+		Profile:   "openai-chatgpt",
+		Model:     "gpt-5.4",
+	})
+
+	if m.provider != "openai" || m.profile != "openai-chatgpt" || m.llmModel != "gpt-5.4" {
+		t.Fatalf("provider header was not refreshed: %#v", m)
 	}
 }
 

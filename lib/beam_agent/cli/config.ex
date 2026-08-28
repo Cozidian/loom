@@ -3,8 +3,8 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 8
-  @profile_keys ["provider", "model", "base_url", "api_key_env"]
+  @version 9
+  @profile_keys ["provider", "model", "base_url", "api_key_env", "credential_ref", "auth"]
   @global_keys [
     "approval_policy",
     "model_strategy",
@@ -27,7 +27,9 @@ defmodule BeamAgent.CLI.Config do
           "provider" => "demo",
           "model" => nil,
           "base_url" => nil,
-          "api_key_env" => nil
+          "api_key_env" => nil,
+          "credential_ref" => nil,
+          "auth" => nil
         }
       },
       "approval_policy" => "ask",
@@ -125,6 +127,40 @@ defmodule BeamAgent.CLI.Config do
     end
   end
 
+  def put_profile_auth(config, name, credential_ref, auth) do
+    with :ok <- validate_profile_name(name),
+         {:ok, profile} <- fetch_profile(config, name),
+         :ok <- validate_credential_ref(credential_ref),
+         :ok <- validate_auth(auth) do
+      profile =
+        profile
+        |> Map.put("credential_ref", credential_ref)
+        |> Map.put("auth", auth)
+
+      {:ok, put_in(config, ["profiles", name], profile)}
+    end
+  end
+
+  def clear_profile_credential(config, name) do
+    with :ok <- validate_profile_name(name),
+         {:ok, profile} <- fetch_profile(config, name) do
+      profile = Map.put(profile, "credential_ref", nil)
+      {:ok, put_in(config, ["profiles", name], profile)}
+    end
+  end
+
+  def clear_profile_auth(config, name) do
+    with :ok <- validate_profile_name(name),
+         {:ok, profile} <- fetch_profile(config, name) do
+      profile =
+        profile
+        |> Map.put("credential_ref", nil)
+        |> Map.put("auth", nil)
+
+      {:ok, put_in(config, ["profiles", name], profile)}
+    end
+  end
+
   def profiles(config), do: config["profiles"] |> Enum.sort_by(fn {name, _profile} -> name end)
 
   def model_endpoints(config, runtime \\ nil) do
@@ -196,6 +232,8 @@ defmodule BeamAgent.CLI.Config do
       model: config["model"],
       base_url: config["base_url"],
       api_key_env: config["api_key_env"],
+      credential_ref: config["credential_ref"],
+      auth: config["auth"],
       profile: config["profile"]
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
@@ -206,7 +244,9 @@ defmodule BeamAgent.CLI.Config do
       "provider" => provider_name,
       "model" => model,
       "base_url" => base_url,
-      "api_key_env" => api_key_env
+      "api_key_env" => api_key_env,
+      "credential_ref" => nil,
+      "auth" => nil
     }
 
     with :ok <- validate_profile(profile), do: {:ok, profile}
@@ -273,7 +313,19 @@ defmodule BeamAgent.CLI.Config do
   end
 
   defp migrate(%{"version" => 7} = config) do
-    {:ok, config |> Map.put("version", @version) |> Map.put_new("model_strategy", "auto")}
+    config |> Map.put("version", 8) |> Map.put_new("model_strategy", "auto") |> migrate()
+  end
+
+  defp migrate(%{"version" => 8} = config) do
+    profiles =
+      Map.new(config["profiles"] || %{}, fn {name, profile} ->
+        {name,
+         profile
+         |> Map.put_new("credential_ref", nil)
+         |> Map.put_new("auth", nil)}
+      end)
+
+    {:ok, config |> Map.put("version", @version) |> Map.put("profiles", profiles)}
   end
 
   defp migrate(config), do: {:ok, config}
@@ -299,12 +351,9 @@ defmodule BeamAgent.CLI.Config do
     with {:ok, provider} <- Providers.fetch(profile["provider"]),
          :ok <- require_when(provider[:model_required], profile["model"], "model"),
          :ok <- require_when(provider[:default_base_url] != nil, profile["base_url"], "base_url"),
-         :ok <-
-           require_when(
-             provider[:default_api_key_env] != nil,
-             profile["api_key_env"],
-             "api_key_env"
-           ),
+         :ok <- require_credential_when(provider[:default_api_key_env] != nil, profile),
+         :ok <- validate_credential_ref(profile["credential_ref"]),
+         :ok <- validate_auth(profile["auth"]),
          :ok <- validate_url(profile["base_url"]) do
       :ok
     end
@@ -375,6 +424,53 @@ defmodule BeamAgent.CLI.Config do
 
   defp require_when(_required, _value, _name), do: :ok
 
+  defp require_credential_when(false, _profile), do: :ok
+
+  defp require_credential_when(true, profile) do
+    if present?(profile["api_key_env"]) or present?(profile["credential_ref"]),
+      do: :ok,
+      else: {:error, {:invalid_config_value, "credential"}}
+  end
+
+  defp validate_credential_ref(nil), do: :ok
+
+  defp validate_credential_ref(reference) when is_binary(reference) do
+    if Regex.match?(~r/\Akeychain:\/\/beam-agent\/[a-zA-Z0-9._-]{1,64}\z/, reference),
+      do: :ok,
+      else: {:error, {:invalid_config_value, "credential_ref"}}
+  end
+
+  defp validate_credential_ref(_reference),
+    do: {:error, {:invalid_config_value, "credential_ref"}}
+
+  defp validate_auth(nil), do: :ok
+  defp validate_auth(%{"type" => "api_key"}), do: :ok
+  defp validate_auth(%{"type" => "chatgpt", "transport" => "codex_app_server"}), do: :ok
+
+  defp validate_auth(%{"type" => "device_code"} = auth) do
+    with :ok <- require_when(true, auth["device_endpoint"], "auth.device_endpoint"),
+         :ok <- require_when(true, auth["token_endpoint"], "auth.token_endpoint"),
+         :ok <- validate_auth_url(auth["device_endpoint"], "auth.device_endpoint"),
+         :ok <- validate_auth_url(auth["token_endpoint"], "auth.token_endpoint"),
+         :ok <- require_when(true, auth["client_id"], "auth.client_id") do
+      :ok
+    end
+  end
+
+  defp validate_auth(_auth), do: {:error, {:invalid_config_value, "auth"}}
+
+  defp present?(value), do: is_binary(value) and value != ""
+
+  defp validate_auth_url(url, name) when is_binary(url) do
+    case URI.parse(url) do
+      %URI{scheme: "https", host: host} when is_binary(host) -> :ok
+      %URI{scheme: "http", host: host} when host in ["127.0.0.1", "localhost", "::1"] -> :ok
+      _ -> {:error, {:invalid_config_value, name}}
+    end
+  end
+
+  defp validate_auth_url(_url, name), do: {:error, {:invalid_config_value, name}}
+
   defp validate_url(nil), do: :ok
 
   defp validate_url(url) when is_binary(url) do
@@ -429,6 +525,8 @@ defmodule BeamAgent.CLI.Config do
       model: profile["model"],
       base_url: profile["base_url"],
       api_key_env: profile["api_key_env"],
+      credential_ref: profile["credential_ref"],
+      auth: profile["auth"],
       claims: profile["claims"]
     }
   end

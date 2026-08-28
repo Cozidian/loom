@@ -16,13 +16,43 @@ defmodule BeamAgent.Providers.Support do
         {:ok, options[:api_key]}
 
       true ->
-        env = Keyword.get(options, :api_key_env, default_env)
+        with {:error, :credential_not_found} <- stored_credential(options) do
+          env = Keyword.get(options, :api_key_env, default_env)
 
-        case System.get_env(env) do
-          value when is_binary(value) and value != "" -> {:ok, value}
-          _ -> {:error, {:missing_api_key, env}}
+          case System.get_env(env) do
+            value when is_binary(value) and value != "" -> {:ok, value}
+            _ -> {:error, {:missing_api_key, env}}
+          end
         end
     end
+  end
+
+  defp stored_credential(options) do
+    explicit? = is_binary(options[:credential_ref])
+
+    reference =
+      options[:credential_ref] ||
+        with profile when is_binary(profile) <- options[:profile],
+             {:ok, reference} <- BeamAgent.Auth.default_reference(profile) do
+          reference
+        else
+          _ -> nil
+        end
+
+    case reference do
+      reference when is_binary(reference) ->
+        case BeamAgent.Auth.resolve(reference) do
+          {:ok, secret} -> {:ok, secret}
+          {:error, :credential_not_found} -> {:error, :credential_not_found}
+          {:error, reason} when explicit? -> {:error, {:stored_credential_unavailable, reason}}
+          {:error, _reason} -> {:error, :credential_not_found}
+        end
+
+      _ ->
+        {:error, :credential_not_found}
+    end
+  catch
+    :exit, _reason -> {:error, :credential_not_found}
   end
 
   def endpoint(base_url, path), do: String.trim_trailing(base_url, "/") <> path

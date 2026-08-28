@@ -163,7 +163,13 @@ defmodule BeamAgent.CLITest do
 
     assert status == 0
     assert output =~ "Started a new session"
-    assert length(File.ls!(context.data_dir)) == 2
+
+    sessions =
+      context.data_dir
+      |> File.ls!()
+      |> Enum.filter(&File.regular?(Path.join([context.data_dir, &1, "events.jsonl"])))
+
+    assert length(sessions) == 2
   end
 
   test "command-specific help is available without configuration", context do
@@ -345,7 +351,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 8
+    assert migrated["version"] == 9
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "echo"
@@ -372,7 +378,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 8
+    assert migrated["version"] == 9
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "ollama"
@@ -404,7 +410,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 8
+    assert migrated["version"] == 9
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["context_window_tokens"] == 32_000
@@ -435,7 +441,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 8
+    assert migrated["version"] == 9
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
   end
@@ -463,7 +469,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 8
+    assert migrated["version"] == 9
     refute Map.has_key?(migrated, "timeout_ms")
   end
 

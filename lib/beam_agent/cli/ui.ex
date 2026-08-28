@@ -71,6 +71,13 @@ defmodule BeamAgent.CLI.UI do
 
   def prompt, do: IO.gets(format([:bright, @accent, "› ", :reset]))
 
+  def secret(label) do
+    case :io.get_password(String.to_charlist(label <> ": ")) do
+      password when is_list(password) -> password |> List.to_string() |> String.trim()
+      _ -> nil
+    end
+  end
+
   def assistant(content) do
     blank()
     line([:bright, @success, "◆", :reset, :bright, " assistant"])
@@ -151,6 +158,7 @@ defmodule BeamAgent.CLI.UI do
     command("/sessions", "list durable sessions")
     command("/status", "show provider, model, session, and event log")
     command("/models", "list registered model endpoints; add refresh to check health")
+    command("/connect [chatgpt]", "inspect, start, or switch provider authentication")
     command("/auto", "toggle automatic approval of risky tools")
     command("/compact", "summarize older completed turns now")
     command("/verify", "run the project's deterministic verification plan")

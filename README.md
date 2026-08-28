@@ -54,8 +54,8 @@ later with `./beam_agent init`.
 
 Configuration is stored at `~/.config/beam_agent/config.json` by default with
 mode `0600`; set `BEAM_AGENT_CONFIG` or pass `--config PATH` to use another
-location. It can contain multiple named provider profiles, but only
-environment-variable names—never credential values.
+location. It can contain multiple named provider profiles, but only credential
+references and authentication-method metadata—never credential values.
 
 For automated setup with the deterministic echo provider:
 
@@ -330,6 +330,63 @@ export ANTHROPIC_API_KEY="..."
 export XAI_API_KEY="..."
 ./beam_agent provider add grok --model YOUR_MODEL --activate --non-interactive
 ```
+
+OpenAI profiles can instead use a ChatGPT subscription through browser login.
+This path requires the official `codex` executable with `codex app-server`
+available on `PATH`; Codex owns the OAuth ceremony, durable credential, and
+automatic refresh. BeamAgent keeps ownership of the agent loop and exposes only
+its current dynamic tool schemas to the model process:
+
+```sh
+./beam_agent provider add openai-chatgpt \
+  --provider openai \
+  --model YOUR_CHATGPT_MODEL \
+  --non-interactive
+./beam_agent auth login openai-chatgpt --chatgpt
+./beam_agent provider use openai-chatgpt
+./beam_agent doctor
+./beam_agent
+```
+
+The login command opens OpenAI in the browser and waits for completion; use
+`--no-browser` to print the URL instead. In the TUI, `/connect` opens the
+configured-provider picker. Selecting an unconnected OpenAI profile links an
+existing Codex ChatGPT session when one is available, otherwise it starts the
+same browser flow. The selected profile is persisted as active and a correctly
+configured session replaces the old one. Explicit API-key profiles keep using
+the ordinary OpenAI API transport. `auth logout PROFILE` disconnects the
+BeamAgent profile without signing other Codex clients out of their shared
+ChatGPT session.
+
+Credentials can instead be brokered through the operating-system keyring. The
+configuration stores only an opaque `keychain://beam-agent/PROFILE` reference;
+the secret is never written to the configuration or event log:
+
+```sh
+./beam_agent auth login grok --api-key
+./beam_agent auth list
+./beam_agent auth logout grok
+```
+
+Providers that explicitly support an OAuth 2.0 device-authorization client can
+also use browser-and-code login. Supply the endpoints and public client ID from
+that provider's approved application registration:
+
+```sh
+./beam_agent auth login PROFILE \
+  --device-endpoint https://provider.example/oauth/device/code \
+  --token-endpoint https://provider.example/oauth/token \
+  --client-id PUBLIC_CLIENT_ID \
+  --scope "REQUESTED_SCOPES"
+```
+
+The CLI opens the verification page and waits until the provider completes or
+expires the device code. Access and refresh tokens remain in the OS keyring;
+expired access tokens refresh inside the credential broker. Use `--no-browser`
+to open the displayed URL manually. The TUI exposes the saved device flow as
+`/connect`. Outside the supported OpenAI/Codex integration, BeamAgent does not
+imitate a provider's consumer login or embed unregistered client
+credentials—device login must be supported and authorized by the provider.
 
 Omit `--model` and `--non-interactive` for a short guided Grok setup. The CLI
 will ask for the model and offer the correct xAI endpoint and `XAI_API_KEY`

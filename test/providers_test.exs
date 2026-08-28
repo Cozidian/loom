@@ -45,6 +45,91 @@ defmodule BeamAgent.ProvidersTest do
     end
   end
 
+  defmodule CodexClientStub do
+    def start_link(opts) do
+      Agent.start_link(fn ->
+        %{
+          mode: Keyword.get(opts, :mode, :tool),
+          owner: Keyword.fetch!(opts, :owner),
+          test_pid: Keyword.fetch!(opts, :test_pid)
+        }
+      end)
+    end
+
+    def request(_client, "initialize", _params), do: {:ok, %{}}
+
+    def request(_client, "account/read", _params) do
+      {:ok, %{"account" => %{"type" => "chatgpt", "planType" => "plus"}}}
+    end
+
+    def request(client, "thread/start", params) do
+      state = Agent.get(client, & &1)
+      send(state.test_pid, {:codex_thread_started, params})
+      {:ok, %{"thread" => %{"id" => "thread-test"}}}
+    end
+
+    def request(client, "turn/start", params) do
+      state = Agent.get(client, & &1)
+      send(state.test_pid, {:codex_turn_started, params})
+
+      case state.mode do
+        :tool ->
+          send(
+            state.owner,
+            {:codex_app_server, client,
+             {:request,
+              %{
+                "id" => 41,
+                "method" => "item/tool/call",
+                "params" => %{
+                  "callId" => "codex-call",
+                  "tool" => "add",
+                  "arguments" => %{"a" => 2, "b" => 3}
+                }
+              }}}
+          )
+
+        :text ->
+          send(
+            state.owner,
+            {:codex_app_server, client,
+             {:notification,
+              %{
+                "method" => "item/completed",
+                "params" => %{"item" => %{"type" => "agentMessage", "text" => "hello"}}
+              }}}
+          )
+
+          complete_turn(client, state.owner)
+      end
+
+      {:ok, %{"turn" => %{"id" => "turn-test"}}}
+    end
+
+    def notify(_client, "initialized", %{}), do: :ok
+
+    def respond(client, 41, result) do
+      state = Agent.get(client, & &1)
+      send(state.test_pid, {:codex_tool_response, result})
+      complete_turn(client, state.owner)
+      :ok
+    end
+
+    def stop(client), do: Agent.stop(client)
+
+    defp complete_turn(client, owner) do
+      send(
+        owner,
+        {:codex_app_server, client,
+         {:notification,
+          %{
+            "method" => "turn/completed",
+            "params" => %{"turn" => %{"status" => "completed"}}
+          }}}
+      )
+    end
+  end
+
   @tools [
     %{
       name: "add",
@@ -115,6 +200,37 @@ defmodule BeamAgent.ProvidersTest do
            }
 
     assert get_in(hd(body["tools"]), ["function", "name"]) == "add"
+  end
+
+  test "OpenAI ChatGPT-plan transport exposes only BeamAgent tools and returns host calls" do
+    assert {:ok, %{content: nil, tool_calls: [call]}} =
+             OpenAI.complete([%{role: :user, content: "calculate"}], @tools,
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :tool]
+             )
+
+    assert call == %{id: "codex-call", name: "add", arguments: %{"a" => 2, "b" => 3}}
+
+    assert_receive {:codex_thread_started, thread}
+    assert thread["approvalPolicy"] == "never"
+    assert thread["sandbox"] == "read-only"
+    assert Enum.map(thread["dynamicTools"], & &1["name"]) == ["add"]
+
+    assert_receive {:codex_tool_response, response}
+    assert response["success"] == true
+    assert_receive {:codex_turn_started, %{"sandboxPolicy" => %{"type" => "readOnly"}}}
+  end
+
+  test "OpenAI ChatGPT-plan transport returns final text without HTTP credentials" do
+    assert {:ok, %{content: "hello", tool_calls: []}} =
+             OpenAI.complete([%{role: :user, content: "say hello"}], [],
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :text]
+             )
   end
 
   test "xAI uses the compatible tool protocol with its own defaults" do

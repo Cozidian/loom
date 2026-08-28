@@ -42,32 +42,33 @@ var (
 )
 
 type packet struct {
-	Type         string         `json:"type"`
-	SessionID    string         `json:"session_id,omitempty"`
-	ProjectID    string         `json:"project_id,omitempty"`
-	GoalID       string         `json:"goal_id,omitempty"`
-	Cursor       int64          `json:"cursor,omitempty"`
-	Workspace    string         `json:"workspace,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	Profile      string         `json:"profile,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Prompt       string         `json:"prompt,omitempty"`
-	Command      string         `json:"command,omitempty"`
-	Query        string         `json:"query,omitempty"`
-	ApprovalID   string         `json:"approval_id,omitempty"`
-	ApprovalMode string         `json:"approval_mode,omitempty"`
-	Decision     string         `json:"decision,omitempty"`
-	OK           bool           `json:"ok,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Tone         string         `json:"tone,omitempty"`
-	Message      string         `json:"message,omitempty"`
-	Title        string         `json:"title,omitempty"`
-	Lines        []string       `json:"lines,omitempty"`
-	Entries      []entry        `json:"entries,omitempty"`
-	ContextStats map[string]any `json:"context_stats,omitempty"`
-	Stats        map[string]any `json:"stats,omitempty"`
-	Event        map[string]any `json:"event,omitempty"`
-	Approval     map[string]any `json:"approval,omitempty"`
+	Type         string           `json:"type"`
+	SessionID    string           `json:"session_id,omitempty"`
+	ProjectID    string           `json:"project_id,omitempty"`
+	GoalID       string           `json:"goal_id,omitempty"`
+	Cursor       int64            `json:"cursor,omitempty"`
+	Workspace    string           `json:"workspace,omitempty"`
+	Provider     string           `json:"provider,omitempty"`
+	Profile      string           `json:"profile,omitempty"`
+	Model        string           `json:"model,omitempty"`
+	Prompt       string           `json:"prompt,omitempty"`
+	Command      string           `json:"command,omitempty"`
+	Query        string           `json:"query,omitempty"`
+	ApprovalID   string           `json:"approval_id,omitempty"`
+	ApprovalMode string           `json:"approval_mode,omitempty"`
+	Decision     string           `json:"decision,omitempty"`
+	OK           bool             `json:"ok,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	Tone         string           `json:"tone,omitempty"`
+	Message      string           `json:"message,omitempty"`
+	Title        string           `json:"title,omitempty"`
+	Lines        []string         `json:"lines,omitempty"`
+	Entries      []entry          `json:"entries,omitempty"`
+	ContextStats map[string]any   `json:"context_stats,omitempty"`
+	Stats        map[string]any   `json:"stats,omitempty"`
+	Event        map[string]any   `json:"event,omitempty"`
+	Approval     map[string]any   `json:"approval,omitempty"`
+	Providers    []providerOption `json:"providers,omitempty"`
 }
 
 type entry struct {
@@ -153,7 +154,18 @@ type commandItem struct {
 	Hint  string
 }
 
+type providerOption struct {
+	Profile   string `json:"profile"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Auth      string `json:"auth"`
+	Status    string `json:"status"`
+	Connected bool   `json:"connected"`
+	Active    bool   `json:"active"`
+}
+
 var commands = []commandItem{
+	{ID: "connect", Label: "Connect provider", Hint: "/connect [chatgpt]"},
 	{ID: "auto", Label: "Toggle auto approval", Hint: "/auto"},
 	{ID: "status", Label: "Session status", Hint: "/status"},
 	{ID: "new", Label: "New session", Hint: "/new"},
@@ -176,31 +188,34 @@ var commands = []commandItem{
 }
 
 type model struct {
-	protocol      *protocol
-	composer      textarea.Model
-	viewport      viewport.Model
-	width         int
-	height        int
-	workspace     string
-	sessionID     string
-	projectID     string
-	goalID        string
-	cursor        int64
-	provider      string
-	profile       string
-	llmModel      string
-	status        string
-	entries       []entry
-	contextStats  map[string]any
-	notice        string
-	noticeTone    string
-	panelTitle    string
-	panelLines    []string
-	palette       bool
-	paletteIndex  int
-	approval      *approval
-	approvalMode  string
-	toolsExpanded bool
+	protocol       *protocol
+	composer       textarea.Model
+	viewport       viewport.Model
+	width          int
+	height         int
+	workspace      string
+	sessionID      string
+	projectID      string
+	goalID         string
+	cursor         int64
+	provider       string
+	profile        string
+	llmModel       string
+	status         string
+	entries        []entry
+	contextStats   map[string]any
+	notice         string
+	noticeTone     string
+	panelTitle     string
+	panelLines     []string
+	palette        bool
+	paletteIndex   int
+	providerPicker bool
+	providerIndex  int
+	providers      []providerOption
+	approval       *approval
+	approvalMode   string
+	toolsExpanded  bool
 }
 
 func newModel(initial packet, bridge *protocol) model {
@@ -216,7 +231,7 @@ func newModel(initial packet, bridge *protocol) model {
 
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(16))
 	vp.SoftWrap = true
-	vp.MouseWheelEnabled = false
+	vp.MouseWheelEnabled = true
 
 	m := model{
 		protocol:     bridge,
@@ -270,6 +285,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.approval != nil {
 			return m.updateApproval(key)
 		}
+		if m.providerPicker {
+			return m.updateProviderPicker(key)
+		}
 		if m.palette {
 			return m.updatePalette(key)
 		}
@@ -312,6 +330,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.submit()
 		}
+
+	case tea.MouseWheelMsg:
+		m.viewport, _ = m.viewport.Update(msg)
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -327,6 +349,8 @@ func (m model) View() tea.View {
 		body = m.renderPalette()
 	} else if m.approval != nil {
 		body = m.renderApproval()
+	} else if m.providerPicker {
+		body = m.renderProviderPicker()
 	} else if m.panelTitle != "" {
 		body = m.renderPanel()
 	}
@@ -344,7 +368,7 @@ func (m model) View() tea.View {
 		Width(max(10, m.width-2)).
 		Render(mutedStyle.Render(label) + "\n" + m.composer.View())
 
-	footerLeft := "^P commands   ^O newline   ^T tool details"
+	footerLeft := "^P commands   wheel/PgUp/PgDn scroll   ^T tool details"
 	footerRight := "^C exit"
 	if m.status == "working" {
 		footerRight = "^C cancel"
@@ -356,7 +380,7 @@ func (m model) View() tea.View {
 	content := lipgloss.JoinVertical(lipgloss.Left, header, body, composer, footer)
 	view := tea.NewView(content)
 	view.AltScreen = true
-	view.MouseMode = tea.MouseModeNone
+	view.MouseMode = tea.MouseModeCellMotion
 	view.WindowTitle = "BeamAgent · " + m.workspace
 	return view
 }
@@ -546,14 +570,39 @@ func (m *model) applyBackend(message packet) {
 	case "panel":
 		m.panelTitle, m.panelLines = message.Title, message.Lines
 		m.notice = ""
+	case "provider_picker":
+		m.providers = message.Providers
+		m.providerIndex = 0
+		for i, provider := range m.providers {
+			if provider.Active {
+				m.providerIndex = i
+				break
+			}
+		}
+		m.providerPicker = len(m.providers) > 0
+		m.palette = false
+		m.panelTitle = ""
+		m.panelLines = nil
+		m.notice = ""
 	case "session_changed":
 		m.sessionID = message.SessionID
 		m.goalID = message.SessionID
+		if message.Provider != "" {
+			m.provider = message.Provider
+		}
+		if message.Profile != "" {
+			m.profile = message.Profile
+		}
+		if message.Model != "" {
+			m.llmModel = message.Model
+		}
 		m.cursor = 0
 		m.entries = []entry{{Kind: "system", Content: "Started " + shortSession(message.SessionID)}}
 		m.status = "ready"
 		m.panelTitle = ""
 		m.panelLines = nil
+		m.providerPicker = false
+		m.providers = nil
 	case "context_stats":
 		m.contextStats = message.Stats
 	}
@@ -791,6 +840,8 @@ func (m model) recentAssistantMatches(content string) bool {
 }
 
 func (m *model) refreshTranscript(bottom bool) {
+	wasAtBottom := m.viewport.AtBottom()
+	previousOffset := m.viewport.YOffset()
 	var b strings.Builder
 	for _, item := range m.entries {
 		switch item.Kind {
@@ -833,8 +884,10 @@ func (m *model) refreshTranscript(bottom bool) {
 		fmt.Fprintf(&b, "\n%s\n", style.Render("· "+m.notice))
 	}
 	m.viewport.SetContent(strings.TrimLeft(b.String(), "\n"))
-	if bottom {
+	if bottom && wasAtBottom {
 		m.viewport.GotoBottom()
+	} else {
+		m.viewport.SetYOffset(previousOffset)
 	}
 }
 
@@ -872,6 +925,57 @@ func (m model) renderPalette() string {
 		rows = append(rows, style.Width(min(72, m.viewport.Width()-6)).Render(joinEdges(prefix+item.Label, item.Hint, min(72, m.viewport.Width()-6))))
 	}
 	return m.modal("Command palette", strings.Join(rows, "\n"), cyan)
+}
+
+func (m model) renderProviderPicker() string {
+	rows := make([]string, 0, len(m.providers)+2)
+	width := min(96, m.viewport.Width()-6)
+	for i, provider := range m.providers {
+		marker := "  "
+		if provider.Connected {
+			marker = "✓ "
+		}
+		if provider.Active {
+			marker += "● "
+		} else {
+			marker += "  "
+		}
+		left := marker + provider.Profile + "  " + provider.Provider + "/" + provider.Model
+		right := provider.Auth + "  " + provider.Status
+		style := bodyStyle
+		if i == m.providerIndex {
+			style = lipgloss.NewStyle().Bold(true).Foreground(panel).Background(cyan)
+		}
+		rows = append(rows, style.Width(width).Render(joinEdges(left, right, width)))
+	}
+	rows = append(rows, "", mutedStyle.Render("↑/↓ choose · enter connect · esc close"))
+	return m.modal("Connect a provider", strings.Join(rows, "\n"), cyan)
+}
+
+func (m model) updateProviderPicker(key string) (tea.Model, tea.Cmd) {
+	if len(m.providers) == 0 {
+		m.providerPicker = false
+		return m, nil
+	}
+	switch key {
+	case "esc":
+		m.providerPicker = false
+		return m, nil
+	case "up", "k":
+		m.providerIndex = (m.providerIndex - 1 + len(m.providers)) % len(m.providers)
+		return m, nil
+	case "down", "j":
+		m.providerIndex = (m.providerIndex + 1) % len(m.providers)
+		return m, nil
+	case "enter":
+		provider := m.providers[m.providerIndex]
+		m.providerPicker = false
+		m.notice = "Connecting " + provider.Profile + "…"
+		m.noticeTone = "muted"
+		m.refreshTranscript(true)
+		return m, m.send(packet{Type: "command", Command: "connect", Query: "profile:" + provider.Profile})
+	}
+	return m, nil
 }
 
 func (m model) renderApproval() string {

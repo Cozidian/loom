@@ -1,5 +1,5 @@
 defmodule BeamAgent.Session.ToolPolicy do
-  @moduledoc "Session-owned auto/ask/deny policy and pending approval lifecycle."
+  @moduledoc "Session-owned auto/ask/deny policy and cancellation-driven approval lifecycle."
   use GenServer
 
   alias BeamAgent.Names
@@ -12,7 +12,7 @@ defmodule BeamAgent.Session.ToolPolicy do
     GenServer.start_link(__MODULE__, opts, name: Names.via(:tool_policy, id))
   end
 
-  def authorize(session_id, tool, arguments, access, resource \\ %{}, timeout \\ 300_000) do
+  def authorize(session_id, tool, arguments, access, resource \\ %{}, timeout \\ :infinity) do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
       GenServer.call(pid, {:authorize, tool, arguments, access, resource}, timeout)
     end
@@ -92,7 +92,7 @@ defmodule BeamAgent.Session.ToolPolicy do
         record(state, :tool_denied, tool, arguments, %{"reason" => "policy"})
         {:reply, {:error, {:tool_denied, tool}}, state}
 
-      :ask when is_pid(state.handler) ->
+      :ask ->
         approval_id = approval_id()
 
         request = %{
@@ -109,7 +109,7 @@ defmodule BeamAgent.Session.ToolPolicy do
           "access" => to_string(access)
         })
 
-        send(state.handler, {:beam_agent_approval, request})
+        if is_pid(state.handler), do: send(state.handler, {:beam_agent_approval, request})
         {caller, _tag} = from
 
         pending =
@@ -120,10 +120,6 @@ defmodule BeamAgent.Session.ToolPolicy do
           })
 
         {:noreply, %{state | pending: pending}}
-
-      :ask ->
-        record(state, :tool_denied, tool, arguments, %{"reason" => "approval_unavailable"})
-        {:reply, {:error, {:approval_unavailable, tool}}, state}
     end
   end
 
@@ -207,13 +203,7 @@ defmodule BeamAgent.Session.ToolPolicy do
   @impl true
   def handle_info({:DOWN, monitor, :process, handler, _reason}, state)
       when monitor == state.handler_monitor and handler == state.handler do
-    Enum.each(state.pending, fn {_id,
-                                 %{from: from, caller_monitor: caller_monitor, request: request}} ->
-      Process.demonitor(caller_monitor, [:flush])
-      GenServer.reply(from, {:error, {:approval_unavailable, request.tool}})
-    end)
-
-    {:noreply, %{state | handler: nil, handler_monitor: nil, pending: %{}}}
+    {:noreply, %{state | handler: nil, handler_monitor: nil}}
   end
 
   def handle_info({:DOWN, monitor, :process, _caller, _reason}, state) do

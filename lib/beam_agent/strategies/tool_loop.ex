@@ -535,7 +535,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
         provider_module: context.provider_module,
         model: context.provider_options[:model],
         base_url: context.provider_options[:base_url],
-        api_key_env: context.provider_options[:api_key_env]
+        api_key_env: context.provider_options[:api_key_env],
+        credential_ref: context.provider_options[:credential_ref],
+        auth: context.provider_options[:auth]
       })
 
     endpoint

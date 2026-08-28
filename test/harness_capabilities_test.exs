@@ -303,6 +303,86 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     send(replacement, :stop)
   end
 
+  test "an approval requested without an interface waits until one attaches", context do
+    {:ok, session_id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        approval_policy: :ask
+      )
+
+    authorization =
+      Task.async(fn ->
+        BeamAgent.Session.ToolPolicy.authorize(
+          session_id,
+          "create_file",
+          %{"path" => "patient.txt"},
+          :write
+        )
+      end)
+
+    assert Task.yield(authorization, 50) == nil
+    assert :ok = BeamAgent.set_approval_handler(session_id, self())
+    assert_receive {:beam_agent_approval, request}
+    assert :ok = BeamAgent.respond_approval(session_id, request.approval_id, :deny)
+    assert Task.await(authorization) == {:error, {:tool_denied, "create_file"}}
+  end
+
+  test "a pending approval survives interface loss and waits for reconnection", context do
+    owner = self()
+
+    first_handler =
+      spawn(fn ->
+        receive do
+          message ->
+            send(owner, {:first_handler, message})
+
+            receive do
+              :stop -> :ok
+            end
+        end
+      end)
+
+    {:ok, session_id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        approval_policy: :ask,
+        approval_handler: first_handler
+      )
+
+    authorization =
+      Task.async(fn ->
+        BeamAgent.Session.ToolPolicy.authorize(
+          session_id,
+          "create_file",
+          %{"path" => "patient.txt"},
+          :write
+        )
+      end)
+
+    assert_receive {:first_handler, {:beam_agent_approval, first_request}}
+    send(first_handler, :stop)
+    monitor = Process.monitor(first_handler)
+    assert_receive {:DOWN, ^monitor, :process, ^first_handler, _reason}
+    assert Task.yield(authorization, 50) == nil
+
+    replacement =
+      spawn(fn ->
+        receive do
+          message -> send(owner, {:replacement_handler, message})
+        end
+      end)
+
+    assert :ok = BeamAgent.set_approval_handler(session_id, replacement)
+    assert_receive {:replacement_handler, {:beam_agent_approval, repeated_request}}
+    assert repeated_request.approval_id == first_request.approval_id
+    assert :ok = BeamAgent.respond_approval(session_id, repeated_request.approval_id, :allow_once)
+    assert Task.await(authorization) == :ok
+  end
+
   test "auto mode releases pending approval and approves future risky tools", context do
     {:ok, session_id} =
       BeamAgent.start_session(

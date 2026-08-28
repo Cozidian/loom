@@ -45,6 +45,9 @@ defmodule BeamAgent.CLI do
       ["serve", flag] when flag in ["--help", "-h"] ->
         serve_help()
 
+      ["auth", flag] when flag in ["--help", "-h"] ->
+        auth_help()
+
       ["run" | rest] ->
         run_command(config_path, rest)
 
@@ -65,6 +68,9 @@ defmodule BeamAgent.CLI do
 
       ["provider" | rest] ->
         provider_command(config_path, rest)
+
+      ["auth" | rest] ->
+        auth_command(config_path, rest)
 
       ["tools" | rest] ->
         tools_command(rest)
@@ -249,13 +255,13 @@ defmodule BeamAgent.CLI do
 
       if prompt == "" do
         if TUI.available?(opts[:tui]) do
-          case TUI.run(session_id, config) do
+          case TUI.run(session_id, config, config_path) do
             :ok -> 0
             {:error, reason} -> error(reason)
           end
         else
           UI.session_header(config, session_id)
-          chat_loop(session_id, config)
+          chat_loop(session_id, config, config_path)
         end
       else
         UI.one_shot_header(config, session_id)
@@ -363,7 +369,7 @@ defmodule BeamAgent.CLI do
     end
   end
 
-  defp chat_loop(session_id, config) do
+  defp chat_loop(session_id, config, config_path) do
     case UI.prompt() do
       :eof ->
         0
@@ -374,7 +380,7 @@ defmodule BeamAgent.CLI do
       input ->
         case String.trim(input) do
           "" ->
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/exit" ->
             0
@@ -384,78 +390,84 @@ defmodule BeamAgent.CLI do
 
           "/help" ->
             UI.command_help()
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/" ->
             UI.command_help()
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/events" ->
             print_event_summary(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/tree" ->
             print_goal_tree(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/verify" ->
             verify_goal(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/status" ->
             print_status(session_id, config)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/models" ->
             print_session_models(session_id, config)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/models refresh" ->
             refresh_session_models(session_id, :all)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/models " <> endpoint_id ->
             refresh_session_models(session_id, endpoint_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/auto" ->
-            chat_loop(session_id, toggle_auto_mode(session_id, config))
+            chat_loop(session_id, toggle_auto_mode(session_id, config), config_path)
+
+          "/connect" ->
+            connect_chat(session_id, config, config_path, [])
+
+          "/connect chatgpt" ->
+            connect_chat(session_id, config, config_path, ["--chatgpt"])
 
           "/compact" ->
             compact_session_context(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/skills" ->
             print_session_skills(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/reload" ->
             reload_session_context(session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/sessions" ->
             print_sessions(config)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/new" ->
-            start_new_chat(config, session_id)
+            start_new_chat(config, session_id, config_path)
 
           "/clear" ->
             UI.clear()
             UI.session_header(config, session_id)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/model" ->
             print_status(session_id, config)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           "/" <> command ->
             UI.warning("Unknown command /#{command} · type /help")
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
 
           prompt ->
             _status = ask_and_print(session_id, prompt)
-            chat_loop(session_id, config)
+            chat_loop(session_id, config, config_path)
         end
     end
   end
@@ -500,17 +512,36 @@ defmodule BeamAgent.CLI do
     end
   end
 
-  defp start_new_chat(config, previous_session_id) do
+  defp start_new_chat(config, previous_session_id, config_path) do
     with {:ok, provider} <- Config.provider_atom(config["provider"]),
          {:ok, session_id} <- ensure_session(nil, config, provider) do
       _ = BeamAgent.stop_session(previous_session_id)
       UI.notice("Started a new session")
       UI.session_header(config, session_id)
-      chat_loop(session_id, config)
+      chat_loop(session_id, config, config_path)
     else
       {:error, reason} ->
         _ = error(reason)
-        chat_loop(previous_session_id, config)
+        chat_loop(previous_session_id, config, config_path)
+    end
+  end
+
+  defp refresh_auth_config(config, config_path) do
+    with {:ok, stored} <- Config.load(config_path),
+         {:ok, runtime} <- Config.runtime(stored, config["profile"]) do
+      config
+      |> Map.put("credential_ref", runtime["credential_ref"])
+      |> Map.put("auth", runtime["auth"])
+      |> Map.put("model_endpoints", Config.model_endpoints(stored, runtime))
+    else
+      _error -> config
+    end
+  end
+
+  defp connect_chat(session_id, config, config_path, auth_args) do
+    case auth_login_command(config_path, config["profile"], auth_args) do
+      0 -> start_new_chat(refresh_auth_config(config, config_path), session_id, config_path)
+      _error -> chat_loop(session_id, config, config_path)
     end
   end
 
@@ -741,6 +772,296 @@ defmodule BeamAgent.CLI do
   defp provider_command(_config_path, _args),
     do: usage_error("expected `provider add NAME`, `provider list`, or `provider use NAME`")
 
+  defp auth_command(config_path, ["list" | rest]), do: auth_list_command(config_path, rest)
+
+  defp auth_command(config_path, ["login", profile | rest]),
+    do: auth_login_command(config_path, profile, rest)
+
+  defp auth_command(config_path, ["logout", profile | rest]),
+    do: auth_logout_command(config_path, profile, rest)
+
+  defp auth_command(_config_path, []), do: auth_help()
+
+  defp auth_command(_config_path, _args),
+    do: usage_error("expected `auth login PROFILE`, `auth list`, or `auth logout PROFILE`")
+
+  defp auth_list_command(config_path, args) do
+    with {:ok, _opts, []} <- parse(args, []),
+         {:ok, config} <- Config.load(config_path) do
+      Enum.each(Config.profiles(config), fn {name, profile} ->
+        method = get_in(profile, ["auth", "type"]) || "environment"
+        connected = if profile_connected?(profile), do: "connected", else: "not connected"
+        output("#{name}\t#{profile["provider"]}\t#{method}\t#{connected}")
+      end)
+
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp auth_login_command(config_path, profile_name, args) do
+    switches = [
+      chatgpt: :boolean,
+      api_key: :boolean,
+      api_key_stdin: :boolean,
+      device_endpoint: :string,
+      token_endpoint: :string,
+      client_id: :string,
+      scope: :string,
+      no_browser: :boolean
+    ]
+
+    with {:ok, opts, []} <- parse(args, switches),
+         :ok <- validate_auth_login_options(opts),
+         {:ok, config} <- Config.load(config_path),
+         {:ok, profile} <- fetch_cli_profile(config, profile_name),
+         :ok <- ensure_application_started() do
+      cond do
+        device_login?(opts, profile) ->
+          auth_device_login(config_path, config, profile_name, profile, opts)
+
+        chatgpt_login?(opts, profile) ->
+          auth_chatgpt_login(config_path, config, profile_name, profile, opts)
+
+        true ->
+          auth_api_key_login(config_path, config, profile_name, profile, opts)
+      end
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp auth_chatgpt_login(config_path, config, profile_name, profile, opts) do
+    with :ok <- require_openai_profile(profile),
+         {:ok, session} <-
+           BeamAgent.Auth.start_chatgpt_login(profile_name, :openai, owner: self()),
+         {:ok, action} <- await_auth_action(session),
+         :ok <- present_auth_action(action, opts),
+         {:ok, result} <- BeamAgent.Auth.await(session),
+         {:ok, config} <-
+           Config.put_profile_auth(config, profile_name, nil, result.auth),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      plan = if result.plan_type, do: " (#{result.plan_type})", else: ""
+      UI.success("Connected #{profile_name} through ChatGPT#{plan}")
+      0
+    else
+      {:error, reason} -> error(reason)
+    end
+  end
+
+  defp auth_api_key_login(config_path, config, profile_name, profile, opts) do
+    secret =
+      cond do
+        opts[:api_key_stdin] -> IO.read(:stdio, :eof) |> normalize_secret()
+        opts[:api_key] -> UI.secret("API key")
+        true -> UI.secret("API key")
+      end
+
+    with secret when is_binary(secret) and secret != "" <- secret,
+         {:ok, reference} <-
+           BeamAgent.Auth.login_api_key(profile_name, profile["provider"], secret),
+         {:ok, config} <-
+           Config.put_profile_auth(config, profile_name, reference, %{"type" => "api_key"}),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      UI.success("Stored credential for #{profile_name} in the operating-system keyring")
+      0
+    else
+      nil ->
+        error(:empty_api_key)
+
+      "" ->
+        error(:empty_api_key)
+
+      {:error, reason} ->
+        _ = BeamAgent.Auth.logout(profile_name)
+        error(reason)
+    end
+  end
+
+  defp auth_device_login(config_path, config, profile_name, profile, opts) do
+    with {:ok, auth} <- device_auth(profile, opts),
+         {:ok, session} <-
+           BeamAgent.Auth.start_device_login(profile_name, profile["provider"],
+             device_endpoint: auth["device_endpoint"],
+             token_endpoint: auth["token_endpoint"],
+             client_id: auth["client_id"],
+             scope: auth["scope"],
+             owner: self()
+           ),
+         {:ok, action} <- await_auth_action(session),
+         :ok <- present_auth_action(action, opts),
+         {:ok, result} <- BeamAgent.Auth.await(session),
+         {:ok, config} <-
+           Config.put_profile_auth(
+             config,
+             profile_name,
+             result.credential_reference,
+             auth
+           ),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      UI.success("Connected #{profile_name} through browser authorization")
+      0
+    else
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp auth_logout_command(config_path, profile_name, args) do
+    with {:ok, _opts, []} <- parse(args, []),
+         {:ok, config} <- Config.load(config_path),
+         {:ok, profile} <- fetch_cli_profile(config, profile_name),
+         :ok <- ensure_application_started(),
+         :ok <- logout_profile(profile_name, config),
+         {:ok, config} <- Config.clear_profile_auth(config, profile_name),
+         {:ok, ^config_path} <- Config.write(config, config_path) do
+      UI.success(logout_message(profile_name, profile))
+      0
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp device_login?(opts, profile) do
+    is_binary(opts[:device_endpoint]) or get_in(profile, ["auth", "type"]) == "device_code"
+  end
+
+  defp validate_auth_login_options(opts) do
+    explicit_methods =
+      [
+        opts[:chatgpt] == true,
+        opts[:api_key] == true,
+        opts[:api_key_stdin] == true,
+        is_binary(opts[:device_endpoint])
+      ]
+      |> Enum.count(& &1)
+
+    if explicit_methods <= 1,
+      do: :ok,
+      else: {:error, :conflicting_authentication_methods}
+  end
+
+  defp chatgpt_login?(opts, profile) do
+    opts[:chatgpt] == true or
+      (profile["provider"] == "openai" and opts[:api_key] != true and
+         opts[:api_key_stdin] != true)
+  end
+
+  defp require_openai_profile(%{"provider" => "openai"}), do: :ok
+
+  defp require_openai_profile(profile),
+    do: {:error, {:chatgpt_login_not_supported, profile["provider"]}}
+
+  defp logout_profile(profile_name, config) do
+    profile = get_in(config, ["profiles", profile_name]) || %{}
+
+    case get_in(profile, ["auth", "type"]) do
+      "chatgpt" -> :ok
+      _ -> BeamAgent.Auth.logout(profile_name)
+    end
+  end
+
+  defp logout_message(profile_name, %{"auth" => %{"type" => "chatgpt"}}) do
+    "Disconnected #{profile_name}; the shared Codex login remains available"
+  end
+
+  defp logout_message(profile_name, _profile), do: "Removed stored credential for #{profile_name}"
+
+  defp profile_connected?(%{"auth" => %{"type" => "chatgpt"}}) do
+    match?(
+      {:ok, %{"account" => %{"type" => "chatgpt"}}},
+      BeamAgent.CodexAppServer.account()
+    )
+  end
+
+  defp profile_connected?(profile), do: is_binary(profile["credential_ref"])
+
+  defp device_auth(profile, opts) do
+    existing = profile["auth"] || %{}
+
+    auth = %{
+      "type" => "device_code",
+      "device_endpoint" => opts[:device_endpoint] || existing["device_endpoint"],
+      "token_endpoint" => opts[:token_endpoint] || existing["token_endpoint"],
+      "client_id" => opts[:client_id] || existing["client_id"],
+      "scope" => opts[:scope] || existing["scope"]
+    }
+
+    with true <- present?(auth["device_endpoint"]),
+         true <- present?(auth["token_endpoint"]),
+         true <- present?(auth["client_id"]) do
+      {:ok, auth}
+    else
+      false -> {:error, :incomplete_device_auth_configuration}
+    end
+  end
+
+  defp await_auth_action(session) do
+    receive do
+      {:beam_agent_auth, ^session, %{type: :auth_user_action_required, data: action}} ->
+        {:ok, action}
+
+      {:beam_agent_auth, ^session, %{type: :auth_failed, data: data}} ->
+        {:error, {:authentication_failed, data.reason}}
+    after
+      60_000 ->
+        _ = BeamAgent.Auth.cancel(session)
+        {:error, :authentication_start_timeout}
+    end
+  end
+
+  defp present_auth_action(action, opts) do
+    UI.notice("Open #{action.verification_uri}")
+    if action.user_code, do: UI.notice("Enter code: #{action.user_code}")
+
+    if opts[:no_browser] != true do
+      _ = open_browser(action.verification_uri_complete || action.verification_uri)
+    end
+
+    :ok
+  end
+
+  defp open_browser(url) do
+    executable =
+      case :os.type() do
+        {:unix, :darwin} -> System.find_executable("open")
+        _ -> System.find_executable("xdg-open")
+      end
+
+    if executable do
+      Task.start(fn -> System.cmd(executable, [url], stderr_to_stdout: true) end)
+      :ok
+    else
+      {:error, :browser_launcher_unavailable}
+    end
+  end
+
+  defp fetch_cli_profile(config, profile_name) do
+    case get_in(config, ["profiles", profile_name]) do
+      profile when is_map(profile) -> {:ok, profile}
+      _ -> {:error, {:unknown_profile, profile_name}}
+    end
+  end
+
+  defp normalize_secret(:eof), do: nil
+  defp normalize_secret(secret) when is_binary(secret), do: String.trim(secret)
+  defp normalize_secret(_secret), do: nil
+
+  defp present?(value), do: is_binary(value) and value != ""
+
   defp provider_list_command(config_path, args) do
     with {:ok, _opts, []} <- parse(args, []),
          {:ok, config} <- Config.load(config_path) do
@@ -955,6 +1276,9 @@ defmodule BeamAgent.CLI do
     if active["api_key_env"],
       do: output("api_key:    environment #{active["api_key_env"]}")
 
+    if active["credential_ref"],
+      do: output("credential: #{active["credential_ref"]}")
+
     Enum.each(Config.profiles(config), fn {name, profile} ->
       marker = if name == config["active_profile"], do: "*", else: "-"
       model = if profile["model"], do: "/#{profile["model"]}", else: ""
@@ -1069,6 +1393,9 @@ defmodule BeamAgent.CLI do
       beam_agent provider list               list configured provider profiles
       beam_agent provider add NAME           add a provider profile
       beam_agent provider use NAME           change the active profile
+      beam_agent auth login PROFILE          connect with an API key or browser code
+      beam_agent auth list                   list profile authentication methods
+      beam_agent auth logout PROFILE         remove a stored credential
       beam_agent sessions                    list durable sessions
       beam_agent providers                   list available providers
       beam_agent tools                       list model-callable tools
@@ -1133,8 +1460,38 @@ defmodule BeamAgent.CLI do
       --non-interactive      validate supplied/default values without prompts
       --force                replace a profile with the same name
 
-    Secrets are never written to the config; only environment-variable names are stored.
+    Secrets are never written to the config; it stores environment-variable names
+    or opaque operating-system keyring references.
     Use `--profile NAME` on run or doctor to select a profile without changing the active one.
+    """)
+  end
+
+  defp auth_help do
+    output("""
+    Authenticate provider profiles
+
+      beam_agent auth login PROFILE --api-key
+      beam_agent auth login PROFILE --api-key-stdin
+      beam_agent auth login PROFILE --chatgpt
+      beam_agent auth login PROFILE --device-endpoint URL \\
+        --token-endpoint URL --client-id ID [--scope SCOPES]
+      beam_agent auth list
+      beam_agent auth logout PROFILE
+
+      --api-key             read an API key without terminal echo
+      --api-key-stdin       read an API key from standard input
+      --chatgpt             open OpenAI browser login for ChatGPT plan access
+      --device-endpoint     OAuth 2.0 device authorization endpoint
+      --token-endpoint      OAuth token endpoint
+      --client-id           registered public OAuth client identifier
+      --scope               provider-defined OAuth scopes
+      --no-browser          print the verification URL without opening it
+
+    API keys are stored in the operating-system keyring. OpenAI ChatGPT login is
+    owned by Codex App Server, which persists and refreshes its credential.
+    Configuration, events, prompts, and agent state never contain token values.
+    Device login is available only when the provider permits a registered
+    third-party OAuth client; API-key environments remain supported.
     """)
   end
 

@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees)a
+  @commands ~w(connect auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees)a
 
   def available?(override \\ nil)
 
@@ -28,11 +28,16 @@ defmodule BeamAgent.CLI.TUI do
     |> Enum.find_value(&System.find_executable/1)
   end
 
-  def run(session_id, config) do
+  def run(session_id, config, config_path \\ Config.path()) do
     with executable when is_binary(executable) <- executable(),
          {:ok, port} <- open_port(executable),
          {:ok, controller} <-
-           Controller.start_link(client: self(), session_id: session_id, config: config),
+           Controller.start_link(
+             client: self(),
+             session_id: session_id,
+             config: config,
+             config_path: config_path
+           ),
          {:ok, bootstrap} <- Controller.bootstrap(controller) do
       Process.unlink(controller)
       monitor = Process.monitor(controller)
@@ -115,6 +120,19 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:panel, title, lines}),
     do: %{type: "panel", title: title, lines: lines}
+
+  def notification_payload({:provider_picker, providers}),
+    do: %{type: "provider_picker", providers: json_safe(providers)}
+
+  def notification_payload({:session_changed, session_id, config}) do
+    %{
+      type: "session_changed",
+      session_id: session_id,
+      provider: config["provider"],
+      profile: config["profile"],
+      model: config["model"] || "built-in"
+    }
+  end
 
   def notification_payload({:session_changed, session_id}),
     do: %{type: "session_changed", session_id: session_id}
@@ -204,6 +222,15 @@ defmodule BeamAgent.CLI.TUI do
          controller
        ) do
     Controller.command(controller, :tree)
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "connect", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:connect, query})
     :ok
   end
 

@@ -533,6 +533,9 @@ should follow on the stronger execution substrate.
       capabilities over placing secrets in prompts, worker state, or tool input.
     - Bind handles to worker identity, effective scope, and lifetime.
     - Redact secret material from events while preserving useful audit facts.
+    - Provider API keys and OAuth device tokens now live behind an OS-keyring
+      credential broker; runtime configuration carries opaque references, device
+      login is supervised, and access-token refresh emits only safe metadata.
 
 ### Dynamic runtime
 
@@ -800,6 +803,10 @@ claims:
   authenticated loopback web shell, and the streaming JSON-lines server are
   independent observers of the same durable runtime. `beam_agent serve` starts
   both transports; thin VS Code and Emacs clients consume protocol version 1.
+- OpenAI profiles support either ordinary API credentials or official ChatGPT
+  browser authentication through an OTP-owned Codex App Server process. Codex
+  owns OAuth persistence and refresh; BeamAgent retains tool, capability,
+  approval, sandbox, event, and conversation authority.
 - Proven repository snapshots, symbols/dependencies, test history, routing
   outcomes, and user-owned project preferences persist with provenance,
   freshness, confidence, source versions, and explicit invalidation. Learned
