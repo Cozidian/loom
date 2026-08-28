@@ -153,11 +153,25 @@ var editorsWithLineFlag = map[string]bool{
 	"vi": true, "vim": true, "nvim": true, "nano": true, "emacs": true,
 }
 
-// openInEditor suspends the alt-screen program and hands the terminal to
-// $EDITOR (falling back to vi) on the currently selected diff's file, via
-// tea.ExecProcess so the program's terminal state is restored correctly
-// afterward — a naive exec.Command.Run() would corrupt it.
-func (m model) openInEditor() tea.Cmd {
+// editorCommand builds the *exec.Cmd for opening the currently selected
+// diff's file in $EDITOR (falling back to vi), or nil if there's nothing
+// selected or the path can't be trusted. Split out from openInEditor so
+// the constructed command's argv can be asserted on directly in tests
+// without actually spawning an editor process.
+//
+// Two things matter here beyond the obvious "open this file":
+//   - path is git-diff-reported and untrusted — a workspace file can
+//     legally be named starting with "-", so it's passed after a literal
+//     "--" in argv. Without that, a filename like "-rf" or an editor-
+//     specific flag-like name would be reinterpreted as an option by the
+//     editor instead of a filename (argument injection).
+//   - the resolved path is verified to stay inside workspaceRoot after
+//     joining, so a path that smuggled ".." segments (or, defensively, an
+//     unexpected absolute path) can't make this open a file outside the
+//     workspace — even though the backend already rejects those when
+//     path is used to *scope a git query*, this is the client's own
+//     check on what it's about to hand to exec.Command.
+func (m model) editorCommand() *exec.Cmd {
 	if m.selectedDiff == nil || m.selectedDiff.Path == "" {
 		return nil
 	}
@@ -168,8 +182,16 @@ func (m model) openInEditor() tea.Cmd {
 	}
 
 	path := m.selectedDiff.Path
-	if m.workspaceRoot != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(m.workspaceRoot, path)
+	if m.workspaceRoot != "" {
+		if filepath.IsAbs(path) {
+			return nil
+		}
+		joined := filepath.Join(m.workspaceRoot, path)
+		root := filepath.Clean(m.workspaceRoot) + string(filepath.Separator)
+		if !strings.HasPrefix(joined, root) {
+			return nil
+		}
+		path = joined
 	}
 
 	line := 0
@@ -178,16 +200,28 @@ func (m model) openInEditor() tea.Cmd {
 		line = hunk.NewStart
 	}
 
-	args := []string{path}
+	// "--" marks the end of option processing so a path that happens to
+	// start with "-" can never be reinterpreted as a flag by the editor.
+	args := []string{"--", path}
 	if line > 0 && editorsWithLineFlag[filepath.Base(editor)] {
-		args = []string{fmt.Sprintf("+%d", line), path}
+		args = []string{fmt.Sprintf("+%d", line), "--", path}
 	}
 
 	cmd := exec.Command(editor, args...)
 	if m.workspaceRoot != "" {
 		cmd.Dir = m.workspaceRoot
 	}
+	return cmd
+}
 
+// openInEditor suspends the alt-screen program and hands the terminal to
+// $EDITOR via tea.ExecProcess so the program's terminal state is restored
+// correctly afterward — a naive exec.Command.Run() would corrupt it.
+func (m model) openInEditor() tea.Cmd {
+	cmd := m.editorCommand()
+	if cmd == nil {
+		return nil
+	}
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return editorFinishedMsg{err: err}
 	})

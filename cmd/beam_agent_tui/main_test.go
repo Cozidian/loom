@@ -898,6 +898,61 @@ func TestOpenInEditorKeyDelegatesFromFilesTab(t *testing.T) {
 	}
 }
 
+// TestEditorCommandGuardsAgainstArgumentInjection locks in a fix from a
+// security review: a workspace file can legally be named starting with
+// "-" (git diffs report it like any other path), and without a literal
+// "--" before the path, exec.Command would hand that string to the editor
+// as a bare argument, which many editors reinterpret as a flag instead of
+// a filename.
+func TestEditorCommandGuardsAgainstArgumentInjection(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{Type: "diff", Path: "-rf"})
+
+	cmd := m.editorCommand()
+	if cmd == nil {
+		t.Fatal("expected an editor command for a dash-prefixed filename")
+	}
+
+	dashIndex, pathIndex := -1, -1
+	for i, arg := range cmd.Args {
+		if arg == "--" {
+			dashIndex = i
+		}
+		if strings.HasSuffix(arg, "-rf") {
+			pathIndex = i
+		}
+	}
+	if dashIndex == -1 {
+		t.Fatalf("expected an end-of-options -- marker in argv, got %v", cmd.Args)
+	}
+	if pathIndex == -1 || pathIndex < dashIndex {
+		t.Fatalf("expected the path to appear after -- in argv, got %v", cmd.Args)
+	}
+}
+
+// TestEditorCommandRejectsPathEscapingWorkspace locks in the same review's
+// defense-in-depth check: even though the backend already rejects ".."
+// when path is used to scope a git query, the client independently
+// verifies the resolved path stays inside workspaceRoot before ever
+// handing it to exec.Command.
+func TestEditorCommandRejectsPathEscapingWorkspace(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{Type: "diff", Path: "../../etc/passwd"})
+
+	if cmd := m.editorCommand(); cmd != nil {
+		t.Fatalf("expected a path escaping the workspace to be rejected, got args %v", cmd.Args)
+	}
+}
+
+func TestEditorCommandRejectsAbsolutePathWhenWorkspaceIsKnown(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{Type: "diff", Path: "/etc/passwd"})
+
+	if cmd := m.editorCommand(); cmd != nil {
+		t.Fatalf("expected an absolute path to be rejected when workspaceRoot is set, got args %v", cmd.Args)
+	}
+}
+
 func TestSessionsTabRKeySendsResumeCommand(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)
