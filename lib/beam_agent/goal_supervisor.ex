@@ -3,7 +3,17 @@ defmodule BeamAgent.GoalSupervisor do
   use Supervisor
 
   alias BeamAgent.{Goal, Names, SessionSupervisor}
-  alias BeamAgent.Goal.{EventHub, ResourceSupervisor}
+
+  alias BeamAgent.Goal.{
+    BudgetManager,
+    CapabilityManager,
+    DelegationManager,
+    EventHub,
+    OrganizationManager,
+    ResourceSupervisor,
+    SecretBroker
+  }
+
   alias BeamAgent.MCP.Registry
 
   def start_link(opts) do
@@ -34,6 +44,11 @@ defmodule BeamAgent.GoalSupervisor do
       [
         {Goal, opts},
         {EventHub, opts},
+        {BudgetManager, opts},
+        {CapabilityManager, opts},
+        {DelegationManager, opts},
+        {OrganizationManager, opts},
+        {SecretBroker, opts},
         {ResourceSupervisor, opts},
         {Task.Supervisor, name: Names.via(:goal_verification_supervisor, goal_id)},
         {Registry, opts},

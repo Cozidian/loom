@@ -110,9 +110,7 @@ defmodule BeamAgent.AgentConstructionTest do
         "locality" => "local",
         "privacy" => "local"
       },
-      "effective_capabilities" => "all",
-      "restrictions" => %{"external_network" => "allowed"},
-      "lifecycle" => %{"depth" => 99}
+      "verification_requirements" => %{"required" => true}
     }
 
     assert {:ok, child_id} =
@@ -123,8 +121,11 @@ defmodule BeamAgent.AgentConstructionTest do
 
     assert {:ok, spec} = BeamAgent.agent_spec(child_id)
     assert spec.role == "Elixir debugging specialist"
-    assert spec.template == "dynamic-debugging"
-    assert spec.instructions == [secret_instruction]
+    assert spec.template == "debugger"
+    assert spec.template_version == 1
+    assert spec.template_source == :builtin
+    assert spec.execution_strategy.id == "investigate"
+    assert secret_instruction in spec.instructions
     assert spec.lifecycle.depth == 1
     assert spec.lifecycle.maximum_delegation_depth == 4
     assert spec.restrictions.external_network == :denied
@@ -132,6 +133,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.model_requirements.locality == :local
     assert spec.model_requirements.privacy == :local
     assert spec.provenance.role == "runtime_inference"
+    assert spec.authority_decision.disposition == :attenuated
 
     assert spec.effective_capabilities.scopes.tools == ["read_file"]
     assert spec.effective_capabilities.scopes.paths == ["lib"]
@@ -213,6 +215,31 @@ defmodule BeamAgent.AgentConstructionTest do
     {:ok, events} = BeamAgent.events(parent_id)
     failed = Enum.find(events, &(&1["type"] == "agent_construction_failed"))
     assert failed["data"]["failure_code"] == "capability_escalation"
+  end
+
+  test "hard authority fields in an intelligence proposal are rejected", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:error, {:hard_authority_fields_rejected, fields}} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Attempt to grant myself authority through a prompt",
+                 resources: %{budget: :unlimited},
+                 lifecycle: %{depth: 99},
+                 credentials: "secret"
+               }
+             )
+
+    assert fields == ["credentials", "lifecycle", "resources"]
+
+    {:ok, events} = BeamAgent.events(parent_id)
+    failed = List.last(Enum.filter(events, &(&1["type"] == "agent_construction_failed")))
+    assert failed["data"]["failure_code"] == "hard_authority_fields_rejected"
   end
 
   test "capability envelopes remain independently authorizable", _context do

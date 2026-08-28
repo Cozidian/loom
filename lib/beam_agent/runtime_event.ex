@@ -98,15 +98,73 @@ defmodule BeamAgent.RuntimeEvent do
               "agent_construction_requested",
               "agent_constructed",
               "agent_spec_applied",
-              "agent_construction_failed"
+              "agent_construction_failed",
+              "delegation_requested",
+              "delegation_accepted",
+              "delegation_progressed",
+              "organization_formed",
+              "organization_task_transitioned",
+              "organization_finished",
+              "organization_cancelled"
             ],
        do: :lifecycle
+
+  defp category(type)
+       when type in ["race_started", "race_candidate_completed"],
+       do: :lifecycle
+
+  defp category(type)
+       when type in [
+              "budget_allocated",
+              "budget_consumed",
+              "budget_warning",
+              "budget_exhausted",
+              "budget_released"
+            ],
+       do: :resource
+
+  defp category(type)
+       when type in [
+              "resource_queued",
+              "resource_granted",
+              "resource_released",
+              "resource_reclaimed"
+            ],
+       do: :resource
+
+  defp category(type)
+       when type in [
+              "capability_requested",
+              "capability_request_approved",
+              "capability_request_denied",
+              "capability_lease_issued",
+              "capability_lease_consumed",
+              "capability_lease_revoked",
+              "secret_handle_issued",
+              "secret_handle_used",
+              "secret_handle_revoked"
+            ],
+       do: :resource
 
   defp category(type) when type in ["command_received", "command_failed", "user_message"],
     do: :command
 
-  defp category(type) when type in ["tool_called", "tool_result", "tool_loop_stalled"],
-    do: :tool
+  defp category(type)
+       when type in ["tool_called", "tool_result", "tool_loop_stalled", "command_output_delta"],
+       do: :tool
+
+  defp category(type)
+       when type in [
+              "file_changed",
+              "repository_updated",
+              "repository_refresh_failed",
+              "test_run_finished"
+            ],
+       do: :repository
+
+  defp category(type)
+       when type in ["worktree_created", "worktree_inspected", "worktree_reclaimed"],
+       do: :resource
 
   defp category(type)
        when type in [
@@ -170,7 +228,19 @@ defmodule BeamAgent.RuntimeEvent do
               "verification_check_started",
               "verification_check_finished",
               "verification_finished",
-              "verification_cancelled"
+              "verification_cancelled",
+              "completion_report_generated"
+            ],
+       do: :outcome
+
+  defp category(type)
+       when type in [
+              "delegation_completed",
+              "delegation_rejected",
+              "delegation_cancelled",
+              "race_winner_selected",
+              "race_collapsed",
+              "race_inconclusive"
             ],
        do: :outcome
 

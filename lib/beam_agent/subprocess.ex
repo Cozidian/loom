@@ -7,6 +7,7 @@ defmodule BeamAgent.Subprocess do
     timeout = Keyword.get(opts, :timeout_ms, 30_000)
     max_output = Keyword.get(opts, :max_output_bytes, @default_max_output)
     cwd = Keyword.fetch!(opts, :cwd)
+    on_output = Keyword.get(opts, :on_output, fn _chunk -> :ok end)
 
     port_options = [
       :binary,
@@ -20,18 +21,19 @@ defmodule BeamAgent.Subprocess do
 
     port = Port.open({:spawn_executable, String.to_charlist(executable)}, port_options)
     deadline = System.monotonic_time(:millisecond) + timeout
-    collect(port, deadline, max_output, "", false)
+    collect(port, deadline, max_output, "", false, on_output)
   rescue
     error -> {:error, {:subprocess_start_failed, Exception.message(error)}}
   end
 
-  defp collect(port, deadline, max_output, output, truncated?) do
+  defp collect(port, deadline, max_output, output, truncated?, on_output) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
       {^port, {:data, data}} ->
+        _ = on_output.(data)
         {output, truncated?} = append_output(output, data, max_output, truncated?)
-        collect(port, deadline, max_output, output, truncated?)
+        collect(port, deadline, max_output, output, truncated?, on_output)
 
       {^port, {:exit_status, status}} ->
         {:ok, %{status: status, output: output, truncated: truncated?}}

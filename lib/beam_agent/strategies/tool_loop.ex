@@ -14,6 +14,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
     ToolRunner
   }
 
+  alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
+
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
   @repeated_tool_result_limit 3
@@ -190,7 +192,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
       |> Keyword.put(:parent_session_id, context.parent_session_id)
       |> Keyword.put(:system_prompt, system_prompt)
 
-    with {:ok, request} <-
+    with :ok <-
+           BudgetManager.check(context.goal_id, context.session_id, %{
+             model_tokens: estimated_context_tokens(context.session_id)
+           }),
+         {:ok, request} <-
            ModelRequest.new(
              endpoint_id: endpoint.id,
              provider: endpoint.provider,
@@ -207,7 +213,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
       emit = &StreamHub.emit(context.session_id, response_id, &1)
 
       started = System.monotonic_time(:millisecond)
-      result = ModelInvocation.invoke(request, emit)
+
+      result =
+        BeamAgent.Project.ResourceScheduler.run(
+          context.project_id,
+          model_pool(route),
+          [session_id: context.session_id, priority: resource_priority(context)],
+          fn -> ModelInvocation.invoke(request, emit) end
+        )
+
       latency = System.monotonic_time(:millisecond) - started
 
       case result do
@@ -269,6 +283,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
+  defp model_pool(route) do
+    if route.inputs.reasoning == :high, do: :expensive_model, else: :model
+  end
+
+  defp resource_priority(context), do: if(context.parent_session_id, do: 0, else: 10)
+
   defp record_model_outcome(
          context,
          route,
@@ -299,6 +319,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
       failure: failure,
       route_decision_id: route.decision_id
     }
+
+    tokens = usage["total_tokens"] || estimated_context_tokens(context.session_id)
+    _ = BudgetManager.consume(context.goal_id, context.session_id, %{model_tokens: tokens})
 
     case OutcomeStore.record(context.project_id, attrs) do
       {:ok, %{id: id}} ->
@@ -506,7 +529,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp available_tool_schemas(context) do
     (CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id))
     |> Enum.filter(fn schema ->
-      CapabilityEnvelope.authorize(context.capability_envelope, %{tools: schema.name}) == :ok
+      resource = %{tools: schema.name}
+
+      CapabilityEnvelope.authorize(context.capability_envelope, resource) == :ok or
+        CapabilityManager.permits?(context.goal_id, context.session_id, resource)
     end)
   end
 
@@ -594,7 +620,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "turn" => turn,
              "reason" => "completed"
            }) do
-      record_task_outcome(context, turn, :completed, nil)
+      with {:ok, outcome} <- record_task_outcome(context, turn, :completed, nil) do
+        maybe_verify_completion(context, outcome)
+      end
+
       {:ok, answer}
     end
   end
@@ -627,17 +656,72 @@ defmodule BeamAgent.Strategies.ToolLoop do
     }
 
     case OutcomeStore.record(context.project_id, attrs) do
-      {:ok, %{id: id, verification: verification}} ->
-        EventLog.append(context.session_id, :task_outcome_recorded, %{
-          "outcome_id" => id,
-          "status" => status,
-          "verification" => verification
-        })
+      {:ok, %{id: id, verification: verification} = outcome} ->
+        with {:ok, _event} <-
+               EventLog.append(context.session_id, :task_outcome_recorded, %{
+                 "outcome_id" => id,
+                 "status" => status,
+                 "verification" => verification
+               }) do
+          {:ok, outcome}
+        end
 
-      _other ->
-        :ok
+      other ->
+        other
     end
   end
+
+  defp maybe_verify_completion(context, outcome) do
+    requirements = context.agent_spec.verification_requirements
+    prompt = latest_user_prompt(context.session_id)
+    classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
+    required? = (requirements[:required] || requirements["required"]) == true
+    automatic? = classification.task_type in [:implementation, :debugging, :verification]
+
+    if required? or automatic? do
+      plan = requirements[:plan] || requirements["plan"] || :auto
+
+      case BeamAgent.Goal.Verifier.run(context.goal_id, plan,
+             session_id: context.session_id,
+             outcome_id: outcome.id
+           ) do
+        {:ok, _result} ->
+          :ok
+
+        {:error, reason} ->
+          if required? do
+            result = %{
+              status: :failed,
+              source: "automatic",
+              summary: "Required verification could not run: #{verification_error(reason)}"
+            }
+
+            _ = OutcomeStore.attach_verification(context.project_id, outcome.id, result)
+          end
+
+          _ =
+            EventLog.append(context.session_id, :completion_report_generated, %{
+              "status" => if(required?, do: "verification_failed", else: "unverified"),
+              "evidence_count" => 0,
+              "failure_code" => verification_error(reason)
+            })
+
+          :ok
+      end
+    else
+      _ =
+        EventLog.append(context.session_id, :completion_report_generated, %{
+          "status" => "unverified",
+          "evidence_count" => 0
+        })
+
+      :ok
+    end
+  end
+
+  defp verification_error(reason) when is_atom(reason), do: to_string(reason)
+  defp verification_error({reason, _detail}) when is_atom(reason), do: to_string(reason)
+  defp verification_error(_reason), do: "verification_error"
 
   defp count_events(session_id, type) do
     {:ok, events} = EventLog.events(session_id)

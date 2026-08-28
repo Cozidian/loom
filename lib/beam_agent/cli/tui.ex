@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(auto status new sessions models skills reload compact verify events tree)a
+  @commands ~w(auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees)a
 
   def available?(override \\ nil)
 
@@ -401,6 +401,99 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: "verification_cancelled"}}),
     do: "Verification cancelled"
 
+  defp info_entry(%{payload: %{type: "completion_report_generated", data: data}}),
+    do: "Completion · #{data["status"]} · #{data["evidence_count"] || 0} evidence items"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "delegation_requested",
+              "delegation_accepted",
+              "delegation_progressed",
+              "delegation_completed",
+              "delegation_rejected",
+              "delegation_cancelled"
+            ],
+       do: "Delegation #{event_verb(type)} · #{short_id(data["worker_id"])}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "organization_formed",
+              "organization_task_transitioned",
+              "organization_finished",
+              "organization_cancelled"
+            ],
+       do:
+         "Organization #{event_verb(type)} · #{short_id(data["organization_id"])}#{optional_suffix(data["task_status"])}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "budget_allocated",
+              "budget_warning",
+              "budget_exhausted",
+              "budget_released"
+            ],
+       do: "Budget #{event_verb(type)} · #{short_id(data["worker_id"])}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "resource_queued",
+              "resource_granted",
+              "resource_released",
+              "resource_reclaimed"
+            ],
+       do: "Resource #{event_verb(type)} · #{data["resource_pool"]}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "capability_requested",
+              "capability_request_approved",
+              "capability_request_denied",
+              "capability_lease_issued",
+              "capability_lease_revoked"
+            ],
+       do: "Capability #{event_verb(type)} · #{short_id(data["worker_id"])}"
+
+  defp info_entry(%{payload: %{type: "repository_updated", data: data}}),
+    do:
+      "Repository updated · +#{data["added_count"]} ~#{data["changed_count"]} -#{data["removed_count"]}"
+
+  defp info_entry(%{payload: %{type: "file_changed", data: data}}),
+    do: "File #{data["change"]} · #{data["path"]}"
+
+  defp info_entry(%{payload: %{type: "test_run_finished", data: data}}),
+    do: "Tests #{data["status"]} · exit #{data["exit_status"] || "unknown"}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in ["worktree_created", "worktree_inspected", "worktree_reclaimed"],
+       do: "Worktree #{event_verb(type)} · #{short_id(data["worktree_id"])}"
+
+  defp info_entry(%{payload: %{type: type, data: data}})
+       when type in [
+              "race_started",
+              "race_candidate_completed",
+              "race_winner_selected",
+              "race_collapsed",
+              "race_inconclusive"
+            ],
+       do:
+         "Race #{event_verb(type)} · #{short_id(data["race_id"])}#{optional_suffix(data["winner_id"])}"
+
+  defp info_entry(%{payload: %{type: type}})
+       when type in [
+              "user_message",
+              "assistant_message",
+              "tool_called",
+              "tool_result",
+              "model_response_checkpoint"
+            ],
+       do: nil
+
+  defp info_entry(%{payload: %{type: type}}) when is_binary(type),
+    do: "Runtime · #{type |> String.replace("_", " ") |> String.capitalize()}"
+
+  defp info_entry(%{payload: %{type: type}}) when is_atom(type),
+    do: info_entry(%{payload: %{type: to_string(type)}})
+
   defp info_entry(_event), do: nil
 
   defp outcome_label(label, data) do
@@ -413,7 +506,7 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp routing_evidence_suffix(%{"evidence" => %{"state" => "ready"} = evidence}),
-    do: " · shadow prefers #{evidence["recommended_endpoint_id"]}"
+    do: " · #{evidence["mode"] || "shadow"} prefers #{evidence["recommended_endpoint_id"]}"
 
   defp routing_evidence_suffix(%{"evidence" => %{"state" => "insufficient_evidence"} = evidence}) do
     " · evidence warming #{evidence["best_verified_samples"] || 0}/#{evidence["minimum_verified_samples"] || 5} verified"
@@ -423,6 +516,10 @@ defmodule BeamAgent.CLI.TUI do
     do: " · evidence unavailable"
 
   defp routing_evidence_suffix(_data), do: ""
+
+  defp event_verb(type), do: type |> String.split("_") |> List.last()
+  defp optional_suffix(nil), do: ""
+  defp optional_suffix(value), do: " · #{value}"
 
   defp tool_id(session_id, tool_call_id), do: "#{session_id}:#{tool_call_id}"
 

@@ -43,7 +43,8 @@ defmodule BeamAgent.Tools.RunCommand do
            Subprocess.run(executable, argv,
              cwd: cwd,
              timeout_ms: timeout,
-             max_output_bytes: 100_000
+             max_output_bytes: 100_000,
+             on_output: output_handler(context)
            ) do
       command_result = %{
         status: result.status,
@@ -66,4 +67,16 @@ defmodule BeamAgent.Tools.RunCommand do
   end
 
   def execute(_arguments, _context), do: {:error, :expected_non_empty_command}
+
+  defp output_handler(%{goal_id: goal_id, session_id: session_id}) do
+    fn chunk ->
+      BeamAgent.Goal.EventHub.publish(goal_id, session_id, %{
+        type: :command_output_delta,
+        delta: binary_part(chunk, 0, min(byte_size(chunk), 8_192)),
+        truncated: byte_size(chunk) > 8_192
+      })
+    end
+  end
+
+  defp output_handler(_context), do: fn _chunk -> :ok end
 end

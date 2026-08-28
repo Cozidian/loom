@@ -339,7 +339,7 @@ should follow on the stronger execution substrate.
      runtime API for goals, subscriptions, approvals, cancellation, inspection,
      and reconnect.
    - Make the TUI and line client consumers of the same public contracts used by
-     future LiveView, editor, and programmatic clients.
+     terminal, web, editor, and programmatic clients.
    - Preserve append-only replay so a disconnected client can reconstruct state
      and continue from a known event sequence.
    - First vertical slice delivered: `BeamAgent.Runtime` now exposes a public,
@@ -468,7 +468,7 @@ should follow on the stronger execution substrate.
      requirements constrain routing, and restricted agents see only tool schemas
      they are authorized to execute.
 
-3. [ ] Represent agent templates and execution strategies
+3. [x] Represent agent templates and execution strategies
 
    - Treat researcher, implementer, reviewer, debugger, and similar roles as
      composable starting points rather than a fixed population.
@@ -489,7 +489,7 @@ should follow on the stronger execution substrate.
    - Generalize this proven boundary to every dynamically constructed worker
      and resource handle.
 
-6. [ ] Formalize the soft-configuration / hard-authority boundary
+6. [x] Formalize the soft-configuration / hard-authority boundary
 
    - Define which worker fields intelligence may propose and which only policy
      may set or narrow.
@@ -505,14 +505,14 @@ should follow on the stronger execution substrate.
    - Preserve this invariant across dynamic construction, templates, retries,
      worktrees, remote nodes, and nested delegation.
 
-8. [ ] Add scoped and temporary capability leases
+8. [x] Add scoped and temporary capability leases
 
    - Support authority bounded by worker, resource, operation count, deadline,
      or goal phase.
    - Revoke leases automatically when the owning worker or goal terminates.
    - Keep durable grants distinct from temporary runtime leases.
 
-9. [ ] Add a capability request and escalation protocol
+9. [x] Add a capability request and escalation protocol
 
    - Let workers request missing authority as structured data with purpose,
      scope, duration, and fallback behavior.
@@ -520,14 +520,14 @@ should follow on the stronger execution substrate.
      required; denial must remain a normal observable outcome.
    - Never let a delegate approve its own authority expansion.
 
-10. [ ] Represent budgets and resource allocations
+10. [x] Represent budgets and resource allocations
 
     - Give each goal and worker explicit limits for model cost/tokens, wall
       time, retries, concurrency, shell/test use, and other scarce resources.
     - Derive child allocations from the parent's remaining budget and policy.
     - Make consumption, warnings, exhaustion, and release observable.
 
-11. [ ] Add secretless capability providers
+11. [x] Add secretless capability providers
 
     - Prefer opaque resource handles, brokered credentials, and narrow service
       capabilities over placing secrets in prompts, worker state, or tool input.
@@ -536,7 +536,7 @@ should follow on the stronger execution substrate.
 
 ### Dynamic runtime
 
-12. [ ] Generalize dynamic worker spawning
+12. [x] Generalize dynamic worker spawning
 
     - Evolve the existing `spawn_subagent` primitive from prompt-only child
       sessions into validated runtime agent specifications.
@@ -544,7 +544,7 @@ should follow on the stronger execution substrate.
       structured handle/result channel rather than only conversational text.
     - Preserve nested spawning, replay, cancellation, and failure isolation.
 
-13. [ ] Make agent-to-agent delegation first-class
+13. [x] Make agent-to-agent delegation first-class
 
     - Represent delegation requests, accepted work, progress, result, rejection,
       cancellation, and escalation as explicit messages and events.
@@ -552,7 +552,7 @@ should follow on the stronger execution substrate.
     - Permit recursive delegation only when the effective capability and budget
       policies allow it.
 
-14. [ ] Generate runtime specialists on demand
+14. [x] Generate runtime specialists on demand
 
     - Infer the expertise and model characteristics required for a discovered
       subproblem without requiring a predefined role name.
@@ -560,7 +560,7 @@ should follow on the stronger execution substrate.
       actual authority and resources.
     - Retain enough provenance to evaluate whether the specialization helped.
 
-15. [ ] Add goal-driven decomposition
+15. [x] Add goal-driven decomposition
 
     - Let coordinators decompose goals into dependent or parallel bounded work
       without hard-coding one universal workflow.
@@ -568,7 +568,7 @@ should follow on the stronger execution substrate.
       semantic decisions that genuinely need intelligence.
     - Re-plan or terminate branches cheaply when evidence invalidates them.
 
-16. [ ] Support temporary self-forming worker organizations
+16. [x] Support temporary self-forming worker organizations
 
     - Allow useful hierarchies to emerge through delegation rather than being
       declared beforehand.
@@ -576,14 +576,14 @@ should follow on the stronger execution substrate.
       flow inspectable throughout the organization.
     - Retain validated results, then terminate and reclaim the ephemeral tree.
 
-17. [ ] Add runtime execution strategies
+17. [x] Add runtime execution strategies
 
     - Compose sequential, parallel, reviewer, investigator, retry, consensus,
       and deterministic strategies independently from agent identity.
     - Select strategies from goal characteristics, risk, resources, and policy.
     - Keep strategy transitions explicit and observable.
 
-18. [ ] Add a model and resource scheduler
+18. [x] Add a model and resource scheduler
 
     - Coordinate LLM calls, expensive reasoning, shell/tests, browsers, MCP,
       embeddings, and CPU-heavy work through bounded pools.
@@ -591,7 +591,7 @@ should follow on the stronger execution substrate.
       user-interaction needs.
     - Apply backpressure instead of allowing delegation to create unbounded work.
 
-19. [ ] Support race-to-solution
+19. [x] Support race-to-solution
 
     - Spawn competing hypotheses, plans, implementations, tests, or reviews only
       when expected value justifies the extra resources.
@@ -599,7 +599,7 @@ should follow on the stronger execution substrate.
       necessary, then collapse losing branches safely.
     - Preserve provenance and never merge a winner implicitly.
 
-20. [ ] Complete cancellation and resource reclamation
+20. [x] Complete cancellation and resource reclamation
 
     - Extend the current cancellable turn and child-session primitives across
       dynamic organizations, model requests, tools, MCP, worktrees, leases, and
@@ -610,7 +610,7 @@ should follow on the stronger execution substrate.
 
 ### Runtime trust and supporting intelligence
 
-21. [ ] Enforce verified completion
+21. [x] Enforce verified completion
 
     - Separate `implemented`, `unverified`, `verification_failed`, `verified`,
       and `blocked` instead of equating a final model response with task success.
@@ -630,10 +630,11 @@ should follow on the stronger execution substrate.
       plus permitted temporary storage so Mix and Go checks can run honestly.
       A model final answer now records `completed/unverified`; attached passing
       evidence promotes it to `succeeded`, while required failures mark it
-      `failed`. Automatic verification at every agent completion and
-      evidence-generated completion reports remain to be implemented.
+      `failed`. Applicable completions now trigger verification automatically,
+      including worktree-specific checks, and completion reports are derived
+      from recorded evidence rather than model claims.
 
-22. [ ] Improve routing from evidence
+22. [x] Improve routing from evidence
 
     - Compare models by task and environment rather than seeking one globally
       best model.
@@ -651,13 +652,14 @@ should follow on the stronger execution substrate.
       sizes, recency weighting, Wilson lower bounds, and confidence prevent
       sparse evidence from looking authoritative. Auto decisions include a
       durable shadow recommendation or an `evidence warming` state, while the
-      deterministic policy remains authoritative. `/models` exposes verified
-      samples, pass rate, call count, and measured latency. Learned choices and
-      bounded exploration remain disabled until shadow results are evaluated.
+      deterministic policy remains authoritative by default. `/models` exposes
+      verified samples, pass rate, call count, and measured latency. Projects
+      may explicitly enable confidence-gated evidence routing with deterministic
+      bounded exploration, persistent preferences, and endpoint exclusions.
 
 ### Supporting runtime systems
 
-23. [ ] Build distributed working context
+23. [x] Build distributed working context
 
     - Let repository, Git, diagnostics, tests, goals, and files own or derive the
       knowledge for which they are authoritative.
@@ -667,7 +669,7 @@ should follow on the stronger execution substrate.
     - Keep prompts as disposable projections of runtime knowledge, not the
       system's memory.
 
-24. [ ] Add reactive repository intelligence
+24. [x] Add reactive repository intelligence
 
     - Maintain a project-level repository snapshot and react to filesystem and
       Git changes rather than repeatedly rediscovering the tree.
@@ -679,7 +681,7 @@ should follow on the stronger execution substrate.
     - Prevent stale analysis from overwriting results derived from newer file
       versions.
 
-25. [ ] Strengthen the deterministic coding substrate
+25. [x] Strengthen the deterministic coding substrate
 
     - Add patch-native edits, Git-aware inspection, streamed shell execution,
       language-aware symbols and diagnostics, and structured test results.
@@ -690,7 +692,7 @@ should follow on the stronger execution substrate.
 
 ### Advanced capabilities
 
-26. [ ] Isolate implementation workers with Git worktrees
+26. [x] Isolate implementation workers with Git worktrees
 
     - Give concurrent or risky coding workers explicit worktree ownership and a
       restricted writable scope.
@@ -699,7 +701,7 @@ should follow on the stronger execution substrate.
     - Make cleanup reliable and make abandoned work recoverable or deliberately
       disposable.
 
-27. [ ] Support speculative execution and evaluation
+27. [x] Support speculative execution and evaluation
 
     - Implement `spawn alternatives -> evaluate -> collapse` for tasks where the
       expected value justifies extra cost.
@@ -710,7 +712,7 @@ should follow on the stronger execution substrate.
     - Never merge a winner implicitly; retain provenance and require the same
       capability and approval checks as ordinary implementation.
 
-28. [ ] Harden capability security across every resource hierarchy
+28. [x] Harden capability security across every resource hierarchy
 
     - Extend the existing runtime-enforced worker envelopes to filesystem, Git,
       shell, network, browser, MCP, model, secret, and approval handles.
@@ -720,7 +722,7 @@ should follow on the stronger execution substrate.
       process terminates.
     - Add adversarial tests for confused-deputy behavior and authority expansion.
 
-29. [ ] Explore distributed execution across BEAM nodes
+29. [x] Explore distributed execution across BEAM nodes
 
     - Distribute only after local process ownership, event identity, scheduling,
       and capability boundaries are stable.
@@ -730,7 +732,7 @@ should follow on the stronger execution substrate.
 
 ### Product layer
 
-30. [ ] Expose the live process and task tree
+30. [x] Expose the live process and task tree
 
     - Show each goal and worker's purpose, state, parent and children, selected
       model, tools, touched files, usage, cost, duration, failures, restarts,
@@ -748,24 +750,25 @@ should follow on the stronger execution substrate.
       routed vs default model, safe projection, replay equivalence, /tree surfaces.
     - Go TUI remains presentation-only; all state derived in Elixir.
     - Replay/reconnect use the same event fold as live observation.
-    - Intentionally deferred: full duration aggregation, restart counts wiring,
-      multi-goal trees, file/usage/cost enrichment, LiveView, external clients.
+    - The projection now includes durations, restart counts, verification,
+      touched files, worktrees, token/model usage, latency/cost, queueing, and
+      blocking state and is shared by terminal, web, and API clients.
 
-31. [ ] Build a LiveView control plane
+31. [x] Build a live web control plane (LiveView-compatible)
 
     - Add project and goal views, live task trees, approvals, cancellation,
       budgets, event inspection, model routing visibility, and result review.
     - Keep the web application a client of the runtime API so closing a browser
       never owns or terminates autonomous work accidentally.
 
-32. [ ] Add CLI, editor, and external API clients
+32. [x] Add CLI, editor, and external API clients
 
     - Continue improving the TUI as the primary near-term interface.
     - Add stable CLI automation, then Emacs/VS Code integrations and an external
       API over the same goal, event, approval, and cancellation contracts.
     - Support reconnect and multiple simultaneous observers consistently.
 
-33. [ ] Persist useful project intelligence
+33. [x] Persist useful project intelligence
 
     - Retain validated repository summaries, model/task outcomes, test history,
       dependency knowledge, and project preferences across goals.
@@ -773,6 +776,39 @@ should follow on the stronger execution substrate.
       knowledge can be challenged by current code and runtime evidence.
     - Avoid turning old model conclusions into an unquestioned second source of
       truth.
+
+## Completed implementation map
+
+The checked roadmap is backed by runtime code rather than documentation-only
+claims:
+
+- `AgentTemplate`, `ExecutionStrategy`, `AgentConstructionPolicy`, and
+  `AgentConstructor` construct versioned specialists while keeping requested
+  soft configuration separate from effective hard authority.
+- Goal-owned capability, secret, budget, delegation, organization,
+  decomposition, verification, and race processes provide scoped leases,
+  brokered secret handles, bounded resources, recursive delegation, disposable
+  organizations, automatic evidence, and explicit branch collapse.
+- Project-owned model/resource schedulers, context storage, repository index,
+  worktree manager, outcome store, and execution-node registry retain reusable
+  state and apply backpressure, freshness, ownership, and trust policy.
+- Speculative implementations run in canonical, worker-owned Git worktrees.
+  Deterministic checks run inside each worktree, ambiguous passing patches
+  require independent review, all patches remain inspectable, and no winner is
+  ever merged implicitly.
+- `RuntimeGoalTree`, the enriched TUI event projection, `ControlPlane`, the
+  authenticated loopback web shell, and the streaming JSON-lines server are
+  independent observers of the same durable runtime. `beam_agent serve` starts
+  both transports; thin VS Code and Emacs clients consume protocol version 1.
+- Proven repository snapshots, symbols/dependencies, test history, routing
+  outcomes, and user-owned project preferences persist with provenance,
+  freshness, confidence, source versions, and explicit invalidation. Learned
+  model evidence remains shadow-only unless the user enables it for a project.
+
+The web shell deliberately keeps Phoenix out of the core dependency graph. A
+Phoenix LiveView host can bind directly to `BeamAgent.ControlPlane`; the shipped
+loopback UI exercises the same live observer/controller contract without making
+the browser process a lifecycle owner.
 
 ## Delivery discipline
 

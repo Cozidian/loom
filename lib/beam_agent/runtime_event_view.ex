@@ -8,22 +8,30 @@ defmodule BeamAgent.RuntimeEventView do
   """
 
   @safe_scalar_keys MapSet.new(~w(
-    access agent_role agent_spec_id approval_id attempt authority cached_tokens cancelled capabilities_requested category check_count check_id child_session_id command_id compacted_count
+    access agent_role agent_spec_id allocation_id approval_id attempt authority authority_decision_id authority_disposition budget_allocation_id cached_tokens cancelled capabilities_requested category check_count check_id child_session_id command_id compacted_count
     compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision duration_ms
-    context_ref_count decision_id depth effective_capability_id endpoint_id estimated_cost estimated_tokens failure_code fingerprint from goal_fingerprint goal_id health id index instruction_count is_error
+    context_ref_count decision_id depth duration_ms effective_capability_id endpoint_id estimated_cost estimated_tokens expires_at failure_code fallback fingerprint from goal_fingerprint goal_id handle_id health id index instruction_count is_error kind lease_id
     average_latency_ms best_verified_samples confidence eligible generated_at language latency_ms latency_preference
     limit locality measured_latency_ms minimum_verified_samples mode model name operational_samples
     operational_success_rate operational_successes outcome_id output_tokens quality_lower_bound
     parent_capability_id parent_session_id parent_worker_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
     recency_weighted_pass_rate recommended_endpoint_id recovered redaction request_id request_version
     exit_status failed_count passed_count response_id required retries root selected_endpoint_id server session_id source
-    requested_capability_mode role role_requested state status step strategy stream success target_session_id task_type template template_requested timeout to tool tool_call_id tool_count tools_required total_tokens
-    truncated turn type verification_id verified_pass_rate verified_passes verified_samples version window_days window_tokens worker_id
+    execution_strategy operations operations_remaining purpose_fingerprint requested_capability_mode role role_requested source state status step strategy stream success target_session_id task_type template template_requested template_source template_version timeout to tool tool_call_id tool_count tools_required total_tokens
+    truncated turn type verification_id verification_status verified_pass_rate verified_passes verified_samples version window_days window_tokens worker_id
+    delegation_id completion_criteria_fingerprint progress_fingerprint result_fingerprint spec_id
+    organization_id organization_status coordinator_id plan_id task_id task_status task_count
+    resource_pool resource_lease_id queue_depth wait_ms evidence_count
+    race_id candidate_id candidate_count winner_id discarded_count merged evaluation_fingerprint justification_fingerprint
+    generation added_count changed_count removed_count change hash path command_fingerprint
+    worktree_id owner_worker_id base_revision worktree_status changed_file_count patch_fingerprint force
   ))
 
   @safe_container_keys MapSet.new(~w(usage))
   @safe_object_keys MapSet.new(~w(evidence inputs verification))
-  @safe_list_keys MapSet.new(~w(candidate_endpoint_ids candidates endpoints))
+  @safe_list_keys MapSet.new(
+                    ~w(candidate_endpoint_ids candidates endpoints reasons rejected_fields requested_scopes)
+                  )
   @safe_provenance_sources MapSet.new(~w(
     goal_default parent_allocation parent_inheritance parent_proposal
     parent_proposal_runtime_constrained project_default project_state

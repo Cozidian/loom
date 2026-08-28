@@ -1,7 +1,18 @@
 defmodule BeamAgent.CapabilityEnvelope do
   @moduledoc "Immutable, delegable authority attached to a goal or worker."
 
-  @scopes [:tools, :paths, :commands, :hosts, :mcp_servers, :model_classes]
+  @scopes [
+    :tools,
+    :paths,
+    :commands,
+    :hosts,
+    :git_operations,
+    :browser_scopes,
+    :mcp_servers,
+    :model_classes,
+    :secret_kinds,
+    :approval_scopes
+  ]
   @enforce_keys [:id, :scopes]
   defstruct [:id, :parent_id, :scopes]
 

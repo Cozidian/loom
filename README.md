@@ -130,8 +130,8 @@ Available filters cover category, event type, root/child worker, session prefix,
 correlation and causation prefixes, cursor range, redaction state, ordering, and
 a bounded result limit. Filtering and counting run in the Elixir goal runtime;
 the Go terminal only submits the query and renders the safe public results.
-The local interfaces use the same `BeamAgent.Runtime` contract intended for
-future LiveView, editor, and API clients. A connection atomically receives
+The local interfaces, loopback web control plane, VS Code/Emacs adapters, and
+streaming JSON-lines API use the same `BeamAgent.Runtime` contract. A connection atomically receives
 replay and subscribes to later goal events, exposes its durable cursor, and can
 be recreated with `after: cursor` without making terminal state authoritative.
 Public connections use redacted events unless a trusted in-process client
@@ -188,8 +188,12 @@ Every real LLM sees the same model-callable coding tools:
 - `run_command` has bounded time/output and runs with network denied and writes
   restricted to the workspace and temporary directories;
 - `reload_context` refreshes changed instruction and skill files after approval;
-- `spawn_subagent` delegates into another supervised session with the same
-  workspace and policy.
+- `spawn_subagent` dynamically constructs a bounded specialist with attenuated
+  authority and reclaims its live worker after recording the result;
+- `delegate_tasks` executes a validated dependency DAG with bounded parallelism;
+- `request_capability` submits structured temporary-authority requests;
+- `request_project_context`, `file_symbols`, `git_inspect`, and `apply_patch`
+  consume deterministic project state rather than asking a model to rediscover it.
 
 Paths must be workspace-relative. Canonical path and symlink checks reject
 escapes outside the root. Tool requests, approvals, denials, typed failures, and
@@ -228,6 +232,30 @@ with `BeamAgent.attach_verification/3`, and `BeamAgent.export_outcomes/1`
 returns a redacted JSONL export without prompts or model content.
 `BeamAgent.routing_evidence/2` returns project-local empirical summaries and the
 current shadow recommendation.
+
+## Web, editor, and external clients
+
+Serve an existing durable goal through authenticated loopback interfaces:
+
+```sh
+./beam_agent serve SESSION_ID
+```
+
+This prints a browser control-plane URL and the address of the versioned
+JSON-lines API. Both bind to `127.0.0.1`; stopping either interface leaves the
+goal alive. The browser can inspect the complete runtime snapshot, submit work,
+verify it, and cancel a running turn. API connections receive live goal events
+in addition to command responses and support multiple simultaneous observers.
+
+Thin editor clients live in [`clients/`](clients/): a dependency-free VS Code
+extension entrypoint and an Emacs Lisp network client. Configure either with
+the host, port, and token printed by `beam_agent serve`.
+
+The runtime can also create worker-owned Git worktrees and compare isolated
+implementations with `BeamAgent.speculate_implementations/3`. Candidate checks
+run inside their worktree, ambiguous verified patches remain inconclusive until
+reviewed, every patch is retained for inspection, and no result is merged
+implicitly.
 
 ## Project instructions and skills
 

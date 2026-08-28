@@ -7,7 +7,15 @@ defmodule BeamAgent.AgentConstructor do
   resources, and lifecycle always come from the runtime.
   """
 
-  alias BeamAgent.{Agent, AgentSpec, CapabilityEnvelope, ProjectContext, TaskClassifier}
+  alias BeamAgent.{
+    Agent,
+    AgentConstructionPolicy,
+    AgentSpec,
+    AgentTemplate,
+    ProjectContext,
+    ResourceBudget,
+    TaskClassifier
+  }
 
   @maximum_delegation_depth 4
 
@@ -15,24 +23,40 @@ defmodule BeamAgent.AgentConstructor do
     envelope = Keyword.fetch!(opts, :capability_envelope)
     workspace_root = Keyword.fetch!(opts, :workspace_root)
     goal = Keyword.get(opts, :objective) || "Coordinate work requested through this session"
-    role = Keyword.get(opts, :role) || "Goal coordinator"
-    instructions = normalize_instructions(Keyword.get(opts, :agent_instructions, []))
+    classification = TaskClassifier.classify(goal, workspace_root)
+    template = AgentTemplate.resolve("coordinator", classification)
+    role = Keyword.get(opts, :role) || template.role
 
-    with {:ok, context} <- ProjectContext.load(workspace_root) do
+    instructions =
+      normalize_instructions(
+        template.instructions ++
+          normalize_instructions(Keyword.get(opts, :agent_instructions, []))
+      )
+
+    with {:ok, context} <- ProjectContext.load(workspace_root),
+         {:ok, authority} <- AgentConstructionPolicy.evaluate_root(envelope) do
       AgentSpec.new(%{
         goal: goal,
         role: role,
         instructions: instructions,
         context_refs: [%{kind: "project_context", id: context.fingerprint}],
-        requested_capabilities: :inherit,
-        effective_capabilities: envelope,
+        requested_capabilities: authority.requested,
+        effective_capabilities: authority.effective,
         restrictions: restrictions(workspace_root, envelope),
         resources: resources(opts),
-        model_requirements: root_model_requirements(opts),
-        verification_requirements: %{required: false, source: "goal_default"},
+        model_requirements: root_model_requirements(opts, template),
+        verification_requirements:
+          Map.merge(
+            %{required: false, source: "goal_default"},
+            template.verification_requirements
+          ),
         parent: nil,
         lifecycle: lifecycle(0),
-        template: "goal-coordinator",
+        template: template.id,
+        template_version: template.version,
+        template_source: template.source,
+        execution_strategy: template.execution_strategy,
+        authority_decision: authority,
         provenance: %{
           goal: if(Keyword.get(opts, :objective), do: "user", else: "runtime_default"),
           role: if(Keyword.get(opts, :role), do: "user", else: "runtime_default"),
@@ -61,12 +85,16 @@ defmodule BeamAgent.AgentConstructor do
          depth <- parent_depth(parent.agent_spec) + 1,
          :ok <- validate_depth(depth),
          goal when is_binary(goal) and goal != "" <- value(proposal, :goal),
-         {:ok, requested} <- requested_capabilities(proposal),
-         {:ok, envelope} <- effective_envelope(parent.capability_envelope, requested) do
+         {:ok, authority} <-
+           AgentConstructionPolicy.evaluate_child(parent.capability_envelope, proposal) do
       classification = TaskClassifier.classify(goal, parent.workspace_root)
-      role = role(proposal, classification)
-      instructions = normalize_instructions(value(proposal, :instructions) || [])
-      template = normalize_template(value(proposal, :template), classification)
+      template = AgentTemplate.resolve(value(proposal, :template), classification)
+      role = role(proposal, classification, template)
+
+      instructions =
+        normalize_instructions(
+          template.instructions ++ normalize_instructions(value(proposal, :instructions) || [])
+        )
 
       AgentSpec.new(%{
         goal: goal,
@@ -76,19 +104,24 @@ defmodule BeamAgent.AgentConstructor do
           %{kind: "project_context", id: project_context.fingerprint},
           %{kind: "parent_worker", id: parent_session_id}
         ],
-        requested_capabilities: requested,
-        effective_capabilities: envelope,
-        restrictions: restrictions(parent.workspace_root, envelope),
+        requested_capabilities: authority.requested,
+        effective_capabilities: authority.effective,
+        restrictions: restrictions(parent.workspace_root, authority.effective),
         resources: resources_from_parent(parent, opts),
-        model_requirements: model_requirements(proposal, parent),
-        verification_requirements: verification_requirements(proposal),
+        model_requirements: model_requirements(proposal, parent, template),
+        verification_requirements: verification_requirements(proposal, template),
         parent: %{
           worker_id: parent_session_id,
+          delegation_id: Keyword.get(opts, :delegation_id),
           spec_id: parent.agent_spec && parent.agent_spec.spec_id,
           capability_envelope_id: parent.capability_envelope.id
         },
         lifecycle: lifecycle(depth),
-        template: template,
+        template: template.id,
+        template_version: template.version,
+        template_source: template.source,
+        execution_strategy: template.execution_strategy,
+        authority_decision: authority,
         provenance: %{
           goal: "parent_proposal",
           role: if(value(proposal, :role), do: "parent_proposal", else: "runtime_inference"),
@@ -99,7 +132,10 @@ defmodule BeamAgent.AgentConstructor do
             ),
           context_refs: "runtime_context_selection",
           requested_capabilities:
-            if(requested == :inherit, do: "parent_inheritance", else: "parent_proposal"),
+            if(authority.requested == :inherit,
+              do: "parent_inheritance",
+              else: "parent_proposal"
+            ),
           effective_capabilities: "runtime_policy",
           restrictions: "runtime_policy",
           resources: "parent_allocation",
@@ -124,21 +160,13 @@ defmodule BeamAgent.AgentConstructor do
 
   def child(_parent_session_id, _proposal, _opts), do: {:error, :invalid_agent_proposal}
 
-  defp effective_envelope(parent, :inherit), do: {:ok, parent}
-  defp effective_envelope(parent, requested), do: CapabilityEnvelope.restrict(parent, requested)
-
-  defp requested_capabilities(proposal) do
-    case value(proposal, :capabilities) do
-      nil -> {:ok, :inherit}
-      requested when is_map(requested) -> {:ok, requested}
-      _invalid -> {:error, :invalid_requested_capabilities}
-    end
-  end
-
-  defp role(proposal, classification) do
+  defp role(proposal, classification, template) do
     case value(proposal, :role) do
-      value when is_binary(value) and value != "" -> value
-      _other -> inferred_role(classification)
+      value when is_binary(value) and value != "" ->
+        value
+
+      _other ->
+        if value(proposal, :template), do: template.role, else: inferred_role(classification)
     end
   end
 
@@ -164,13 +192,6 @@ defmodule BeamAgent.AgentConstructor do
     [language, focus, "specialist"] |> Enum.reject(&is_nil/1) |> Enum.join(" ")
   end
 
-  defp normalize_template(nil, classification), do: "dynamic-#{classification.task_type}"
-
-  defp normalize_template(template, _classification) when is_binary(template) and template != "",
-    do: template
-
-  defp normalize_template(_template, classification), do: "dynamic-#{classification.task_type}"
-
   defp normalize_instructions(instructions) when is_binary(instructions), do: [instructions]
 
   defp normalize_instructions(instructions) when is_list(instructions) do
@@ -191,22 +212,30 @@ defmodule BeamAgent.AgentConstructor do
   end
 
   defp resources(opts) do
-    %{
-      context_window_tokens: Keyword.get(opts, :context_window_tokens, 32_000),
-      budget: :not_allocated
-    }
+    allocation =
+      ResourceBudget.root_allocation(
+        Keyword.fetch!(opts, :goal_id),
+        Keyword.get(opts, :budget, %{})
+      )
+
+    Map.put(allocation, :context_window_tokens, Keyword.get(opts, :context_window_tokens, 32_000))
   end
 
   defp resources_from_parent(parent, opts) do
     %{
       context_window_tokens:
         Keyword.get(opts, :context_window_tokens, parent.context_window_tokens),
-      budget: :not_allocated
+      allocation_id: parent.agent_spec.resources.allocation_id,
+      worker_id: parent.session_id,
+      parent_allocation_id: parent.agent_spec.resources.parent_allocation_id,
+      limits: parent.agent_spec.resources.limits,
+      usage: parent.agent_spec.resources.usage,
+      status: :provisional
     }
   end
 
-  defp root_model_requirements(opts) do
-    %{
+  defp root_model_requirements(opts, template) do
+    Map.merge(template.model_requirements, %{
       reasoning: :standard,
       locality: if(Keyword.get(opts, :model_strategy) == :local_only, do: :local, else: :any),
       privacy:
@@ -216,10 +245,10 @@ defmodule BeamAgent.AgentConstructor do
         ),
       cost: :prefer_low,
       latency: :interactive
-    }
+    })
   end
 
-  defp model_requirements(proposal, parent) do
+  defp model_requirements(proposal, parent, template) do
     requested = value(proposal, :model_requirements)
     requested = if is_map(requested), do: requested, else: %{}
 
@@ -227,11 +256,41 @@ defmodule BeamAgent.AgentConstructor do
       if parent.model_strategy == :local_only, do: :local, else: :provider_allowed
 
     %{
-      reasoning: enum_value(requested, :reasoning, [:standard, :high], :standard),
-      locality: enum_value(requested, :locality, [:any, :local, :remote], :any),
-      privacy: enum_value(requested, :privacy, [:provider_allowed, :local], inherited_privacy),
-      cost: enum_value(requested, :cost, [:prefer_low, :balanced], :prefer_low),
-      latency: enum_value(requested, :latency, [:interactive, :batch], :interactive)
+      reasoning:
+        enum_value(
+          requested,
+          :reasoning,
+          [:standard, :high],
+          Map.get(template.model_requirements, :reasoning, :standard)
+        ),
+      locality:
+        enum_value(
+          requested,
+          :locality,
+          [:any, :local, :remote],
+          Map.get(template.model_requirements, :locality, :any)
+        ),
+      privacy:
+        enum_value(
+          requested,
+          :privacy,
+          [:provider_allowed, :local],
+          Map.get(template.model_requirements, :privacy, inherited_privacy)
+        ),
+      cost:
+        enum_value(
+          requested,
+          :cost,
+          [:prefer_low, :balanced],
+          Map.get(template.model_requirements, :cost, :prefer_low)
+        ),
+      latency:
+        enum_value(
+          requested,
+          :latency,
+          [:interactive, :batch],
+          Map.get(template.model_requirements, :latency, :interactive)
+        )
     }
     |> constrain_privacy(inherited_privacy)
   end
@@ -244,12 +303,17 @@ defmodule BeamAgent.AgentConstructor do
 
   defp constrain_privacy(requirements, _inherited), do: requirements
 
-  defp verification_requirements(proposal) do
+  defp verification_requirements(proposal, template) do
     requested = value(proposal, :verification_requirements)
     requested = if is_map(requested), do: requested, else: %{}
 
     %{
-      required: boolean_value(requested, :required, false),
+      required:
+        boolean_value(
+          requested,
+          :required,
+          Map.get(template.verification_requirements, :required, false)
+        ),
       source: :runtime_policy
     }
   end

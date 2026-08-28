@@ -30,6 +30,10 @@ defmodule BeamAgent.AgentSpec do
     :parent,
     :lifecycle,
     :template,
+    :template_version,
+    :template_source,
+    :execution_strategy,
+    :authority_decision,
     :provenance
   ]
 
@@ -48,6 +52,10 @@ defmodule BeamAgent.AgentSpec do
     :parent,
     :lifecycle,
     :template,
+    :template_version,
+    :template_source,
+    :execution_strategy,
+    :authority_decision,
     :provenance,
     version: @version
   ]
@@ -68,6 +76,10 @@ defmodule BeamAgent.AgentSpec do
           parent: map() | nil,
           lifecycle: map(),
           template: String.t(),
+          template_version: pos_integer(),
+          template_source: atom(),
+          execution_strategy: map(),
+          authority_decision: map(),
           provenance: map()
         }
 
@@ -117,6 +129,7 @@ defmodule BeamAgent.AgentSpec do
     Role: #{spec.role}
     Goal: #{spec.goal}
     Template: #{spec.template}
+    Execution strategy: #{spec.execution_strategy.id} v#{spec.execution_strategy.version}
 
     Instructions:
     #{instructions}
@@ -138,6 +151,12 @@ defmodule BeamAgent.AgentSpec do
       "version" => spec.version,
       "role" => spec.role,
       "template" => spec.template,
+      "template_version" => spec.template_version,
+      "template_source" => to_string(spec.template_source),
+      "execution_strategy" => spec.execution_strategy.id,
+      "authority_decision_id" => spec.authority_decision.id,
+      "authority_disposition" => to_string(spec.authority_decision.disposition),
+      "budget_allocation_id" => spec.resources.allocation_id,
       "target_session_id" => target_session_id,
       "parent_worker_id" => spec.parent && spec.parent.worker_id,
       "depth" => spec.lifecycle.depth,
@@ -157,6 +176,32 @@ defmodule BeamAgent.AgentSpec do
     |> Map.from_struct()
     |> Map.put(:effective_capabilities, CapabilityEnvelope.to_map(spec.effective_capabilities))
   end
+
+  def with_resources(%__MODULE__{} = spec, resources) when is_map(resources) do
+    spec
+    |> Map.from_struct()
+    |> Map.put(:resources, resources)
+    |> Map.put(:spec_id, nil)
+    |> new()
+  end
+
+  def with_resources(_spec, _resources), do: {:error, :invalid_agent_resources}
+
+  def with_workspace(%__MODULE__{} = spec, workspace_root, worktree_id)
+      when is_binary(workspace_root) and is_binary(worktree_id) do
+    attributes =
+      spec
+      |> Map.from_struct()
+      |> Map.put(:spec_id, nil)
+      |> Map.update!(:restrictions, &Map.put(&1, :workspace_root, workspace_root))
+      |> Map.update!(:restrictions, &Map.put(&1, :worktree_id, worktree_id))
+      |> Map.update!(:context_refs, &(&1 ++ [%{kind: "git_worktree", id: worktree_id}]))
+
+    new(attributes)
+  end
+
+  def with_workspace(_spec, _workspace_root, _worktree_id),
+    do: {:error, :invalid_agent_workspace}
 
   defp validate_text(text, maximum, error) do
     if text != "" and byte_size(text) <= maximum, do: :ok, else: {:error, error}
@@ -188,11 +233,15 @@ defmodule BeamAgent.AgentSpec do
       :model_requirements,
       :verification_requirements,
       :lifecycle,
+      :execution_strategy,
+      :authority_decision,
       :provenance
     ]
 
     if Enum.all?(fields, &is_map(attributes[&1])) and
          is_binary(attributes[:template]) and attributes[:template] != "" and
+         is_integer(attributes[:template_version]) and attributes[:template_version] > 0 and
+         is_atom(attributes[:template_source]) and
          (is_nil(attributes[:parent]) or is_map(attributes[:parent])) and
          (attributes[:requested_capabilities] == :inherit or
             is_map(attributes[:requested_capabilities])),

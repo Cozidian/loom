@@ -8,6 +8,7 @@ defmodule BeamAgent.ModelRouter do
     ModelRegistry,
     Names,
     OutcomeStore,
+    Project.ContextStore,
     TaskClassifier
   }
 
@@ -17,24 +18,141 @@ defmodule BeamAgent.ModelRouter do
   end
 
   def route(project_id, input) do
-    with {:ok, pid} <- Names.pid(:model_router, project_id),
-         do: GenServer.call(pid, {:route, input})
+    call(project_id, {:route, input})
+  end
+
+  def preferences(project_id) do
+    call(project_id, :preferences)
+  end
+
+  def update_preferences(project_id, preferences) when is_map(preferences) do
+    call(project_id, {:update_preferences, preferences})
   end
 
   @impl true
-  def init(opts), do: {:ok, %{project_id: Keyword.fetch!(opts, :project_id)}}
+  def init(opts) do
+    project_id = Keyword.fetch!(opts, :project_id)
+    persisted = persisted_preferences(project_id)
+
+    {:ok,
+     %{
+       project_id: project_id,
+       evidence_mode:
+         normalize_evidence_mode(
+           Keyword.get(
+             opts,
+             :routing_evidence_mode,
+             persisted_value(persisted, :evidence_mode, :shadow)
+           )
+         ),
+       exploration_percent:
+         normalize_exploration(
+           Keyword.get(
+             opts,
+             :routing_exploration_percent,
+             persisted_value(persisted, :exploration_percent, 5)
+           )
+         ),
+       excluded_endpoint_ids:
+         MapSet.new(
+           Keyword.get(
+             opts,
+             :routing_excluded_endpoints,
+             persisted_value(persisted, :excluded_endpoint_ids, [])
+           )
+         ),
+       preferred_endpoint_ids:
+         Keyword.get(
+           opts,
+           :routing_preferred_endpoints,
+           persisted_value(persisted, :preferred_endpoint_ids, [])
+         )
+     }}
+  end
 
   @impl true
   def handle_call({:route, input}, _from, state) do
     {:ok, endpoints} = ModelRegistry.list(state.project_id)
 
+    endpoints = Enum.reject(endpoints, &MapSet.member?(state.excluded_endpoint_ids, &1.id))
+    input = Map.put_new(input, :project_preferred_endpoint_ids, state.preferred_endpoint_ids)
+
     result =
       case choose(endpoints, input) do
-        {:ok, decision} -> {:ok, add_routing_evidence(state.project_id, decision, input)}
-        {:error, _reason} = error -> error
+        {:ok, decision} ->
+          decision = add_routing_evidence(state.project_id, decision, input)
+          {:ok, apply_evidence_policy(state, decision, endpoints)}
+
+        {:error, _reason} = error ->
+          error
       end
 
     {:reply, result, state}
+  end
+
+  def handle_call(:preferences, _from, state),
+    do: {:reply, {:ok, public_preferences(state)}, state}
+
+  def handle_call({:update_preferences, preferences}, _from, state) do
+    case normalize_preferences(preferences, state) do
+      {:ok, state} -> {:reply, {:ok, public_preferences(state)}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp normalize_preferences(preferences, state) do
+    evidence_mode = value(preferences, :evidence_mode, state.evidence_mode)
+    exploration = value(preferences, :exploration_percent, state.exploration_percent)
+
+    excluded =
+      value(preferences, :excluded_endpoint_ids, MapSet.to_list(state.excluded_endpoint_ids))
+
+    preferred = value(preferences, :preferred_endpoint_ids, state.preferred_endpoint_ids)
+
+    if evidence_mode in [:shadow, :enabled, "shadow", "enabled"] and
+         is_integer(exploration) and exploration in 0..10 and is_list(excluded) and
+         is_list(preferred) and Enum.all?(excluded ++ preferred, &is_binary/1) do
+      {:ok,
+       %{
+         state
+         | evidence_mode: normalize_evidence_mode(evidence_mode),
+           exploration_percent: exploration,
+           excluded_endpoint_ids: MapSet.new(excluded),
+           preferred_endpoint_ids: preferred
+       }}
+    else
+      {:error, :invalid_routing_preferences}
+    end
+  end
+
+  defp public_preferences(state) do
+    %{
+      evidence_mode: state.evidence_mode,
+      exploration_percent: state.exploration_percent,
+      excluded_endpoint_ids: state.excluded_endpoint_ids |> MapSet.to_list() |> Enum.sort(),
+      preferred_endpoint_ids: state.preferred_endpoint_ids
+    }
+  end
+
+  defp persisted_preferences(project_id) do
+    case ContextStore.preferences(project_id) do
+      {:ok, preferences} -> preferences
+      _other -> %{}
+    end
+  end
+
+  defp persisted_value(preferences, key, default),
+    do: Map.get(preferences, to_string(key), Map.get(preferences, key, default))
+
+  defp value(map, key, default), do: Map.get(map, key, Map.get(map, to_string(key), default))
+
+  defp call(project_id, message) do
+    with {:ok, pid} <- Names.pid(:model_router, project_id) do
+      GenServer.call(pid, message)
+    end
+  catch
+    :exit, {:noproc, _details} -> {:error, :not_found}
+    :exit, {:normal, _details} -> {:error, :not_found}
   end
 
   defp choose(endpoints, input) do
@@ -168,6 +286,10 @@ defmodule BeamAgent.ModelRouter do
 
   defp score(endpoint, input, classification) do
     preferred = if endpoint.id == input.preferred_endpoint_id, do: 30, else: 0
+
+    project_preferred =
+      if endpoint.id in Map.get(input, :project_preferred_endpoint_ids, []), do: 20, else: 0
+
     available = if endpoint.health.status == :available, do: 15, else: 5
 
     local_simple =
@@ -203,7 +325,8 @@ defmodule BeamAgent.ModelRouter do
         0
       end
 
-    preferred + available + local_simple + free + strong + context_fit + latency
+    preferred + project_preferred + available + local_simple + free + strong + context_fit +
+      latency
   end
 
   defp decision(endpoint, candidates, classification, reason, deterministic_answer \\ nil) do
@@ -249,6 +372,52 @@ defmodule BeamAgent.ModelRouter do
       endpoints: []
     }
   end
+
+  defp apply_evidence_policy(%{evidence_mode: :shadow}, decision, _endpoints), do: decision
+  defp apply_evidence_policy(_state, %{endpoint: nil} = decision, _endpoints), do: decision
+
+  defp apply_evidence_policy(state, %{evidence: evidence} = decision, endpoints) do
+    recommended_id = evidence.recommended_endpoint_id
+
+    cond do
+      evidence.state != "ready" or is_nil(recommended_id) ->
+        put_in(decision, [:evidence, :mode], "enabled")
+
+      explore?(decision.decision_id, state.exploration_percent) ->
+        decision
+        |> put_in([:evidence, :mode], "enabled")
+        |> put_in([:evidence, :selection], "bounded_exploration")
+
+      endpoint = Enum.find(endpoints, &(&1.id == recommended_id)) ->
+        %{
+          decision
+          | endpoint: endpoint,
+            selected_endpoint_id: endpoint.id,
+            reason: "confidence-gated recommendation from recent verified outcomes",
+            evidence:
+              evidence
+              |> Map.put(:mode, "enabled")
+              |> Map.put(:selection, "verified_evidence")
+        }
+
+      true ->
+        decision
+    end
+  end
+
+  defp apply_evidence_policy(_state, decision, _endpoints), do: decision
+
+  defp explore?(decision_id, percentage) do
+    <<bucket::unsigned-integer-size(16), _rest::binary>> = :crypto.hash(:sha256, decision_id)
+    rem(bucket, 100) < percentage
+  end
+
+  defp normalize_evidence_mode(value) when value in [:shadow, :enabled], do: value
+  defp normalize_evidence_mode("enabled"), do: :enabled
+  defp normalize_evidence_mode(_value), do: :shadow
+
+  defp normalize_exploration(value) when is_integer(value), do: min(max(value, 0), 10)
+  defp normalize_exploration(_value), do: 5
 
   defp model_class(endpoint),
     do: Enum.join([endpoint.claims.locality, endpoint.claims.cost_hint], ":")

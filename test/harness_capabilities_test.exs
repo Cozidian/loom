@@ -2,7 +2,16 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
   use ExUnit.Case, async: false
 
   alias BeamAgent.CLI.TurnRunner
-  alias BeamAgent.Tools.{CreateFile, EditFile, ReadFile, RunCommand, SearchFiles}
+
+  alias BeamAgent.Tools.{
+    ApplyPatch,
+    CreateFile,
+    EditFile,
+    FileDiagnostics,
+    ReadFile,
+    RunCommand,
+    SearchFiles
+  }
 
   defmodule FileAgentProvider do
     @behaviour BeamAgent.LLMProvider
@@ -65,6 +74,19 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
 
     assert {:error, {:workspace_path_must_be_relative, _path}} =
              BeamAgent.Workspace.resolve(context.workspace, "/tmp/secret.txt")
+  end
+
+  test "language-aware diagnostics report syntax failures without a model", context do
+    File.write!(Path.join(context.workspace, "broken.ex"), "defmodule Broken do\n  def x(\nend\n")
+
+    assert {:ok, encoded} =
+             FileDiagnostics.execute(%{"path" => "broken.ex"}, %{
+               workspace_root: context.workspace
+             })
+
+    result = JSON.decode!(encoded)
+    assert result["count"] == 1
+    assert hd(result["diagnostics"])["severity"] == "error"
   end
 
   test "durable sessions cannot be resumed against a different workspace", context do
@@ -146,6 +168,43 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
 
     {:ok, search_data} = JSON.decode(search_result)
     assert Enum.any?(search_data["matches"], &String.contains?(&1, "lib/new.ex:1"))
+  end
+
+  test "patch-native edits apply all hunks atomically against one observed version", context do
+    path = Path.join(context.workspace, "multi.txt")
+    File.write!(path, "alpha\nbeta\ngamma\n")
+    content = File.read!(path)
+
+    assert {:ok, encoded} =
+             ApplyPatch.execute(
+               %{
+                 "path" => "multi.txt",
+                 "expected_sha256" => BeamAgent.Tools.FileSupport.sha256(content),
+                 "hunks" => [
+                   %{"old_text" => "alpha", "new_text" => "one"},
+                   %{"old_text" => "gamma", "new_text" => "three"}
+                 ]
+               },
+               %{workspace_root: context.workspace}
+             )
+
+    assert JSON.decode!(encoded)["hunks_applied"] == 2
+    assert File.read!(path) == "one\nbeta\nthree\n"
+
+    assert {:error, :patch_text_not_found} =
+             ApplyPatch.execute(
+               %{
+                 "path" => "multi.txt",
+                 "expected_sha256" => BeamAgent.Tools.FileSupport.sha256(File.read!(path)),
+                 "hunks" => [
+                   %{"old_text" => "one", "new_text" => "changed"},
+                   %{"old_text" => "missing", "new_text" => "never-written"}
+                 ]
+               },
+               %{workspace_root: context.workspace}
+             )
+
+    assert File.read!(path) == "one\nbeta\nthree\n"
   end
 
   test "a risky tool waits for a session-owned approval before executing", context do

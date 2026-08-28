@@ -67,6 +67,43 @@ defmodule BeamAgent.Goal.EventHub do
     end
   end
 
+  def session_events(session_id, opts \\ []) do
+    BeamAgent.Registry
+    |> Registry.select([
+      {{{:goal_event_hub, :"$1"}, :"$2", :"$3"}, [], [:"$1"]}
+    ])
+    |> Enum.find_value({:error, :not_found}, fn goal_id ->
+      case events(goal_id, Keyword.put(opts, :view, :internal)) do
+        {:ok, runtime_events} ->
+          session_events =
+            runtime_events
+            |> Enum.filter(
+              &(get_in(&1, [:scope, :session_id]) == session_id and &1.durability == :durable)
+            )
+            |> Enum.map(&canonical_event/1)
+            |> Enum.sort_by(&(&1["seq"] || 0))
+
+          if session_events == [], do: nil, else: {:ok, session_events}
+
+        _other ->
+          nil
+      end
+    end)
+  end
+
+  defp canonical_event(runtime_event) do
+    %{
+      "at" => runtime_event.at,
+      "causation_id" => runtime_event.causation_id,
+      "correlation_id" => runtime_event.correlation_id,
+      "data" => runtime_event.payload.data,
+      "goal_seq" => runtime_event.goal_seq,
+      "seq" => runtime_event.payload.seq,
+      "session_id" => runtime_event.scope.session_id,
+      "type" => to_string(runtime_event.payload.type)
+    }
+  end
+
   def inspect_events(goal_id, query, opts \\ []) do
     with {:ok, pid} <- Names.pid(:goal_event_hub, goal_id) do
       GenServer.call(pid, {:inspect_events, query, Keyword.get(opts, :view, :public)})

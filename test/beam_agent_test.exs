@@ -102,6 +102,7 @@ defmodule BeamAgentTest do
     assert {:ok, child_events} = BeamAgent.events(child_id)
     assert hd(child_events)["data"]["parent_session_id"] == id
     assert Enum.any?(child_events, &(&1["type"] == "assistant_message"))
+    assert {:error, :not_found} = BeamAgent.agent_pid(child_id)
   end
 
   test "tool loops continue until the provider finishes rather than hitting a step ceiling" do
@@ -132,8 +133,11 @@ defmodule BeamAgentTest do
                event["data"]["tools_enabled"] == false
            end)
 
-    assert List.last(events)["type"] == "turn_finished"
-    assert List.last(events)["data"]["reason"] == "completed"
+    assert Enum.any?(events, &(&1["type"] == "turn_finished"))
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
+           end)
   end
 
   test "restarts a crashed agent and reconstructs model history from durable events" do

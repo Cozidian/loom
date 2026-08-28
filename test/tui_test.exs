@@ -48,22 +48,26 @@ defmodule BeamAgent.CLITUITest do
     assert payload.model == "built-in"
     assert payload.approval_mode == "ask"
 
-    assert Enum.map(payload.entries, & &1.kind) == [
-             "info",
-             "info",
-             "info",
-             "info",
-             "user",
-             "info",
-             "assistant",
-             "info"
-           ]
+    assert Enum.count(payload.entries, &(&1.kind == "user")) == 1
+    assert Enum.count(payload.entries, &(&1.kind == "assistant")) == 1
+    assert Enum.any?(payload.entries, &(&1.content == "Runtime · Turn started"))
+    assert Enum.any?(payload.entries, &(&1.content == "Runtime · Turn finished"))
 
     assert hd(payload.entries).content =~ "Goal started"
     assert Enum.any?(payload.entries, &(&1.content =~ "Agent constructed · Goal coordinator"))
     assert Enum.any?(payload.entries, &(&1.content =~ "Agent ready · Goal coordinator"))
     assert Enum.find(payload.entries, &(&1.kind == "assistant")).content == "echo(1): hello"
-    assert List.last(payload.entries).content == "Task outcome · completed · unverified"
+
+    assert Enum.any?(
+             payload.entries,
+             &(&1.content == "Task outcome · completed · unverified")
+           )
+
+    assert Enum.any?(
+             payload.entries,
+             &(&1.content == "Completion · unverified · 0 evidence items")
+           )
+
     assert is_map(payload.context_stats)
   end
 

@@ -108,7 +108,123 @@ defmodule BeamAgent do
     SessionSupervisor.spawn_subagent(parent_session_id, opts)
   end
 
+  def spawn_worker(parent_session_id, proposal, opts \\ []),
+    do: SessionSupervisor.spawn_worker(parent_session_id, proposal, opts)
+
+  def worker_delegations(goal_id), do: BeamAgent.Goal.DelegationManager.list(goal_id)
+
+  def execute_decomposition(parent_session_id, plan, opts \\ []),
+    do: BeamAgent.Goal.DecompositionExecutor.run(parent_session_id, plan, opts)
+
+  def worker_organizations(goal_id, organization_id \\ :all),
+    do: BeamAgent.Goal.OrganizationManager.snapshot(goal_id, organization_id)
+
+  def race_workers(parent_session_id, candidates, opts \\ []),
+    do: BeamAgent.Goal.Race.run(parent_session_id, candidates, opts)
+
+  def speculate_implementations(parent_session_id, candidates, opts \\ []) do
+    opts =
+      opts
+      |> Keyword.put(:isolation, :worktree)
+      |> Keyword.put(:verify_candidates, true)
+      |> Keyword.put_new(:evaluator, :verified_patch)
+
+    BeamAgent.Goal.Race.run(parent_session_id, candidates, opts)
+  end
+
+  def complete_worker(
+        %BeamAgent.WorkerHandle{} = handle,
+        content,
+        verification \\ %{status: :unverified}
+      ) do
+    BeamAgent.Goal.DelegationManager.complete(
+      handle.goal_id,
+      handle.delegation_id,
+      handle.worker_id,
+      content,
+      verification
+    )
+  end
+
+  def cancel_worker(%BeamAgent.WorkerHandle{} = handle, reason \\ :cancelled) do
+    _ = BeamAgent.Goal.DelegationManager.cancel(handle.goal_id, handle.delegation_id, reason)
+    stop_session(handle.worker_id)
+  end
+
   def agent_spec(session_id), do: Agent.spec(session_id)
+  def budget(goal_id), do: BeamAgent.Goal.BudgetManager.snapshot(goal_id)
+  def resource_pools(project_id), do: BeamAgent.Project.ResourceScheduler.snapshot(project_id)
+  def repository(project_id), do: BeamAgent.Project.RepositoryIndex.snapshot(project_id)
+  def refresh_repository(project_id), do: BeamAgent.Project.RepositoryIndex.refresh(project_id)
+
+  def repository_file(project_id, path),
+    do: BeamAgent.Project.RepositoryIndex.file(project_id, path)
+
+  def project_context(project_id, request \\ %{}),
+    do: BeamAgent.Project.ContextStore.assemble(project_id, request)
+
+  def project_context_artifacts(project_id), do: BeamAgent.Project.ContextStore.list(project_id)
+
+  def project_preferences(project_id), do: BeamAgent.ModelRouter.preferences(project_id)
+
+  def set_project_preferences(project_id, preferences) when is_map(preferences) do
+    with {:ok, normalized} <- BeamAgent.ModelRouter.update_preferences(project_id, preferences),
+         {:ok, _artifact} <-
+           BeamAgent.Project.ContextStore.put_preferences(project_id, normalized) do
+      {:ok, normalized}
+    end
+  end
+
+  def create_worktree(project_id, owner_worker_id, opts \\ []),
+    do: BeamAgent.Project.WorktreeManager.create(project_id, owner_worker_id, opts)
+
+  def inspect_worktree(project_id, handle_id),
+    do: BeamAgent.Project.WorktreeManager.inspect(project_id, handle_id)
+
+  def cleanup_worktree(project_id, handle_id, opts \\ []),
+    do: BeamAgent.Project.WorktreeManager.cleanup(project_id, handle_id, opts)
+
+  def worktrees(project_id), do: BeamAgent.Project.WorktreeManager.list(project_id)
+
+  def start_json_api(session_id, opts \\ []) do
+    BeamAgent.Runtime.JSONLineServer.start_link(Keyword.put(opts, :session_id, session_id))
+  end
+
+  def start_web_control_plane(session_id, opts \\ []) do
+    BeamAgent.ControlPlane.HTTPServer.start_link(Keyword.put(opts, :session_id, session_id))
+  end
+
+  def execution_nodes(project_id), do: BeamAgent.Project.ExecutionNodeRegistry.nodes(project_id)
+
+  def claim_distributed_job(project_id, job_id, requirements \\ %{}),
+    do: BeamAgent.Project.ExecutionNodeRegistry.claim_job(project_id, job_id, requirements)
+
+  def complete_distributed_job(project_id, job_id, result_fingerprint),
+    do:
+      BeamAgent.Project.ExecutionNodeRegistry.complete_job(
+        project_id,
+        job_id,
+        result_fingerprint
+      )
+
+  def request_capability(worker_id, request),
+    do: BeamAgent.Goal.CapabilityManager.request(worker_id, request)
+
+  def capability_leases(goal_id), do: BeamAgent.Goal.CapabilityManager.leases(goal_id)
+
+  def revoke_capability_lease(goal_id, lease_id),
+    do: BeamAgent.Goal.CapabilityManager.revoke(goal_id, lease_id)
+
+  def issue_secret_handle(goal_id, worker_id, kind, secret, opts \\ []),
+    do: BeamAgent.Goal.SecretBroker.issue(goal_id, worker_id, kind, secret, opts)
+
+  def invoke_secret_handle(goal_id, worker_id, handle_id, resource, fun),
+    do: BeamAgent.Goal.SecretBroker.invoke(goal_id, worker_id, handle_id, resource, fun)
+
+  def revoke_secret_handle(goal_id, handle_id),
+    do: BeamAgent.Goal.SecretBroker.revoke(goal_id, handle_id)
+
+  def secret_handles(goal_id), do: BeamAgent.Goal.SecretBroker.handles(goal_id)
 
   def ask(session_id, prompt, timeout \\ :infinity), do: Agent.ask(session_id, prompt, timeout)
   def cancel(session_id), do: Agent.cancel(session_id)
@@ -190,7 +306,14 @@ defmodule BeamAgent do
   def revoke_permission(session_id, permission_id),
     do: ToolPolicy.revoke(session_id, permission_id)
 
-  def events(session_id), do: EventLog.events(session_id)
+  def events(session_id) do
+    case EventLog.events(session_id) do
+      {:ok, _events} = result -> result
+      {:error, :not_found} -> EventHub.session_events(session_id)
+      {:error, _reason} = error -> error
+    end
+  end
+
   def context_snapshot(session_id), do: Context.snapshot(session_id)
 
   def conversation_context_stats(session_id) do
@@ -277,7 +400,14 @@ defmodule BeamAgent do
       :provider_profile,
       :data_dir,
       :outcome_telemetry,
-      :outcome_retention
+      :outcome_retention,
+      :resource_limits,
+      :repository_scan_interval_ms,
+      :routing_evidence_mode,
+      :routing_exploration_percent,
+      :routing_excluded_endpoints,
+      :routing_preferred_endpoints,
+      :distributed_execution_enabled
     ])
     |> Keyword.put(:workspace_root, workspace_root)
   end

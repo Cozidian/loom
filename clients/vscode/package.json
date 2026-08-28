@@ -1,0 +1,25 @@
+{
+  "name": "beam-agent-runtime-client",
+  "displayName": "BeamAgent Runtime",
+  "description": "Thin VS Code observer/controller for the BeamAgent JSON-lines API",
+  "version": "0.1.0",
+  "engines": {"vscode": "^1.90.0"},
+  "main": "./extension.js",
+  "activationEvents": ["onCommand:beamAgent.connect"],
+  "contributes": {
+    "commands": [
+      {"command": "beamAgent.connect", "title": "BeamAgent: Connect"},
+      {"command": "beamAgent.status", "title": "BeamAgent: Show Status"},
+      {"command": "beamAgent.submit", "title": "BeamAgent: Submit Prompt"},
+      {"command": "beamAgent.cancel", "title": "BeamAgent: Cancel Turn"}
+    ],
+    "configuration": {
+      "title": "BeamAgent",
+      "properties": {
+        "beamAgent.host": {"type": "string", "default": "127.0.0.1"},
+        "beamAgent.port": {"type": "number", "default": 0},
+        "beamAgent.token": {"type": "string", "default": "", "scope": "window"}
+      }
+    }
+  }
+}

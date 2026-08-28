@@ -17,8 +17,15 @@ defmodule BeamAgent.CapabilityCatalog do
     BeamAgent.Tools.ListSkills,
     BeamAgent.Tools.ReadSkill,
     BeamAgent.Tools.ReloadContext,
+    BeamAgent.Tools.RequestCapability,
+    BeamAgent.Tools.RequestProjectContext,
+    BeamAgent.Tools.DelegateTasks,
     BeamAgent.Tools.CreateFile,
     BeamAgent.Tools.EditFile,
+    BeamAgent.Tools.ApplyPatch,
+    BeamAgent.Tools.GitInspect,
+    BeamAgent.Tools.FileSymbols,
+    BeamAgent.Tools.FileDiagnostics,
     BeamAgent.Tools.RunCommand,
     BeamAgent.Tools.SpawnSubagent
   ]

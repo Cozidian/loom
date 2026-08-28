@@ -223,7 +223,7 @@ agent crashes, only the agent restarts and reconstructs messages by replaying th
 log. If the event log process dies, `:rest_for_one` rebuilds all downstream
 session processes after the log has reopened and validated its file.
 
-`StreamHub` is directly below the log. It monitors terminal or future web
+`StreamHub` is directly below the log. It monitors terminal, web, and external
 subscribers and removes them when their processes disappear. Provider deltas are
 broadcast immediately as normalized text, tool-call, and usage events. They are
 not individually persisted: the hub groups them for 250 milliseconds or 32
@@ -356,9 +356,10 @@ preference and Auto may use any eligible registered endpoint per request;
 changing the stored active profile does not mutate an already running agent.
 Starting or resuming still
 goes through `BeamAgent`, capability resolution still goes through the Registry,
-and conversation state still goes only to the session event log. A future web
-view can therefore use the same public API and persisted events without the CLI
-becoming a second orchestration core.
+and conversation state still goes only to the session event log. The shipped
+web control plane, JSON-lines transport, and editor clients use that same public
+API and persisted event stream without making any interface a second
+orchestration core.
 
 Terminal presentation is isolated from the runtime across a process boundary.
 On a real TTY, the Go `beam_agent_tui` client owns Bubble Tea screen state,

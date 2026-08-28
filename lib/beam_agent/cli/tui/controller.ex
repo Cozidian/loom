@@ -461,6 +461,98 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
+  defp run_command(:budget, state) do
+    case Runtime.budget(state.runtime) do
+      {:ok, budget} ->
+        lines =
+          Enum.map(budget.allocations, fn allocation ->
+            "#{short_id(allocation.worker_id)} · #{allocation.status} · #{format_usage(allocation.usage, allocation.limits)}"
+          end)
+
+        notify(state, {:panel, "Goal budget", lines})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command(:repository, state) do
+    case Runtime.repository(state.runtime) do
+      {:ok, repository} ->
+        lines = [
+          "generation #{repository.generation} · #{repository.file_count} files",
+          "git #{repository.git.head || "unavailable"} · #{if(repository.git.dirty, do: "dirty", else: "clean")}",
+          "refreshed #{repository.last_refreshed_at || "pending"}"
+        ]
+
+        notify(state, {:panel, "Repository intelligence", lines})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command(:resources, state) do
+    case Runtime.resource_pools(state.runtime) do
+      {:ok, pools} ->
+        lines =
+          pools
+          |> Enum.sort_by(fn {name, _pool} -> name end)
+          |> Enum.map(fn {name, pool} ->
+            "#{name} · #{pool.active}/#{pool.limit} active · #{pool.queued} queued"
+          end)
+
+        notify(state, {:panel, "Resource scheduler", lines})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command(:organizations, state) do
+    case Runtime.organizations(state.runtime) do
+      {:ok, organizations} ->
+        lines =
+          Enum.map(organizations, fn organization ->
+            "#{short_id(organization.id)} · #{organization.status} · #{map_size(organization.tasks)} tasks · #{strategy_id(organization.strategy)}"
+          end)
+
+        notify(
+          state,
+          {:panel, "Worker organizations", if(lines == [], do: ["None"], else: lines)}
+        )
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command(:worktrees, state) do
+    case Runtime.worktrees(state.runtime) do
+      {:ok, worktrees} ->
+        lines =
+          Enum.map(
+            worktrees,
+            &"#{short_id(&1.id)} · #{&1.status} · #{short_id(&1.owner_worker_id)}"
+          )
+
+        notify(state, {:panel, "Git worktrees", if(lines == [], do: ["None"], else: lines)})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
   defp run_command({:events, "help"}, state) do
     notify(state, {:panel, "Event inspector filters", RuntimeEventQuery.usage()})
     state
@@ -661,6 +753,18 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
     " · evidence #{evidence.verified_samples} verified/#{evidence.operational_samples} calls#{quality}#{latency}"
   end
+
+  defp format_usage(usage, limits) do
+    [:model_tokens, :wall_time_ms, :shell_commands, :test_runs]
+    |> Enum.map(fn key -> "#{key}=#{usage[key] || 0}/#{limit_label(limits[key])}" end)
+    |> Enum.join(" · ")
+  end
+
+  defp limit_label(:infinity), do: "∞"
+  defp limit_label(value), do: to_string(value || 0)
+
+  defp strategy_id(%{id: id}), do: id
+  defp strategy_id(id), do: id
 
   defp short_id(id) do
     id = to_string(id)

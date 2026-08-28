@@ -31,8 +31,12 @@ defmodule BeamAgent.Tools.SpawnSubagent do
             paths: %{type: "array", items: %{type: "string"}},
             commands: %{type: "array", items: %{type: "string"}},
             hosts: %{type: "array", items: %{type: "string"}},
+            git_operations: %{type: "array", items: %{type: "string"}},
+            browser_scopes: %{type: "array", items: %{type: "string"}},
             mcp_servers: %{type: "array", items: %{type: "string"}},
-            model_classes: %{type: "array", items: %{type: "string"}}
+            model_classes: %{type: "array", items: %{type: "string"}},
+            secret_kinds: %{type: "array", items: %{type: "string"}},
+            approval_scopes: %{type: "array", items: %{type: "string"}}
           }
         },
         model_requirements: %{
@@ -48,7 +52,8 @@ defmodule BeamAgent.Tools.SpawnSubagent do
         verification_requirements: %{
           type: "object",
           properties: %{required: %{type: "boolean"}}
-        }
+        },
+        completion_criteria: %{type: "string"}
       },
       required: ["prompt"]
     }
@@ -92,23 +97,37 @@ defmodule BeamAgent.Tools.SpawnSubagent do
           "template",
           "capabilities",
           "model_requirements",
-          "verification_requirements"
+          "verification_requirements",
+          "completion_criteria"
         ])
         |> Map.put("goal", prompt),
       correlation_id: context.runtime_command.correlation_id,
       causation_id: context.causation_id
     ]
 
-    with {:ok, child_id} <- BeamAgent.spawn_subagent(context.session_id, opts),
-         {:ok, answer} <- BeamAgent.ask(child_id, prompt),
-         {:ok, spec} <- BeamAgent.agent_spec(child_id) do
-      {:ok,
-       JSON.encode!(%{
-         child_session_id: child_id,
-         agent_spec_id: spec.spec_id,
-         role: spec.role,
-         answer: answer
-       })}
+    with {:ok, handle} <- BeamAgent.spawn_worker(context.session_id, opts[:agent_proposal], opts) do
+      try do
+        case BeamAgent.ask(handle.worker_id, prompt) do
+          {:ok, answer} ->
+            {:ok, result} = BeamAgent.complete_worker(handle, answer)
+
+            {:ok,
+             JSON.encode!(%{
+               child_session_id: handle.worker_id,
+               delegation_id: handle.delegation_id,
+               agent_spec_id: handle.spec_id,
+               role: handle.role,
+               status: result.status,
+               answer: answer
+             })}
+
+          {:error, reason} = error ->
+            _ = BeamAgent.cancel_worker(handle, reason)
+            error
+        end
+      after
+        _ = BeamAgent.stop_session(handle.worker_id)
+      end
     end
   end
 

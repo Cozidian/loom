@@ -2,7 +2,7 @@ defmodule BeamAgent.RoutingEvidence do
   @moduledoc """
   Pure, confidence-aware summaries over the durable outcome ledger.
 
-  Evidence remains advisory. Only explicit model verification, or task
+  Evidence is confidence-gated. Only explicit model verification, or task
   verification that can be attributed to exactly one endpoint for a turn,
   contributes to model-quality comparisons.
   """
@@ -56,6 +56,20 @@ defmodule BeamAgent.RoutingEvidence do
       endpoints: endpoints,
       best_verified_samples: endpoints |> Enum.map(& &1.verified_samples) |> Enum.max(fn -> 0 end)
     })
+  end
+
+  def offline_evaluation(records, opts \\ []) when is_list(records) and is_list(opts) do
+    summary = summarize(records, opts)
+
+    %{
+      version: 1,
+      state: summary.state,
+      recommended_endpoint_id: summary.recommended_endpoint_id,
+      eligible_endpoint_count: Enum.count(summary.endpoints, & &1.eligible),
+      verified_sample_count: Enum.sum(Enum.map(summary.endpoints, & &1.verified_samples)),
+      safe_to_enable: summary.state == "ready" and length(summary.endpoints) >= 2,
+      summary: summary
+    }
   end
 
   defp in_scope?(record, cutoff, task_type, language) do

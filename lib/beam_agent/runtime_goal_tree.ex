@@ -112,6 +112,7 @@ defmodule BeamAgent.RuntimeGoalTree do
         :last_routed,
         if(routed[:endpoint_id] || routed["endpoint_id"], do: routed, else: node.last_routed)
       )
+      |> maybe_increment_restart(data)
 
     Map.put(nodes, session_id, node)
   end
@@ -124,6 +125,9 @@ defmodule BeamAgent.RuntimeGoalTree do
       node
       |> maybe_put(:agent_role, data["role"] || data[:role])
       |> maybe_put(:spec_id, data["spec_id"] || data[:spec_id])
+      |> maybe_put(:template, data["template"] || data[:template])
+      |> maybe_put(:authority, data["authority"] || data[:authority])
+      |> maybe_put(:depth, data["depth"] || data[:depth])
 
     Map.put(nodes, session_id, node)
   end
@@ -168,6 +172,31 @@ defmodule BeamAgent.RuntimeGoalTree do
     end
   end
 
+  defp update_nodes(nodes, "model_response_finished", data, event) do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+    usage = data["usage"] || data[:usage] || %{}
+    total = usage["total_tokens"] || usage[:total_tokens] || 0
+    node = %{node | total_tokens: node.total_tokens + if(is_number(total), do: total, else: 0)}
+    Map.put(nodes, session_id, node)
+  end
+
+  defp update_nodes(nodes, "model_outcome_recorded", data, event) do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+    latency = data["latency_ms"] || data[:latency_ms] || 0
+    cost = data["estimated_cost"] || data[:estimated_cost] || 0
+
+    node = %{
+      node
+      | model_calls: node.model_calls + 1,
+        model_latency_ms: node.model_latency_ms + if(is_number(latency), do: latency, else: 0),
+        estimated_cost: node.estimated_cost + if(is_number(cost), do: cost, else: 0)
+    }
+
+    Map.put(nodes, session_id, node)
+  end
+
   defp update_nodes(nodes, "tool_called", data, event) do
     session_id = scope_session_id(event)
     tool = data["name"] || data[:name]
@@ -196,6 +225,59 @@ defmodule BeamAgent.RuntimeGoalTree do
       node
       |> maybe_put(:last_tool, tool)
       |> Map.put(:last_tool_state, if(failed?, do: :failed, else: :completed))
+
+    Map.put(nodes, session_id, node)
+  end
+
+  defp update_nodes(nodes, "resource_queued", data, event) do
+    update_waiting(nodes, data, event, :queued, data["resource_pool"] || data[:resource_pool])
+  end
+
+  defp update_nodes(nodes, "resource_granted", _data, event) do
+    update_waiting(nodes, %{}, event, :running, nil)
+  end
+
+  defp update_nodes(nodes, "budget_exhausted", data, event) do
+    update_waiting(nodes, data, event, :blocked, "budget_exhausted")
+  end
+
+  defp update_nodes(nodes, "capability_requested", _data, event) do
+    update_waiting(nodes, %{}, event, :blocked, "capability_approval")
+  end
+
+  defp update_nodes(nodes, type, _data, event)
+       when type in ["capability_request_approved", "capability_request_denied"] do
+    update_waiting(nodes, %{}, event, :running, nil)
+  end
+
+  defp update_nodes(nodes, "completion_report_generated", data, event) do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+    status = data["status"] || data[:status]
+    Map.put(nodes, session_id, %{node | verification_status: status})
+  end
+
+  defp update_nodes(nodes, "file_changed", data, event) do
+    session_id = scope_session_id(event)
+    path = data["path"] || data[:path]
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+
+    touched =
+      if is_binary(path), do: Enum.uniq([path | node.touched_files]), else: node.touched_files
+
+    Map.put(nodes, session_id, %{node | touched_files: touched})
+  end
+
+  defp update_nodes(nodes, type, data, event)
+       when type in ["worktree_created", "worktree_inspected", "worktree_reclaimed"] do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+
+    node = %{
+      node
+      | worktree_id: data["worktree_id"] || data[:worktree_id] || node.worktree_id,
+        worktree_status: data["worktree_status"] || data[:worktree_status]
+    }
 
     Map.put(nodes, session_id, node)
   end
@@ -275,13 +357,26 @@ defmodule BeamAgent.RuntimeGoalTree do
       role: role,
       agent_role: nil,
       spec_id: nil,
+      template: nil,
+      authority: nil,
+      depth: nil,
       state: :idle,
+      waiting_state: nil,
+      blocking_reason: nil,
       last_routed: nil,
       last_tool: nil,
       last_tool_state: nil,
       duration_ms: nil,
       failure_count: 0,
       restart_count: 0,
+      model_calls: 0,
+      model_latency_ms: 0,
+      total_tokens: 0,
+      estimated_cost: 0,
+      verification_status: nil,
+      touched_files: [],
+      worktree_id: nil,
+      worktree_status: nil,
       children: [],
       started_at: nil
     }
@@ -328,6 +423,19 @@ defmodule BeamAgent.RuntimeGoalTree do
        do: %{node | parent_session_id: parent_session_id}
 
   defp maybe_put_parent(node, _parent_session_id), do: node
+
+  defp maybe_increment_restart(node, data) do
+    if data["recovered"] == true or data[:recovered] == true,
+      do: %{node | restart_count: node.restart_count + 1},
+      else: node
+  end
+
+  defp update_waiting(nodes, _data, event, waiting_state, reason) do
+    session_id = scope_session_id(event)
+    node = Map.get(nodes, session_id, new_node(session_id, nil, role_from_scope(event)))
+    node = %{node | waiting_state: waiting_state, blocking_reason: reason}
+    Map.put(nodes, session_id, node)
+  end
 
   defp turn_finished_state(data) do
     reason = data["reason"] || data[:reason]
@@ -425,7 +533,17 @@ defmodule BeamAgent.RuntimeGoalTree do
           ""
       end
 
-    base <> routed
+    verification =
+      if node.verification_status,
+        do: " · #{node.verification_status}",
+        else: ""
+
+    waiting =
+      if node.waiting_state in [:queued, :blocked],
+        do: " · #{node.waiting_state}:#{node.blocking_reason}",
+        else: ""
+
+    base <> routed <> verification <> waiting
   end
 
   defp short(id) when is_binary(id) do

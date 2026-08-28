@@ -138,4 +138,55 @@ defmodule BeamAgent.VerificationTest do
       assert task.verification["status"] == "failed"
     end
   end
+
+  @tag :darwin
+  test "required worker completion runs verification automatically", context do
+    if :os.type() != {:unix, :darwin} do
+      :ok
+    else
+      config_dir = Path.join(context.workspace, ".beam_agent")
+      File.mkdir_p!(config_dir)
+
+      File.write!(
+        Path.join(config_dir, "verification.json"),
+        JSON.encode!(%{
+          version: 1,
+          checks: [%{id: "automatic-pass", command: "printf verified", timeout_ms: 5_000}]
+        })
+      )
+
+      assert {:ok, root_id} =
+               BeamAgent.start_session(
+                 data_dir: context.data_dir,
+                 workspace_root: context.workspace,
+                 provider: :echo
+               )
+
+      assert {:ok, handle} =
+               BeamAgent.spawn_worker(
+                 root_id,
+                 %{
+                   goal: "Implement a bounded change",
+                   verification_requirements: %{required: true}
+                 },
+                 provider: :echo,
+                 data_dir: context.data_dir
+               )
+
+      assert {:ok, _answer} = BeamAgent.ask(handle.worker_id, "complete the delegated work")
+      {:ok, goal} = BeamAgent.goal(root_id)
+
+      {:ok, outcomes} = BeamAgent.outcomes(goal.project_id, kind: :task)
+      task = Enum.find(outcomes, &(&1.session_id == handle.worker_id))
+      assert task.status == "succeeded"
+      assert task.verification["status"] == "passed"
+
+      {:ok, events} = BeamAgent.events(handle.worker_id)
+      assert Enum.any?(events, &(&1["type"] == "verification_started"))
+
+      report = Enum.find(events, &(&1["type"] == "completion_report_generated"))
+      assert report["data"]["status"] == "verified"
+      assert report["data"]["evidence_count"] == 1
+    end
+  end
 end

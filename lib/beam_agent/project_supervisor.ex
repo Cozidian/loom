@@ -5,6 +5,14 @@ defmodule BeamAgent.ProjectSupervisor do
   alias BeamAgent.{ModelRegistry, ModelRouter, Names, OutcomeStore, Project}
   alias BeamAgent.Project.GoalRootSupervisor
 
+  alias BeamAgent.Project.{
+    ContextStore,
+    ExecutionNodeRegistry,
+    RepositoryIndex,
+    ResourceScheduler,
+    WorktreeManager
+  }
+
   def start_link(opts) do
     project_id = Keyword.fetch!(opts, :project_id)
     Supervisor.start_link(__MODULE__, opts, name: Names.via(:project_supervisor, project_id))
@@ -50,8 +58,13 @@ defmodule BeamAgent.ProjectSupervisor do
       {Task.Supervisor,
        name: Names.via(:model_health_supervisor, Keyword.fetch!(opts, :project_id))},
       {ModelRegistry, opts},
+      {ContextStore, opts},
       {ModelRouter, opts},
       {OutcomeStore, opts},
+      {RepositoryIndex, opts},
+      {ResourceScheduler, opts},
+      {WorktreeManager, opts},
+      {ExecutionNodeRegistry, opts},
       {GoalRootSupervisor, opts}
     ]
 

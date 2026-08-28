@@ -28,6 +28,19 @@ defmodule BeamAgent.Runtime.Client do
     do: GenServer.call(client, {:inspect_events, query, opts})
 
   def goal_tree(client), do: GenServer.call(client, :goal_tree)
+  def budget(client), do: GenServer.call(client, :budget)
+  def repository(client), do: GenServer.call(client, :repository)
+  def project_context(client, request), do: GenServer.call(client, {:project_context, request})
+  def resource_pools(client), do: GenServer.call(client, :resource_pools)
+  def delegations(client), do: GenServer.call(client, :delegations)
+  def organizations(client), do: GenServer.call(client, :organizations)
+  def capability_leases(client), do: GenServer.call(client, :capability_leases)
+  def worktrees(client), do: GenServer.call(client, :worktrees)
+  def project_preferences(client), do: GenServer.call(client, :project_preferences)
+
+  def set_project_preferences(client, preferences),
+    do: GenServer.call(client, {:set_project_preferences, preferences})
+
   def goal_id(client), do: GenServer.call(client, :goal_id)
 
   def models(client), do: GenServer.call(client, :models)
@@ -209,6 +222,35 @@ defmodule BeamAgent.Runtime.Client do
   def handle_call(:goal_tree, _from, state) do
     {:reply, BeamAgent.goal_tree(state.goal_id), state}
   end
+
+  def handle_call(:budget, _from, state), do: {:reply, BeamAgent.budget(state.goal_id), state}
+
+  def handle_call(:repository, _from, state),
+    do: {:reply, BeamAgent.repository(state.project_id), state}
+
+  def handle_call({:project_context, request}, _from, state),
+    do: {:reply, BeamAgent.project_context(state.project_id, request), state}
+
+  def handle_call(:resource_pools, _from, state),
+    do: {:reply, BeamAgent.resource_pools(state.project_id), state}
+
+  def handle_call(:delegations, _from, state),
+    do: {:reply, BeamAgent.worker_delegations(state.goal_id), state}
+
+  def handle_call(:organizations, _from, state),
+    do: {:reply, BeamAgent.worker_organizations(state.goal_id), state}
+
+  def handle_call(:capability_leases, _from, state),
+    do: {:reply, BeamAgent.capability_leases(state.goal_id), state}
+
+  def handle_call(:worktrees, _from, state),
+    do: {:reply, BeamAgent.worktrees(state.project_id), state}
+
+  def handle_call(:project_preferences, _from, state),
+    do: {:reply, BeamAgent.project_preferences(state.project_id), state}
+
+  def handle_call({:set_project_preferences, preferences}, _from, state),
+    do: {:reply, BeamAgent.set_project_preferences(state.project_id, preferences), state}
 
   def handle_call(:goal_id, _from, state), do: {:reply, {:ok, state.goal_id}, state}
 

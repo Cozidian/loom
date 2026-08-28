@@ -1,0 +1,163 @@
+defmodule BeamAgent.ControlPlane do
+  @moduledoc """
+  Runtime-client-backed state for a live web control plane.
+
+  This process is deliberately an observer/controller, never the owner of a
+  goal. It can be stopped or replaced without affecting autonomous work and is
+  suitable as the backing process for LiveView or another web transport.
+  """
+  use GenServer
+
+  alias BeamAgent.Runtime
+
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts)
+  end
+
+  def snapshot(control_plane), do: GenServer.call(control_plane, :snapshot, 30_000)
+  def submit(control_plane, prompt), do: GenServer.call(control_plane, {:submit, prompt})
+  def cancel(control_plane), do: GenServer.call(control_plane, :cancel)
+
+  def approval(control_plane, approval_id, decision),
+    do: GenServer.call(control_plane, {:approval, approval_id, decision})
+
+  def verify(control_plane), do: GenServer.call(control_plane, :verify, 180_000)
+  def render_html(control_plane), do: GenServer.call(control_plane, :render_html, 30_000)
+
+  def dispatch(control_plane, request),
+    do: GenServer.call(control_plane, {:dispatch, request}, 180_000)
+
+  @impl true
+  def init(opts) do
+    session_id = Keyword.fetch!(opts, :session_id)
+
+    with {:ok, runtime} <- Runtime.connect(session_id, subscriber: self(), view: :public),
+         {:ok, bootstrap} <- Runtime.bootstrap(runtime) do
+      {:ok,
+       %{
+         runtime: runtime,
+         session_id: session_id,
+         cursor: bootstrap.cursor,
+         pending_approvals: %{},
+         recent_events: Enum.take(bootstrap.events, -500)
+       }}
+    end
+  end
+
+  @impl true
+  def handle_call(:snapshot, _from, state) do
+    {:reply, build_snapshot(state), state}
+  end
+
+  def handle_call({:submit, prompt}, _from, state),
+    do: {:reply, Runtime.submit(state.runtime, prompt), state}
+
+  def handle_call(:cancel, _from, state), do: {:reply, Runtime.cancel(state.runtime), state}
+
+  def handle_call({:approval, approval_id, decision}, _from, state) do
+    result = Runtime.respond_approval(state.runtime, approval_id, decision)
+
+    state =
+      if result == :ok,
+        do: update_in(state, [:pending_approvals], &Map.delete(&1, approval_id)),
+        else: state
+
+    {:reply, result, state}
+  end
+
+  def handle_call(:verify, _from, state), do: {:reply, Runtime.verify(state.runtime), state}
+
+  def handle_call({:dispatch, request}, _from, state),
+    do: {:reply, BeamAgent.Runtime.JSONProtocol.dispatch(state.runtime, request), state}
+
+  def handle_call(:render_html, _from, state) do
+    case build_snapshot(state) do
+      {:ok, snapshot} -> {:reply, {:ok, html(snapshot)}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
+    cursor =
+      if is_integer(event.goal_seq), do: max(state.cursor, event.goal_seq), else: state.cursor
+
+    events = Enum.take(state.recent_events ++ [event], -500)
+    {:noreply, %{state | cursor: cursor, recent_events: events}}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approval_requested, request}},
+        %{runtime: runtime} = state
+      ) do
+    {:noreply, put_in(state, [:pending_approvals, request.approval_id], request)}
+  end
+
+  def handle_info({:beam_agent_runtime, _runtime, _message}, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    Runtime.disconnect(state.runtime)
+    :ok
+  end
+
+  defp build_snapshot(state) do
+    with {:ok, status} <- Runtime.status(state.runtime),
+         {:ok, tree} <- Runtime.goal_tree(state.runtime),
+         {:ok, budget} <- Runtime.budget(state.runtime),
+         {:ok, models} <- Runtime.models(state.runtime),
+         {:ok, resources} <- Runtime.resource_pools(state.runtime),
+         {:ok, repository} <- Runtime.repository(state.runtime),
+         {:ok, delegations} <- Runtime.delegations(state.runtime),
+         {:ok, organizations} <- Runtime.organizations(state.runtime),
+         {:ok, worktrees} <- Runtime.worktrees(state.runtime) do
+      {:ok,
+       %{
+         version: 1,
+         session_id: state.session_id,
+         cursor: state.cursor,
+         status: status,
+         tree: tree,
+         budget: budget,
+         models: models,
+         resources: resources,
+         repository: Map.drop(repository, [:files]),
+         delegations: delegations,
+         organizations: organizations,
+         worktrees: worktrees,
+         pending_approvals: Map.values(state.pending_approvals),
+         recent_events: state.recent_events
+       }}
+    end
+  end
+
+  defp html(snapshot) do
+    tree = BeamAgent.RuntimeGoalTree.render(snapshot.tree) |> Enum.join("\n") |> escape()
+    status = escape(to_string(snapshot.status.agent_status))
+    session = escape(snapshot.session_id)
+
+    """
+    <!doctype html>
+    <html lang="en">
+    <head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+    <title>BeamAgent #{session}</title>
+    <style>
+    body{font-family:ui-monospace,monospace;background:#202329;color:#cdd6f4;margin:2rem}
+    header{display:flex;justify-content:space-between;color:#89dceb}pre{padding:1rem;border:1px solid #45475a}
+    .grid{display:grid;grid-template-columns:2fr 1fr;gap:1rem}.card{border:1px solid #45475a;padding:1rem}
+    </style></head><body><header><strong>BEAM AGENT</strong><span>#{status}</span></header>
+    <p>session #{session} · cursor #{snapshot.cursor}</p><div class="grid"><section class="card">
+    <h2>Goal tree</h2><pre>#{tree}</pre></section><aside class="card"><h2>Runtime</h2>
+    <p>models #{length(snapshot.models)}</p><p>files #{snapshot.repository.file_count}</p>
+    <p>approvals #{length(snapshot.pending_approvals)}</p></aside></div></body></html>
+    """
+  end
+
+  defp escape(value) do
+    value
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+    |> String.replace("\"", "&quot;")
+  end
+end

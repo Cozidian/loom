@@ -150,7 +150,17 @@ defmodule BeamAgent.RuntimeClientTest do
     assert {:ok, reconnected} = Runtime.connect(context.session_id)
     on_exit(fn -> Runtime.disconnect(reconnected) end)
     assert {:ok, replayed_tree} = Runtime.goal_tree(reconnected)
-    assert replayed_tree == live_tree
+    assert replayed_tree.root.restart_count == live_tree.root.restart_count + 1
+
+    normalized_replay =
+      replayed_tree
+      |> put_in([:root, :restart_count], live_tree.root.restart_count)
+      |> put_in(
+        [:nodes, context.session_id, :restart_count],
+        live_tree.nodes[context.session_id].restart_count
+      )
+
+    assert normalized_replay == live_tree
   end
 
   test "a connected client can rebind to a new goal", context do
@@ -171,6 +181,34 @@ defmodule BeamAgent.RuntimeClientTest do
 
     assert {:ok, "echo(1): rebound", _meta} =
              Runtime.run(runtime, "rebound", 5_000, fn _request -> :deny end)
+  end
+
+  test "versioned JSON protocol exposes the same runtime without owning state", context do
+    assert {:ok, runtime} = Runtime.connect(context.session_id)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    response =
+      BeamAgent.Runtime.JSONProtocol.dispatch(runtime, %{
+        "version" => 1,
+        "request_id" => "request-1",
+        "command" => "goal_tree",
+        "arguments" => %{}
+      })
+
+    assert response.ok
+    assert response.request_id == "request-1"
+    assert response.result.root.session_id == context.session_id
+    assert JSON.decode!(BeamAgent.Runtime.JSONProtocol.encode_response(response))["ok"]
+
+    unsupported =
+      BeamAgent.Runtime.JSONProtocol.dispatch(runtime, %{
+        version: 99,
+        request_id: "request-2",
+        command: "status"
+      })
+
+    refute unsupported.ok
+    assert unsupported.error == "unsupported_protocol_version"
   end
 
   test "a temporary client restores the previously attached approval handler", context do

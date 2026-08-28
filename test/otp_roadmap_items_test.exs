@@ -293,6 +293,7 @@ defmodule BeamAgent.OTPRoadmapItemsTest do
     {:ok, child_events} = BeamAgent.events(child_id)
     child_route = Enum.find(child_events, &(&1["type"] == "model_route_selected"))
     assert child_route["data"]["selected_endpoint_id"] == "local"
+    assert {:error, :not_found} = BeamAgent.agent_pid(child_id)
   end
 
   test "local-only and custom routing overrides are explicit", context do
@@ -405,6 +406,56 @@ defmodule BeamAgent.OTPRoadmapItemsTest do
     assert route.evidence.state == "ready"
     assert route.evidence.recommended_endpoint_id == "remote"
     assert route.evidence.mode == "shadow"
+  end
+
+  test "confidence-gated routing can use verified evidence with exploration disabled", context do
+    endpoints = [
+      %{id: "remote", provider: :roadmap_remote, provider_module: RemoteProvider},
+      %{id: "local", provider: :roadmap_local, provider_module: LocalProvider}
+    ]
+
+    {:ok, project_id} =
+      BeamAgent.start_project(
+        workspace_root: context.workspace,
+        data_dir: context.data_dir,
+        model_endpoints: endpoints,
+        routing_evidence_mode: :enabled,
+        routing_exploration_percent: 0
+      )
+
+    Enum.each(1..5, fn sample ->
+      for {endpoint, verification} <- [{"remote", :passed}, {"local", :failed}] do
+        assert {:ok, _} =
+                 OutcomeStore.record(project_id, %{
+                   kind: :model,
+                   session_id: "session-#{endpoint}-#{sample}",
+                   turn: 1,
+                   task_type: :simple,
+                   language: :elixir,
+                   endpoint_id: endpoint,
+                   provider: :roadmap_remote,
+                   latency_ms: 100,
+                   status: :succeeded,
+                   verification: %{status: verification}
+                 })
+      end
+    end)
+
+    input = %{
+      prompt: "Give me a short Elixir greeting",
+      workspace_root: context.workspace,
+      preferred_endpoint_id: "local",
+      preferred_provider: :roadmap_local,
+      strategy: :auto,
+      tools: [],
+      capability_envelope: CapabilityEnvelope.root()
+    }
+
+    assert {:ok, route} = BeamAgent.route_model(project_id, input)
+    assert route.selected_endpoint_id == "remote"
+    assert route.reason == "confidence-gated recommendation from recent verified outcomes"
+    assert route.evidence.mode == "enabled"
+    assert route.evidence.selection == "verified_evidence"
   end
 
   test "outcomes are redacted, exportable, and accept later verification", context do

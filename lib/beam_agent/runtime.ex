@@ -56,6 +56,18 @@ defmodule BeamAgent.Runtime do
     do: Client.inspect_events(client, query, opts)
 
   def goal_tree(client), do: Client.goal_tree(client)
+  def budget(client), do: Client.budget(client)
+  def repository(client), do: Client.repository(client)
+  def project_context(client, request \\ %{}), do: Client.project_context(client, request)
+  def resource_pools(client), do: Client.resource_pools(client)
+  def delegations(client), do: Client.delegations(client)
+  def organizations(client), do: Client.organizations(client)
+  def capability_leases(client), do: Client.capability_leases(client)
+  def worktrees(client), do: Client.worktrees(client)
+  def project_preferences(client), do: Client.project_preferences(client)
+
+  def set_project_preferences(client, preferences),
+    do: Client.set_project_preferences(client, preferences)
 
   def verify(client, plan \\ :auto) do
     with {:ok, goal_id} <- Client.goal_id(client), do: BeamAgent.verify(goal_id, plan)

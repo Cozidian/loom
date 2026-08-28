@@ -178,6 +178,7 @@ defmodule BeamAgent.Agent do
     identity =
       Map.take(state, [
         :session_id,
+        :parent_session_id,
         :project_id,
         :goal_id,
         :workspace_root,
@@ -192,6 +193,7 @@ defmodule BeamAgent.Agent do
     context =
       Map.take(state, [
         :session_id,
+        :parent_session_id,
         :project_id,
         :goal_id,
         :workspace_root,

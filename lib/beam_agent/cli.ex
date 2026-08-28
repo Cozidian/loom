@@ -42,11 +42,17 @@ defmodule BeamAgent.CLI do
       ["resume", flag] when flag in ["--help", "-h"] ->
         resume_help()
 
+      ["serve", flag] when flag in ["--help", "-h"] ->
+        serve_help()
+
       ["run" | rest] ->
         run_command(config_path, rest)
 
       ["resume", session_id | rest] ->
         run_command(config_path, ["--session", session_id | rest], true)
+
+      ["serve", session_id | rest] ->
+        serve_command(config_path, session_id, rest)
 
       ["init" | rest] ->
         init_command(config_path, rest)
@@ -259,6 +265,58 @@ defmodule BeamAgent.CLI do
       {:error, reason} -> error(reason)
     end
   end
+
+  defp serve_command(config_path, session_id, args) do
+    switches = [
+      profile: :string,
+      workspace: :string,
+      web_port: :integer,
+      api_port: :integer,
+      token: :string
+    ]
+
+    with {:ok, opts, []} <- parse(args, switches),
+         {:ok, stored_config} <- Config.load(config_path),
+         {:ok, config} <- Config.runtime(stored_config, opts[:profile]),
+         config <-
+           Map.put(config, "model_endpoints", Config.model_endpoints(stored_config, config)),
+         config <- Map.put(config, "workspace_root", Path.expand(opts[:workspace] || File.cwd!())),
+         :ok <- Config.validate_runtime(config),
+         :ok <- require_existing_session(session_id, config, true),
+         {:ok, provider} <- Config.provider_atom(config["provider"]),
+         :ok <- ensure_application_started(),
+         {:ok, ^session_id} <- ensure_session(session_id, config, provider),
+         token <- opts[:token] || api_token(),
+         {:ok, web} <-
+           BeamAgent.start_web_control_plane(session_id,
+             port: opts[:web_port] || 0,
+             token: token
+           ),
+         {:ok, api} <-
+           BeamAgent.start_json_api(session_id,
+             port: opts[:api_port] || 0,
+             token: token
+           ),
+         {:ok, url} <- BeamAgent.ControlPlane.HTTPServer.url(web),
+         {:ok, {{127, 0, 0, 1}, api_port}} <- BeamAgent.Runtime.JSONLineServer.address(api) do
+      output("Web control plane  #{url}")
+      output("JSON-lines API    127.0.0.1:#{api_port}")
+      output("Press Ctrl+C to stop these interface servers; the goal remains durable.")
+
+      receive do
+        :shutdown -> 0
+      end
+    else
+      {:ok, _opts, positional} ->
+        usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
+
+      {:error, reason} ->
+        error(reason)
+    end
+  end
+
+  defp api_token,
+    do: :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
 
   defp require_existing_session(_session_id, _config, false), do: :ok
 
@@ -1003,6 +1061,7 @@ defmodule BeamAgent.CLI do
       beam_agent                             open an interactive chat
       beam_agent run "your prompt"           run once and exit
       beam_agent resume SESSION              continue a saved session
+      beam_agent serve SESSION               web control plane + JSON API
 
     Setup and inspect:
       beam_agent init                        configure a provider
@@ -1101,6 +1160,22 @@ defmodule BeamAgent.CLI do
 
     Use `beam_agent sessions` to find session IDs. Omit the prompt to continue
     interactively.
+    """)
+  end
+
+  defp serve_help do
+    output("""
+    Serve a durable session through interface-neutral runtime clients
+
+      beam_agent serve SESSION [options]
+
+      --web-port PORT       loopback web-control-plane port (default: dynamic)
+      --api-port PORT       loopback JSON-lines API port (default: dynamic)
+      --token TOKEN         shared bearer token (default: generated)
+      --profile NAME        configured provider profile used when resuming
+      --workspace PATH      immutable repository root for the resumed session
+
+    Both listeners bind only to 127.0.0.1. Closing them does not stop the goal.
     """)
   end
 
