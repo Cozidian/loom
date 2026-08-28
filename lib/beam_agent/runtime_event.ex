@@ -215,7 +215,7 @@ defmodule BeamAgent.RuntimeEvent do
               "mcp_server_unavailable",
               "mcp_call_cancelled"
             ],
-       do: :resource
+       do: :mcp
 
   defp category("model_route_selected"), do: :routing
 
@@ -223,15 +223,20 @@ defmodule BeamAgent.RuntimeEvent do
        when type in [
               "model_outcome_recorded",
               "task_outcome_recorded",
+              "completion_report_generated"
+            ],
+       do: :outcome
+
+  defp category(type)
+       when type in [
               "verification_attached",
               "verification_started",
               "verification_check_started",
               "verification_check_finished",
               "verification_finished",
-              "verification_cancelled",
-              "completion_report_generated"
+              "verification_cancelled"
             ],
-       do: :outcome
+       do: :verification
 
   defp category(type)
        when type in [

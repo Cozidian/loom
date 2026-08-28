@@ -64,6 +64,10 @@ defmodule BeamAgent.Runtime do
   def organizations(client), do: Client.organizations(client)
   def capability_leases(client), do: Client.capability_leases(client)
   def worktrees(client), do: Client.worktrees(client)
+  def diff_summary(client), do: Client.diff_summary(client)
+  def diff(client, opts \\ []), do: Client.diff(client, opts)
+  def sessions(client), do: Client.sessions(client)
+  def session_detail(client, session_id), do: Client.session_detail(client, session_id)
   def project_preferences(client), do: Client.project_preferences(client)
 
   def set_project_preferences(client, preferences),

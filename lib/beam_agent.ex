@@ -186,6 +186,15 @@ defmodule BeamAgent do
 
   def worktrees(project_id), do: BeamAgent.Project.WorktreeManager.list(project_id)
 
+  def diff_summary(workspace_root), do: BeamAgent.GitDiff.summary(workspace_root)
+
+  def diff(workspace_root, opts \\ []), do: BeamAgent.GitDiff.inspect(workspace_root, opts)
+
+  def sessions(data_dir, opts \\ []), do: BeamAgent.SessionIndex.list(data_dir, opts)
+
+  def session_detail(data_dir, session_id),
+    do: BeamAgent.SessionIndex.summarize(data_dir, session_id)
+
   def start_json_api(session_id, opts \\ []) do
     BeamAgent.Runtime.JSONLineServer.start_link(Keyword.put(opts, :session_id, session_id))
   end

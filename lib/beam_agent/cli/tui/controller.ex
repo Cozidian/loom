@@ -516,17 +516,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
             {:error, _reason} -> %{endpoints: []}
           end
 
-        lines =
-          if endpoints == [] do
-            ["No model endpoints registered"]
-          else
-            Enum.map(
-              endpoints,
-              &format_model_endpoint(&1, state.config["profile"], evidence)
-            )
-          end
+        payload = %{
+          active_profile: state.config["profile"],
+          endpoints: endpoints,
+          evidence: evidence,
+          session_settings: model_session_settings(state)
+        }
 
-        notify(state, {:panel, "Model registry · #{length(endpoints)} endpoints", lines})
+        notify(state, {:models, payload})
 
       {:error, reason} ->
         notify(state, {:notice, :error, format_error(reason)})
@@ -570,8 +567,16 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp run_command(:tree, state) do
     with {:ok, tree} <- Runtime.goal_tree(state.runtime) do
-      lines = BeamAgent.RuntimeGoalTree.render(tree)
-      notify(state, {:panel, "Goal tree", lines})
+      payload = %{
+        root: tree.root,
+        nodes: tree.nodes,
+        summary: tree_summary(tree),
+        budget: soft_fetch(fn -> Runtime.budget(state.runtime) end),
+        resource_pools: soft_fetch(fn -> Runtime.resource_pools(state.runtime) end),
+        workspace_diff: soft_fetch(fn -> Runtime.diff_summary(state.runtime) end)
+      }
+
+      notify(state, {:tree, payload})
     else
       {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
     end
@@ -677,18 +682,20 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   defp run_command({:events, query}, state) when is_binary(query) do
-    with {:ok, inspection} <- Runtime.inspect_events(state.runtime, query),
-         {:ok, status} <- Runtime.status(state.runtime) do
-      lines =
-        [
-          "#{inspection.matched}/#{inspection.total} matched · showing #{inspection.returned} · cursor #{inspection.cursor}",
-          "filters #{Enum.join(inspection.filters, " · ")}",
-          "root log #{status.event_log_path}",
-          ""
-        ] ++ Enum.map(inspection.events, &format_runtime_event/1)
+    case Runtime.inspect_events(state.runtime, query) do
+      {:ok, inspection} ->
+        payload = %{
+          matched: inspection.matched,
+          total: inspection.total,
+          returned: inspection.returned,
+          cursor: inspection.cursor,
+          filters: inspection.filters,
+          available_categories: RuntimeEventQuery.categories(),
+          events: inspection.events
+        }
 
-      notify(state, {:panel, "Goal events · #{inspection.returned} results", lines})
-    else
+        notify(state, {:events, payload})
+
       {:error, :event_filter_help} ->
         notify(state, {:panel, "Event inspector filters", RuntimeEventQuery.usage()})
 
@@ -700,22 +707,105 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
-  defp run_command(:sessions, state) do
-    sessions =
-      case File.ls(state.config["data_dir"]) do
-        {:ok, entries} ->
-          entries
-          |> Enum.filter(
-            &File.regular?(Path.join([state.config["data_dir"], &1, "events.jsonl"]))
-          )
-          |> Enum.sort()
+  defp run_command(:sessions, state), do: run_command({:sessions, ""}, state)
 
-        {:error, _reason} ->
-          []
-      end
+  defp run_command({:sessions, ""}, state) do
+    case Runtime.sessions(state.runtime) do
+      {:ok, sessions} ->
+        decorated = Enum.map(sessions, &Map.put(&1, :status, session_status(&1, state)))
+        notify(state, {:sessions, %{sessions: decorated}})
 
-    lines = if sessions == [], do: ["No durable sessions"], else: sessions
-    notify(state, {:panel, "Sessions", lines})
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:sessions, session_id}, state) when is_binary(session_id) do
+    case Runtime.session_detail(state.runtime, session_id) do
+      {:ok, detail} ->
+        notify(state, {:session_detail, detail})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  @read_only_tool_names ~w(read_file file_diagnostics file_symbols)
+
+  defp run_command(:files, state), do: run_command({:files, ""}, state)
+
+  defp run_command({:files, ""}, state) do
+    case Runtime.diff(state.runtime, hunks?: false) do
+      {:ok, diff} ->
+        changed_paths = MapSet.new(diff.changed_files, & &1.path)
+
+        payload = %{
+          branch: diff.branch,
+          changed: diff.changed_files,
+          in_context: in_context_files(state, changed_paths)
+        }
+
+        notify(state, {:files, payload})
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:files, path}, state) when is_binary(path) do
+    case Runtime.diff(state.runtime, path: path, hunks?: true) do
+      {:ok, %{files: files}} ->
+        case Map.get(files, path) do
+          nil ->
+            notify(state, {:notice, :warning, "No diff for #{path}"})
+
+          file ->
+            notify(state, {:diff, Map.put(file, :path, path)})
+        end
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:resume, session_id}, %{current: nil, verification: nil} = state)
+       when is_binary(session_id) do
+    with {:ok, subscription} <-
+           Runtime.reconnect(state.runtime, session_id, after: nil, view: :internal) do
+      _ = BeamAgent.stop_session(state.session_id)
+
+      state = %{
+        state
+        | session_id: session_id,
+          project_id: subscription.project_id,
+          goal_id: subscription.goal_id,
+          cursor: subscription.cursor,
+          bootstrap_events: [],
+          approval_policy: subscription.approval_policy,
+          current: nil
+      }
+
+      notify(state, {:session_changed, session_id, state.config})
+      Enum.each(subscription.events, &notify(state, {:stream, &1}))
+      notify_context_stats(state)
+      state
+    else
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command({:resume, _session_id}, state) do
+    notify(state, {:notice, :warning, "Cancel the running turn before resuming another session"})
     state
   end
 
@@ -998,46 +1088,79 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
 
-  defp format_runtime_event(event) do
-    time = event.at |> to_string() |> String.slice(11, 12)
-    worker = if event.scope.root?, do: "root", else: "child"
-    source = "#{worker} #{short_id(event.scope.session_id)}"
-    type = to_string(event.payload.type)
-
-    lineage =
-      "corr #{short_id(event.correlation_id || "none")} · cause #{short_id(event.causation_id || "root")}"
-
-    "##{event.goal_seq}  #{time}  #{source}  #{event.category}/#{type}#{event_detail(event)}#{redaction_detail(event)} · #{lineage}"
-  end
-
-  defp event_detail(%{payload: %{type: type, data: data}})
-       when type in ["agent_started", :agent_started] do
-    " · #{data["provider"] || data[:provider]}/#{data["model"] || data[:model] || "built-in"}"
-  end
-
-  defp event_detail(%{payload: %{type: type, data: data}})
-       when type in ["tool_called", :tool_called] do
-    " · #{data["name"] || data[:name]}"
-  end
-
-  defp event_detail(%{payload: %{type: type, data: data}})
-       when type in ["tool_result", :tool_result] do
-    status = if data["is_error"] || data[:is_error], do: "error", else: "ok"
-    " · #{data["name"] || data[:name]} · #{status}"
-  end
-
-  defp event_detail(%{payload: %{type: type, data: data}})
-       when type in ["turn_finished", :turn_finished] do
-    case data["reason"] || data[:reason] do
-      reason when is_binary(reason) or is_atom(reason) -> " · #{reason}"
-      _redacted_or_missing -> ""
+  defp soft_fetch(fun) do
+    case fun.() do
+      {:ok, value} -> value
+      {:error, _reason} -> nil
     end
   end
 
-  defp event_detail(_event), do: ""
+  defp in_context_files(state, changed_paths) do
+    case Runtime.inspect_events(
+           state.runtime,
+           "category=tool type=tool_called order=desc limit=100"
+         ) do
+      {:ok, inspection} ->
+        inspection.events
+        |> Enum.filter(&(tool_call_name(&1.payload.data) in @read_only_tool_names))
+        |> Enum.map(&tool_call_path(&1.payload.data))
+        |> Enum.filter(&is_binary/1)
+        |> Enum.uniq()
+        |> Enum.reject(&MapSet.member?(changed_paths, &1))
+        |> Enum.map(&%{path: &1, tag: "auto"})
 
-  defp redaction_detail(%{redacted?: true}), do: " · redacted"
-  defp redaction_detail(_event), do: ""
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp tool_call_name(data), do: data["name"] || data[:name]
+
+  defp tool_call_path(data) do
+    (data["arguments"] || data[:arguments] || %{})
+    |> then(&(&1["path"] || &1[:path]))
+  end
+
+  defp tree_summary(tree) do
+    nodes = Map.values(tree.nodes)
+
+    %{
+      worker_count: length(nodes),
+      running_count: Enum.count(nodes, &(&1.state == :running)),
+      completed_count: Enum.count(nodes, &(&1.state == :completed)),
+      failed_count: Enum.count(nodes, &(&1.state == :failed)),
+      restart_count: Enum.reduce(nodes, 0, &(&2 + (&1.restart_count || 0)))
+    }
+  end
+
+  defp model_session_settings(state) do
+    token_budget =
+      case Runtime.status(state.runtime) do
+        {:ok, status} -> status.context_stats.window_tokens
+        {:error, _reason} -> nil
+      end
+
+    mcp_server_count =
+      case Runtime.mcp_servers(state.runtime) do
+        {:ok, servers} -> length(servers)
+        {:error, _reason} -> nil
+      end
+
+    %{
+      approval_mode: to_string(state.approval_policy),
+      token_budget: token_budget,
+      mcp_server_count: mcp_server_count
+    }
+  end
+
+  defp session_status(%{session_id: session_id}, %{session_id: session_id}), do: "current"
+
+  defp session_status(%{session_id: session_id}, _state) do
+    case BeamAgent.agent_pid(session_id) do
+      {:ok, _pid} -> "active"
+      {:error, _reason} -> "idle"
+    end
+  end
 
   defp event_filter_error({:unknown_event_filter, key}), do: "Unknown filter: #{key}"
 
@@ -1046,32 +1169,6 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp event_filter_error({:invalid_event_filter, token}), do: "Invalid filter: #{token}"
   defp event_filter_error(reason), do: format_error(reason)
-
-  defp format_model_endpoint(endpoint, active_profile, evidence) do
-    marker = if endpoint.id == active_profile, do: "●", else: "○"
-    model = endpoint.model || "provider default"
-    capabilities = endpoint.claims.capabilities |> Enum.map(&to_string/1) |> Enum.join(",")
-    empirical = Enum.find(evidence.endpoints, &(&1.endpoint_id == endpoint.id))
-
-    "#{marker} #{endpoint.id} · #{endpoint.provider}/#{model} · #{endpoint.claims.locality} · #{endpoint.health.status} · #{capabilities}#{format_model_evidence(empirical)}"
-  end
-
-  defp format_model_evidence(nil), do: " · evidence 0 verified"
-
-  defp format_model_evidence(evidence) do
-    quality =
-      case evidence.verified_pass_rate do
-        rate when is_number(rate) -> " · #{round(rate * 100)}% verified pass"
-        _unknown -> ""
-      end
-
-    latency =
-      if is_number(evidence.average_latency_ms),
-        do: " · #{evidence.average_latency_ms} ms avg",
-        else: ""
-
-    " · evidence #{evidence.verified_samples} verified/#{evidence.operational_samples} calls#{quality}#{latency}"
-  end
 
   defp format_usage(usage, limits) do
     [:model_tokens, :wall_time_ms, :shell_commands, :test_runs]

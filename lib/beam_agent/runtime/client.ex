@@ -36,6 +36,13 @@ defmodule BeamAgent.Runtime.Client do
   def organizations(client), do: GenServer.call(client, :organizations)
   def capability_leases(client), do: GenServer.call(client, :capability_leases)
   def worktrees(client), do: GenServer.call(client, :worktrees)
+  def diff_summary(client), do: GenServer.call(client, :diff_summary)
+  def diff(client, opts \\ []), do: GenServer.call(client, {:diff, opts})
+  def sessions(client), do: GenServer.call(client, :sessions)
+
+  def session_detail(client, session_id),
+    do: GenServer.call(client, {:session_detail, session_id})
+
   def project_preferences(client), do: GenServer.call(client, :project_preferences)
 
   def set_project_preferences(client, preferences),
@@ -245,6 +252,18 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call(:worktrees, _from, state),
     do: {:reply, BeamAgent.worktrees(state.project_id), state}
+
+  def handle_call(:diff_summary, _from, state),
+    do: {:reply, BeamAgent.diff_summary(state.workspace_root), state}
+
+  def handle_call({:diff, opts}, _from, state),
+    do: {:reply, BeamAgent.diff(state.workspace_root, opts), state}
+
+  def handle_call(:sessions, _from, state),
+    do: {:reply, BeamAgent.sessions(state.data_dir), state}
+
+  def handle_call({:session_detail, session_id}, _from, state),
+    do: {:reply, BeamAgent.session_detail(state.data_dir, session_id), state}
 
   def handle_call(:project_preferences, _from, state),
     do: {:reply, BeamAgent.project_preferences(state.project_id), state}

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image/color"
 	"io"
 	"os"
 	"path/filepath"
@@ -21,25 +20,6 @@ import (
 )
 
 const maxPacketSize = 16 * 1024 * 1024
-
-var (
-	cyan       = lipgloss.Color("#73DACA")
-	green      = lipgloss.Color("#9ECE6A")
-	yellow     = lipgloss.Color("#E0AF68")
-	red        = lipgloss.Color("#F7768E")
-	muted      = lipgloss.Color("#565F89")
-	foreground = lipgloss.Color("#C0CAF5")
-	panel      = lipgloss.Color("#24283B")
-
-	headerStyle    = lipgloss.NewStyle().Bold(true).Foreground(cyan)
-	subheaderStyle = lipgloss.NewStyle().Foreground(muted)
-	userStyle      = lipgloss.NewStyle().Bold(true).Foreground(cyan)
-	agentStyle     = lipgloss.NewStyle().Bold(true).Foreground(green)
-	toolStyle      = lipgloss.NewStyle().Foreground(yellow)
-	errorStyle     = lipgloss.NewStyle().Foreground(red)
-	mutedStyle     = lipgloss.NewStyle().Foreground(muted)
-	bodyStyle      = lipgloss.NewStyle().Foreground(foreground)
-)
 
 type packet struct {
 	Type         string           `json:"type"`
@@ -69,6 +49,40 @@ type packet struct {
 	Event        map[string]any   `json:"event,omitempty"`
 	Approval     map[string]any   `json:"approval,omitempty"`
 	Providers    []providerOption `json:"providers,omitempty"`
+
+	// Structured tab payloads — see packets.go.
+	Root                *goalNode               `json:"root,omitempty"`
+	Nodes               map[string]any          `json:"nodes,omitempty"`
+	Summary             treeSummary             `json:"summary,omitempty"`
+	Budget              *treeBudget             `json:"budget,omitempty"`
+	ResourcePools       map[string]resourcePool `json:"resource_pools,omitempty"`
+	Matched             int                     `json:"matched,omitempty"`
+	Total               int                     `json:"total,omitempty"`
+	Returned            int                     `json:"returned,omitempty"`
+	Filters             []string                `json:"filters,omitempty"`
+	AvailableCategories []string                `json:"available_categories,omitempty"`
+	Events              []eventRow              `json:"events,omitempty"`
+	ActiveProfile       string                  `json:"active_profile,omitempty"`
+	Endpoints           []modelEndpoint         `json:"endpoints,omitempty"`
+	Evidence            modelEvidence           `json:"evidence,omitempty"`
+	SessionSettings     modelSettings           `json:"session_settings,omitempty"`
+	Sessions            []sessionSummary        `json:"sessions,omitempty"`
+	TurnCount           int                     `json:"turn_count,omitempty"`
+	TotalTokens         int64                   `json:"total_tokens,omitempty"`
+	LastActiveAt        string                  `json:"last_active_at,omitempty"`
+	LastSeq             int64                   `json:"last_seq,omitempty"`
+	GoalPreview         string                  `json:"goal_preview,omitempty"`
+	Branch              string                  `json:"branch,omitempty"`
+	Changed             []changedFile           `json:"changed,omitempty"`
+	InContext           []contextFile           `json:"in_context,omitempty"`
+	Path                string                  `json:"path,omitempty"`
+	Insertions          int                     `json:"insertions,omitempty"`
+	Deletions           int                     `json:"deletions,omitempty"`
+	Binary              bool                    `json:"binary,omitempty"`
+	Hunks               []diffHunk              `json:"hunks,omitempty"`
+	RawPatch            string                  `json:"raw_patch,omitempty"`
+	Status              string                  `json:"status,omitempty"`
+	WorkspaceDiff       *treeWorkspace          `json:"workspace_diff,omitempty"`
 }
 
 type entry struct {
@@ -81,6 +95,8 @@ type entry struct {
 	Status     string         `json:"status,omitempty"`
 	Error      bool           `json:"error,omitempty"`
 	Streaming  bool           `json:"streaming,omitempty"`
+	Role       spineRole      `json:"-"`
+	SessionID  string         `json:"-"`
 }
 
 type protocol struct {
@@ -193,7 +209,10 @@ type model struct {
 	viewport       viewport.Model
 	width          int
 	height         int
+	bodyHeight     int
+	sheetHeight    int
 	workspace      string
+	workspaceRoot  string
 	sessionID      string
 	projectID      string
 	goalID         string
@@ -208,14 +227,30 @@ type model struct {
 	noticeTone     string
 	panelTitle     string
 	panelLines     []string
-	palette        bool
+	sheet          sheetKind
 	paletteIndex   int
-	providerPicker bool
 	providerIndex  int
 	providers      []providerOption
 	approval       *approval
 	approvalMode   string
 	toolsExpanded  bool
+	pendingFailure bool
+
+	tab         tab
+	unseen      [tabCount]int
+	treeTab     treeTabState
+	filesTab    filesTabState
+	eventsTab   eventsTabState
+	sessionsTab sessionsTabState
+	modelsTab   modelsTabState
+
+	treeData          *treeSnapshot
+	eventsData        *eventsSnapshot
+	modelsData        *modelsSnapshot
+	sessionsData      *sessionsSnapshot
+	sessionDetailData *sessionDetail
+	filesData         *filesSnapshot
+	selectedDiff      *fileDiff
 }
 
 func newModel(initial packet, bridge *protocol) model {
@@ -234,23 +269,24 @@ func newModel(initial packet, bridge *protocol) model {
 	vp.MouseWheelEnabled = true
 
 	m := model{
-		protocol:     bridge,
-		composer:     composer,
-		viewport:     vp,
-		width:        80,
-		height:       24,
-		workspace:    filepath.Base(initial.Workspace),
-		sessionID:    initial.SessionID,
-		projectID:    initial.ProjectID,
-		goalID:       initial.GoalID,
-		cursor:       initial.Cursor,
-		provider:     initial.Provider,
-		profile:      initial.Profile,
-		llmModel:     initial.Model,
-		status:       "ready",
-		entries:      initial.Entries,
-		contextStats: initial.ContextStats,
-		approvalMode: initial.ApprovalMode,
+		protocol:      bridge,
+		composer:      composer,
+		viewport:      vp,
+		width:         80,
+		height:        24,
+		workspace:     filepath.Base(initial.Workspace),
+		workspaceRoot: initial.Workspace,
+		sessionID:     initial.SessionID,
+		projectID:     initial.ProjectID,
+		goalID:        initial.GoalID,
+		cursor:        initial.Cursor,
+		provider:      initial.Provider,
+		profile:       initial.Profile,
+		llmModel:      initial.Model,
+		status:        "ready",
+		entries:       initial.Entries,
+		contextStats:  initial.ContextStats,
+		approvalMode:  initial.ApprovalMode,
 	}
 	m.refreshTranscript(true)
 	return m
@@ -268,6 +304,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 	case backendMsg:
 		m.applyBackend(packet(msg))
+		m.resize(m.width, m.height)
+		return m, nil
+
+	case editorFinishedMsg:
+		if msg.err != nil {
+			m.notice = "Editor exited with an error: " + msg.err.Error()
+			m.noticeTone = "warning"
+			m.refreshTranscript(false)
+		}
 		return m, nil
 
 	case backendClosedMsg:
@@ -285,10 +330,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.approval != nil {
 			return m.updateApproval(key)
 		}
-		if m.providerPicker {
+		switch m.sheet {
+		case sheetProviderPicker:
 			return m.updateProviderPicker(key)
-		}
-		if m.palette {
+		case sheetPalette:
 			return m.updatePalette(key)
 		}
 
@@ -303,17 +348,20 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "ctrl+p":
-			m.palette = true
+			m.sheet = sheetPalette
 			m.panelTitle = ""
 			m.panelLines = nil
+			m.resize(m.width, m.height)
 			return m, nil
 		case "ctrl+t":
 			m.toolsExpanded = !m.toolsExpanded
 			m.refreshTranscript(false)
 			return m, nil
 		case "ctrl+o":
-			m.composer.InsertString("\n")
-			m.resize(m.width, m.height)
+			if m.tab == tabChat {
+				m.composer.InsertString("\n")
+				m.resize(m.width, m.height)
+			}
 			return m, nil
 		case "pgup":
 			m.viewport.PageUp()
@@ -321,14 +369,55 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			m.viewport.PageDown()
 			return m, nil
+		case "1", "2", "3", "4", "5", "6":
+			if m.tab != tabChat || m.composer.Value() == "" {
+				return m, m.switchTab(tab(key[0] - '1'))
+			}
+		case "r", "e":
+			if m.tab == tabChat && m.pendingFailure && m.composer.Value() == "" {
+				prompt := m.lastUserPrompt()
+				m.pendingFailure = false
+				if key == "e" {
+					m.composer.SetValue(prompt)
+					m.resize(m.width, m.height)
+					m.refreshTranscript(false)
+					return m, nil
+				}
+				m.refreshTranscript(false)
+				if prompt == "" {
+					return m, nil
+				}
+				m.entries = append(m.entries, entry{Kind: "user", Content: prompt, Role: spineUser})
+				m.status = "working"
+				m.refreshTranscript(true)
+				return m, m.send(packet{Type: "submit", Prompt: prompt})
+			}
 		case "esc":
-			m.panelTitle = ""
-			m.panelLines = nil
+			if m.sheet != sheetNone {
+				m.sheet = sheetNone
+				m.panelTitle = ""
+				m.panelLines = nil
+				m.notice = ""
+				m.refreshTranscript(false)
+				m.resize(m.width, m.height)
+				return m, nil
+			}
+			if m.tab != tabChat {
+				return m, m.switchTab(tabChat)
+			}
 			m.notice = ""
+			m.pendingFailure = false
 			m.refreshTranscript(false)
 			return m, nil
 		case "enter":
-			return m.submit()
+			if m.tab == tabChat {
+				return m.submit()
+			}
+			return m.updateActiveTab(key)
+		default:
+			if m.tab != tabChat {
+				return m.updateActiveTab(key)
+			}
 		}
 
 	case tea.MouseWheelMsg:
@@ -337,47 +426,50 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	m.composer, cmd = m.composer.Update(message)
+	if m.tab == tabChat {
+		m.composer, cmd = m.composer.Update(message)
+	}
 	m.resize(m.width, m.height)
 	return m, cmd
 }
 
 func (m model) View() tea.View {
-	header := m.renderHeader()
-	body := m.viewport.View()
-	if m.palette {
-		body = m.renderPalette()
-	} else if m.approval != nil {
-		body = m.renderApproval()
-	} else if m.providerPicker {
-		body = m.renderProviderPicker()
-	} else if m.panelTitle != "" {
-		body = m.renderPanel()
+	tabStrip := m.renderTabStrip()
+
+	dim := m.approval != nil || m.sheet != sheetNone
+	body := m.renderActiveTab(dim)
+
+	sheet := ""
+	switch {
+	case m.approval != nil:
+		sheet = m.renderApproval()
+	case m.sheet == sheetPalette:
+		sheet = m.renderPalette()
+	case m.sheet == sheetProviderPicker:
+		sheet = m.renderProviderPicker()
+	case m.sheet == sheetPanel:
+		sheet = m.renderPanel()
 	}
 
-	composerBorder := cyan
-	label := " Ask BeamAgent "
-	if m.status != "ready" {
-		composerBorder = yellow
-		label = " Working "
+	composer := ""
+	if m.tab == tabChat {
+		composerBorder := colMint
+		label := " Ask BeamAgent "
+		if m.status != "ready" {
+			composerBorder = colSand
+			label = " Working "
+		}
+		composer = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(composerBorder).
+			Padding(0, 1).
+			Width(max(10, m.width-2)).
+			Render(mutedStyle.Render(label) + "\n" + m.composer.View())
 	}
-	composer := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(composerBorder).
-		Padding(0, 1).
-		Width(max(10, m.width-2)).
-		Render(mutedStyle.Render(label) + "\n" + m.composer.View())
 
-	footerLeft := "^P commands   wheel/PgUp/PgDn scroll   ^T tool details"
-	footerRight := "^C exit"
-	if m.status == "working" {
-		footerRight = "^C cancel"
-	} else if m.status == "cancelling" {
-		footerRight = "cancelling…"
-	}
-	footer := mutedStyle.Render(joinEdges(footerLeft, footerRight, m.width))
+	footer := mutedStyle.Render(joinEdges(m.footerLeft(), m.footerRight(), m.width))
 
-	content := lipgloss.JoinVertical(lipgloss.Left, header, body, composer, footer)
+	content := lipgloss.JoinVertical(lipgloss.Left, tabStrip, body, sheet, composer, footer)
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
@@ -385,14 +477,75 @@ func (m model) View() tea.View {
 	return view
 }
 
+func (m model) footerLeft() string {
+	switch {
+	case m.tab != tabChat:
+		return "1 back to chat"
+	default:
+		return "^P commands   wheel/PgUp/PgDn scroll   ^T tool details   1–6 tabs"
+	}
+}
+
+func (m model) footerRight() string {
+	mark := "●"
+	status := m.status
+	if status == "working" {
+		mark = "◉"
+	} else if status == "cancelling" {
+		mark = "○"
+	}
+	context := ""
+	if usage, ok := number(m.contextStats["utilization_percent"]); ok {
+		context = fmt.Sprintf("   ctx %.0f%%", usage)
+	}
+	right := fmt.Sprintf("%s  %s   %s/%s%s", mark, status, m.profile, m.llmModel, context)
+	if m.approvalMode == "auto" {
+		right = "AUTO  " + right
+	}
+	if m.status == "working" {
+		right = "^C cancel   " + right
+	} else if m.status == "cancelling" {
+		right = "cancelling…   " + right
+	} else if m.tab == tabChat {
+		right = "^C exit   " + right
+	}
+	return right
+}
+
+// Layout budget: tab strip (tab row + rule) + footer (one row) are always
+// present; the composer (plus its rounded border) is chat-tab only. A docked
+// sheet, once it lands, will claim a further slice of bodyHeight rather than
+// overlaying it — see sheets.go.
+const (
+	tabStripHeight = 2
+	footerHeight   = 1
+	composerBorder = 2
+)
+
 func (m *model) resize(width, height int) {
 	m.width = max(40, width)
 	m.height = max(14, height)
-	composerHeight := min(4, max(2, m.composer.LineCount()))
-	m.composer.SetHeight(composerHeight)
-	m.composer.SetWidth(max(10, m.width-6))
+
+	composerHeight := 0
+	if m.tab == tabChat {
+		composerHeight = min(4, max(2, m.composer.LineCount()))
+		m.composer.SetHeight(composerHeight)
+		m.composer.SetWidth(max(10, m.width-6))
+		composerHeight += composerBorder
+	}
+
+	remaining := max(3, m.height-tabStripHeight-footerHeight-composerHeight)
+
+	m.sheetHeight = 0
+	if lines := m.sheetContentLines(); lines > 0 {
+		const sheetChrome = 4 // rule + title + blank line + padding
+		maxSheet := max(3, remaining*6/10)
+		m.sheetHeight = min(lines+sheetChrome, maxSheet)
+	}
+
+	m.bodyHeight = max(3, remaining-m.sheetHeight)
 	m.viewport.SetWidth(m.width)
-	m.viewport.SetHeight(max(3, m.height-composerHeight-7))
+	m.viewport.SetHeight(m.bodyHeight)
 }
 
 func (m model) submit() (tea.Model, tea.Cmd) {
@@ -412,9 +565,10 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.entries = append(m.entries, entry{Kind: "user", Content: prompt})
+	m.entries = append(m.entries, entry{Kind: "user", Content: prompt, Role: spineUser})
 	m.status = "working"
 	m.notice = ""
+	m.pendingFailure = false
 	m.composer.Reset()
 	m.resize(m.width, m.height)
 	m.refreshTranscript(true)
@@ -434,7 +588,7 @@ func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
 	case "/exit", "/quit":
 		return m, tea.Quit
 	case "/", "/help":
-		m.palette = true
+		m.sheet = sheetPalette
 		return m, nil
 	case "/clear":
 		m.entries = nil
@@ -481,7 +635,8 @@ func (m *model) localCommand(id string) bool {
 func (m model) updatePalette(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc", "ctrl+p":
-		m.palette = false
+		m.sheet = sheetNone
+		m.resize(m.width, m.height)
 		return m, nil
 	case "up", "k":
 		m.paletteIndex = (m.paletteIndex - 1 + len(commands)) % len(commands)
@@ -491,7 +646,8 @@ func (m model) updatePalette(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		item := commands[m.paletteIndex]
-		m.palette = false
+		m.sheet = sheetNone
+		m.resize(m.width, m.height)
 		if item.ID == "exit" {
 			return m, tea.Quit
 		}
@@ -525,6 +681,7 @@ func (m model) updateApproval(key string) (tea.Model, tea.Cmd) {
 func (m model) resolveApproval(decision string) (tea.Model, tea.Cmd) {
 	id := m.approval.ID
 	m.approval = nil
+	m.resize(m.width, m.height)
 	return m, m.send(packet{Type: "approval", ApprovalID: id, Decision: decision})
 }
 
@@ -537,6 +694,7 @@ func (m *model) applyBackend(message packet) {
 	case "turn_finished":
 		m.status = "ready"
 		m.approval = nil
+		m.pendingFailure = !message.OK
 		if !message.OK {
 			m.entries = append(m.entries, entry{Kind: "error", Content: "Turn failed: " + message.Error})
 		}
@@ -569,6 +727,7 @@ func (m *model) applyBackend(message packet) {
 		m.notice, m.noticeTone = message.Message, message.Tone
 	case "panel":
 		m.panelTitle, m.panelLines = message.Title, message.Lines
+		m.sheet = sheetPanel
 		m.notice = ""
 	case "provider_picker":
 		m.providers = message.Providers
@@ -579,8 +738,11 @@ func (m *model) applyBackend(message packet) {
 				break
 			}
 		}
-		m.providerPicker = len(m.providers) > 0
-		m.palette = false
+		if len(m.providers) > 0 {
+			m.sheet = sheetProviderPicker
+		} else {
+			m.sheet = sheetNone
+		}
 		m.panelTitle = ""
 		m.panelLines = nil
 		m.notice = ""
@@ -601,10 +763,82 @@ func (m *model) applyBackend(message packet) {
 		m.status = "ready"
 		m.panelTitle = ""
 		m.panelLines = nil
-		m.providerPicker = false
+		m.sheet = sheetNone
 		m.providers = nil
 	case "context_stats":
 		m.contextStats = message.Stats
+	case "tree":
+		m.treeData = &treeSnapshot{
+			Root:          message.Root,
+			Nodes:         message.Nodes,
+			Summary:       message.Summary,
+			Budget:        message.Budget,
+			ResourcePools: message.ResourcePools,
+			WorkspaceDiff: message.WorkspaceDiff,
+		}
+		if m.tab != tabTree {
+			m.unseen[tabTree]++
+		}
+	case "events":
+		m.eventsData = &eventsSnapshot{
+			Matched:             message.Matched,
+			Total:               message.Total,
+			Returned:            message.Returned,
+			Cursor:              message.Cursor,
+			Filters:             message.Filters,
+			AvailableCategories: message.AvailableCategories,
+			Events:              message.Events,
+		}
+		m.cursor = message.Cursor
+		if m.tab != tabEvents {
+			m.unseen[tabEvents]++
+		}
+	case "models":
+		m.modelsData = &modelsSnapshot{
+			ActiveProfile:   message.ActiveProfile,
+			Endpoints:       message.Endpoints,
+			Evidence:        message.Evidence,
+			SessionSettings: message.SessionSettings,
+		}
+		if m.tab != tabModels {
+			m.unseen[tabModels]++
+		}
+	case "sessions":
+		m.sessionsData = &sessionsSnapshot{Sessions: message.Sessions}
+		if m.tab != tabSessions {
+			m.unseen[tabSessions]++
+		}
+	case "session_detail":
+		m.sessionDetailData = &sessionDetail{
+			SessionID:    message.SessionID,
+			Provider:     message.Provider,
+			Model:        message.Model,
+			TurnCount:    message.TurnCount,
+			TotalTokens:  message.TotalTokens,
+			LastActiveAt: message.LastActiveAt,
+			LastSeq:      message.LastSeq,
+			GoalPreview:  message.GoalPreview,
+		}
+	case "files":
+		m.filesData = &filesSnapshot{
+			Branch:    message.Branch,
+			Changed:   message.Changed,
+			InContext: message.InContext,
+		}
+		if m.tab != tabFiles {
+			m.unseen[tabFiles]++
+		}
+	case "diff":
+		m.selectedDiff = &fileDiff{
+			Path:       message.Path,
+			Status:     message.Status,
+			Insertions: message.Insertions,
+			Deletions:  message.Deletions,
+			Binary:     message.Binary,
+			Hunks:      message.Hunks,
+			RawPatch:   message.RawPatch,
+		}
+		m.filesTab.selectedHunk = 0
 	}
 	m.refreshTranscript(true)
 }
@@ -624,7 +858,7 @@ func (m *model) applyStream(event map[string]any) {
 				return
 			}
 		}
-		m.entries = append(m.entries, entry{Kind: "assistant", Content: delta, ResponseID: responseID, Streaming: true})
+		m.entries = append(m.entries, entry{Kind: "assistant", Content: delta, ResponseID: responseID, Streaming: true, Role: spineRoot})
 
 	case "response_finished":
 		responseID := asString(event["response_id"])
@@ -666,8 +900,8 @@ func (m *model) applyRuntimeEvent(event map[string]any) {
 	data := asMap(payload["data"])
 	m.applyDurableEvent(eventType, data, sessionID, root)
 
-	if info := runtimeInfo(eventType, data, sessionID, root); info != "" {
-		m.entries = append(m.entries, entry{Kind: "info", Content: info})
+	if info, role, scopeID := runtimeInfo(eventType, data, sessionID, root); info != "" {
+		m.entries = append(m.entries, entry{Kind: "info", Content: info, Role: role, SessionID: scopeID})
 	}
 }
 
@@ -679,15 +913,21 @@ func (m *model) applyDurableEvent(eventType string, data map[string]any, session
 		}
 		content := asString(data["content"])
 		if content != "" && !m.recentAssistantMatches(content) {
-			m.entries = append(m.entries, entry{Kind: "assistant", Content: content})
+			m.entries = append(m.entries, entry{Kind: "assistant", Content: content, Role: spineRoot})
 		}
 	case "tool_called":
+		role := spineRoot
+		if !root {
+			role = spineSubagent
+		}
 		m.entries = append(m.entries, entry{
 			Kind:      "tool",
 			ID:        runtimeToolID(sessionID, asString(data["tool_call_id"])),
 			Name:      runtimeToolName(sessionID, asString(data["name"]), root),
 			Arguments: asMap(data["arguments"]),
 			Status:    "running",
+			Role:      role,
+			SessionID: sessionID,
 		})
 	case "tool_result":
 		id := runtimeToolID(sessionID, asString(data["tool_call_id"]))
@@ -706,7 +946,34 @@ func (m *model) applyDurableEvent(eventType string, data map[string]any, session
 	}
 }
 
-func runtimeInfo(eventType string, data map[string]any, sessionID string, root bool) string {
+// runtimeInfo renders a durable-event info line and classifies which
+// session it belongs to, so the transcript spine can draw it as a root fact
+// (·) or as part of a specific subagent's branch (├/╰).
+func runtimeInfo(eventType string, data map[string]any, sessionID string, root bool) (text string, role spineRole, scopeID string) {
+	text = runtimeInfoText(eventType, data, sessionID, root)
+	if text == "" {
+		return "", spineSystem, ""
+	}
+	switch eventType {
+	case "agent_started":
+		if !root {
+			return text, spineSubagent, sessionID
+		}
+	case "subagent_spawned":
+		return text, spineSubagent, asString(data["child_session_id"])
+	case "agent_construction_requested", "agent_constructed":
+		return text, spineSubagent, asString(data["target_session_id"])
+	case "agent_spec_applied":
+		return text, spineSubagent, sessionID
+	case "turn_finished", "model_response_failed":
+		if !root {
+			return text, spineSubagent, sessionID
+		}
+	}
+	return text, spineSystem, ""
+}
+
+func runtimeInfoText(eventType string, data map[string]any, sessionID string, root bool) string {
 	switch eventType {
 	case "session_started":
 		if root {
@@ -842,17 +1109,19 @@ func (m model) recentAssistantMatches(content string) bool {
 func (m *model) refreshTranscript(bottom bool) {
 	wasAtBottom := m.viewport.AtBottom()
 	previousOffset := m.viewport.YOffset()
+	glyphs := spineGlyphs(m.entries)
 	var b strings.Builder
-	for _, item := range m.entries {
+	for i, item := range m.entries {
+		glyph, style := glyphs[i], spineGlyphStyle(glyphs[i])
 		switch item.Kind {
 		case "user":
-			fmt.Fprintf(&b, "\n%s\n%s\n", userStyle.Render("YOU"), bodyStyle.Render(item.Content))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, bodyStyle.Render(item.Content)))
 		case "assistant":
 			cursor := ""
 			if item.Streaming {
 				cursor = " _"
 			}
-			fmt.Fprintf(&b, "\n%s\n%s\n", agentStyle.Render("AGENT"), bodyStyle.Render(item.Content+cursor))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, bodyStyle.Render(item.Content+cursor)))
 		case "tool":
 			marker := "·"
 			if item.Status == "done" {
@@ -860,16 +1129,16 @@ func (m *model) refreshTranscript(bottom bool) {
 			} else if item.Status == "error" {
 				marker = "×"
 			}
-			fmt.Fprintf(&b, "%s\n", toolStyle.Render(fmt.Sprintf("%s  %s  %s", marker, item.Name, compactArguments(item.Arguments))))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, toolStyle.Render(fmt.Sprintf("%s  %s  %s", marker, item.Name, compactArguments(item.Arguments)))))
 			if m.toolsExpanded && item.Content != "" {
-				fmt.Fprintf(&b, "%s\n", mutedStyle.Render("   "+strings.ReplaceAll(item.Content, "\n", "\n   ")))
+				fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, mutedStyle.Render(strings.ReplaceAll(item.Content, "\n", "\n   "))))
 			}
 		case "error":
-			fmt.Fprintf(&b, "\n%s\n", errorStyle.Render("! "+item.Content))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, errorStyle.Render(item.Content)))
 		case "system":
-			fmt.Fprintf(&b, "%s\n", mutedStyle.Render("· "+item.Content))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, mutedStyle.Render(item.Content)))
 		case "info":
-			fmt.Fprintf(&b, "%s\n", mutedStyle.Render("i  "+item.Content))
+			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, mutedStyle.Render(item.Content)))
 		}
 	}
 	if m.notice != "" {
@@ -883,6 +1152,9 @@ func (m *model) refreshTranscript(bottom bool) {
 		}
 		fmt.Fprintf(&b, "\n%s\n", style.Render("· "+m.notice))
 	}
+	if m.pendingFailure {
+		fmt.Fprintf(&b, "\n%s\n", m.renderFailureActions())
+	}
 	m.viewport.SetContent(strings.TrimLeft(b.String(), "\n"))
 	if bottom && wasAtBottom {
 		m.viewport.GotoBottom()
@@ -891,45 +1163,24 @@ func (m *model) refreshTranscript(bottom bool) {
 	}
 }
 
-func (m model) renderHeader() string {
-	mark := "●"
-	status := m.status
-	if status == "working" {
-		mark = "◉"
-	} else if status == "cancelling" {
-		mark = "○"
-	}
-	context := ""
-	if usage, ok := number(m.contextStats["utilization_percent"]); ok {
-		context = fmt.Sprintf("   ctx %.0f%%", usage)
-	}
-	right := fmt.Sprintf("%s  %s   %s/%s%s", mark, status, m.profile, m.llmModel, context)
-	if m.approvalMode == "auto" {
-		right = "AUTO  " + right
-	}
-	line1 := headerStyle.Render(joinEdges("BEAM AGENT", right, m.width))
-	line2 := subheaderStyle.Render(joinEdges(m.workspace+"  /  "+shortSession(m.sessionID), m.provider, m.width))
-	line3 := mutedStyle.Render(strings.Repeat("─", m.width))
-	return lipgloss.JoinVertical(lipgloss.Left, line1, line2, line3)
-}
-
 func (m model) renderPalette() string {
 	rows := make([]string, 0, len(commands))
+	width := min(72, m.width-6)
 	for i, item := range commands {
 		prefix := "  "
 		style := bodyStyle
 		if i == m.paletteIndex {
 			prefix = "› "
-			style = lipgloss.NewStyle().Bold(true).Foreground(panel).Background(cyan)
+			style = lipgloss.NewStyle().Bold(true).Foreground(colPanel).Background(colMint)
 		}
-		rows = append(rows, style.Width(min(72, m.viewport.Width()-6)).Render(joinEdges(prefix+item.Label, item.Hint, min(72, m.viewport.Width()-6))))
+		rows = append(rows, style.Width(width).Render(joinEdges(prefix+item.Label, item.Hint, width)))
 	}
-	return m.modal("Command palette", strings.Join(rows, "\n"), cyan)
+	return m.sheetBox("Command palette", strings.Join(rows, "\n"), colMint)
 }
 
 func (m model) renderProviderPicker() string {
 	rows := make([]string, 0, len(m.providers)+2)
-	width := min(96, m.viewport.Width()-6)
+	width := min(96, m.width-6)
 	for i, provider := range m.providers {
 		marker := "  "
 		if provider.Connected {
@@ -944,22 +1195,24 @@ func (m model) renderProviderPicker() string {
 		right := provider.Auth + "  " + provider.Status
 		style := bodyStyle
 		if i == m.providerIndex {
-			style = lipgloss.NewStyle().Bold(true).Foreground(panel).Background(cyan)
+			style = lipgloss.NewStyle().Bold(true).Foreground(colPanel).Background(colMint)
 		}
 		rows = append(rows, style.Width(width).Render(joinEdges(left, right, width)))
 	}
 	rows = append(rows, "", mutedStyle.Render("↑/↓ choose · enter connect · esc close"))
-	return m.modal("Connect a provider", strings.Join(rows, "\n"), cyan)
+	return m.sheetBox("Connect a provider", strings.Join(rows, "\n"), colMint)
 }
 
 func (m model) updateProviderPicker(key string) (tea.Model, tea.Cmd) {
 	if len(m.providers) == 0 {
-		m.providerPicker = false
+		m.sheet = sheetNone
+		m.resize(m.width, m.height)
 		return m, nil
 	}
 	switch key {
 	case "esc":
-		m.providerPicker = false
+		m.sheet = sheetNone
+		m.resize(m.width, m.height)
 		return m, nil
 	case "up", "k":
 		m.providerIndex = (m.providerIndex - 1 + len(m.providers)) % len(m.providers)
@@ -969,7 +1222,8 @@ func (m model) updateProviderPicker(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		provider := m.providers[m.providerIndex]
-		m.providerPicker = false
+		m.sheet = sheetNone
+		m.resize(m.width, m.height)
 		m.notice = "Connecting " + provider.Profile + "…"
 		m.noticeTone = "muted"
 		m.refreshTranscript(true)
@@ -989,7 +1243,7 @@ func (m model) renderApproval() string {
 		deny, always = "  Deny  ", "[ Allow always ]"
 	}
 	content := fmt.Sprintf("Tool      %s\nAccess    %s\nArguments %s\n\n%s     %s     %s\n\n←/→ choose · enter confirm · esc deny", m.approval.Tool, m.approval.Access, args, deny, allow, always)
-	return m.modal("Approval required", content, yellow)
+	return m.sheetBox("Approval required", content, colSand)
 }
 
 func nextApprovalChoice(choice string) string {
@@ -1015,18 +1269,7 @@ func previousApprovalChoice(choice string) string {
 }
 
 func (m model) renderPanel() string {
-	return m.modal(m.panelTitle, strings.Join(m.panelLines, "\n"), cyan)
-}
-
-func (m model) modal(title, content string, accent color.Color) string {
-	width := min(max(44, m.viewport.Width()*3/4), m.viewport.Width()-4)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accent).
-		Padding(1, 2).
-		Width(width).
-		Render(headerStyle.Foreground(accent).Render(title) + "\n\n" + content)
-	return lipgloss.Place(m.viewport.Width(), m.viewport.Height(), lipgloss.Center, lipgloss.Center, box)
+	return m.sheetBox(m.panelTitle, strings.Join(m.panelLines, "\n"), colMint)
 }
 
 func (m model) send(message packet) tea.Cmd {
@@ -1066,9 +1309,26 @@ func joinEdges(left, right string, width int) string {
 	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
 	line := left + strings.Repeat(" ", gap) + right
 	if lipgloss.Width(line) > width {
-		return line[:min(len(line), width)]
+		return truncateToWidth(line, width)
 	}
 	return line
+}
+
+// truncateToWidth cuts s to at most width display cells, respecting rune
+// boundaries — plain byte slicing corrupts multi-byte characters (en dashes,
+// status dots) once a line runs long enough to need truncating.
+func truncateToWidth(s string, width int) string {
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > width {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String()
 }
 
 func shortSession(sessionID string) string {

@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees)a
+  @commands ~w(connect auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees files resume)a
 
   def available?(override \\ nil)
 
@@ -124,6 +124,27 @@ defmodule BeamAgent.CLI.TUI do
   def notification_payload({:provider_picker, providers}),
     do: %{type: "provider_picker", providers: json_safe(providers)}
 
+  def notification_payload({:tree, payload}),
+    do: Map.put(json_safe(payload), :type, "tree")
+
+  def notification_payload({:events, payload}),
+    do: Map.put(json_safe(payload), :type, "events")
+
+  def notification_payload({:models, payload}),
+    do: Map.put(json_safe(payload), :type, "models")
+
+  def notification_payload({:files, payload}),
+    do: Map.put(json_safe(payload), :type, "files")
+
+  def notification_payload({:diff, payload}),
+    do: Map.put(json_safe(payload), :type, "diff")
+
+  def notification_payload({:sessions, payload}),
+    do: Map.put(json_safe(payload), :type, "sessions")
+
+  def notification_payload({:session_detail, payload}),
+    do: Map.put(json_safe(payload), :type, "session_detail")
+
   def notification_payload({:session_changed, session_id, config}) do
     %{
       type: "session_changed",
@@ -222,6 +243,33 @@ defmodule BeamAgent.CLI.TUI do
          controller
        ) do
     Controller.command(controller, :tree)
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "files", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:files, query})
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "resume", "query" => session_id},
+         controller
+       )
+       when is_binary(session_id) and session_id != "" do
+    Controller.command(controller, {:resume, session_id})
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "sessions", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:sessions, query})
     :ok
   end
 

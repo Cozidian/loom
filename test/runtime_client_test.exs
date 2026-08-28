@@ -259,6 +259,45 @@ defmodule BeamAgent.RuntimeClientTest do
   end
 
   defp eventually(fun, attempts \\ 100)
+
+  test "a client exposes workspace diffs and the session index it is bound to", context do
+    workspace = context.workspace
+
+    File.write!(Path.join(workspace, "tracked.txt"), "one\ntwo\n")
+
+    {_out, 0} =
+      System.cmd("git", ["init", "--initial-branch=main"], cd: workspace, stderr_to_stdout: true)
+
+    {_out, 0} = System.cmd("git", ["config", "user.email", "test@example.com"], cd: workspace)
+    {_out, 0} = System.cmd("git", ["config", "user.name", "Test"], cd: workspace)
+    {_out, 0} = System.cmd("git", ["add", "."], cd: workspace)
+    {_out, 0} = System.cmd("git", ["commit", "-m", "init"], cd: workspace, stderr_to_stdout: true)
+    File.write!(Path.join(workspace, "tracked.txt"), "one\nTWO\n")
+
+    assert {:ok, runtime} = Runtime.connect(context.session_id)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    assert {:ok, summary} = Runtime.diff_summary(runtime)
+    assert summary.branch == "main"
+    assert summary.changed_file_count == 1
+    assert summary.insertions == 1
+    assert summary.deletions == 1
+
+    assert {:ok, diff} = Runtime.diff(runtime)
+    assert [%{path: "tracked.txt", status: "modified"}] = diff.changed_files
+    assert [%{lines: [_context, _remove, _add]}] = diff.files["tracked.txt"].hunks
+
+    assert {:ok, listed} = Runtime.diff(runtime, hunks?: false)
+    assert listed.files == %{}
+
+    assert {:ok, [%{session_id: session_id}]} = Runtime.sessions(runtime)
+    assert session_id == context.session_id
+
+    assert {:ok, detail} = Runtime.session_detail(runtime, context.session_id)
+    assert detail.session_id == context.session_id
+    assert detail.provider == "echo"
+  end
+
   defp eventually(_fun, 0), do: false
 
   defp eventually(fun, attempts) do

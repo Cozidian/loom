@@ -4,6 +4,7 @@ defmodule BeamAgent.CLITUITest do
   alias BeamAgent.CLI.TUI
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
+  alias BeamAgent.RuntimeEventQuery
 
   defmodule FakeCodexAppServer do
     def account do
@@ -183,18 +184,21 @@ defmodule BeamAgent.CLITUITest do
     assert Enum.any?(messages, &match?({:turn_finished, {:ok, "echo(1): hello"}}, &1))
 
     Controller.command(controller, :events)
-    assert_receive {:beam_agent_tui, {:panel, title, lines}}
-    assert title =~ "Goal events"
-    assert hd(lines) =~ "cursor"
-    assert Enum.any?(lines, &(&1 =~ "corr" and &1 =~ "cause"))
+    assert_receive {:beam_agent_tui, {:events, payload}}
+    assert payload.cursor > 0
+    assert payload.total > 0
+    assert payload.available_categories == RuntimeEventQuery.categories()
+    assert Enum.all?(payload.events, &Map.has_key?(&1, :correlation_id))
 
     Controller.command(controller, {:events, "category=model type=assistant_message limit=1"})
-    assert_receive {:beam_agent_tui, {:panel, filtered_title, filtered_lines}}
-    assert filtered_title =~ "1 results"
-    assert Enum.at(filtered_lines, 1) =~ "category=model"
-    assert Enum.at(filtered_lines, 1) =~ "type=assistant_message"
-    assert List.last(filtered_lines) =~ "model/assistant_message"
-    assert List.last(filtered_lines) =~ "redacted"
+    assert_receive {:beam_agent_tui, {:events, filtered}}
+    assert filtered.returned == 1
+    assert Enum.any?(filtered.filters, &(&1 =~ "category=model"))
+    assert Enum.any?(filtered.filters, &(&1 =~ "type=assistant_message"))
+    assert [event] = filtered.events
+    assert event.category == :model
+    assert event.payload.type == "assistant_message"
+    assert event.redacted? == true
 
     Controller.command(controller, {:events, "help"})
     assert_receive {:beam_agent_tui, {:panel, "Event inspector filters", help_lines}}
@@ -205,14 +209,15 @@ defmodule BeamAgent.CLITUITest do
     assert hd(error_lines) == "Invalid limit value: 1000"
 
     Controller.command(controller, :models)
-    assert_receive {:beam_agent_tui, {:panel, models_title, model_lines}}
-    assert models_title =~ "Model registry"
-    assert Enum.any?(model_lines, &(&1 =~ "● echo · echo/provider default · local · unknown"))
+    assert_receive {:beam_agent_tui, {:models, models_payload}}
+    assert models_payload.active_profile == "echo"
+    assert [%{id: "echo", provider: :echo}] = models_payload.endpoints
+    assert models_payload.session_settings.approval_mode == "ask"
 
     Controller.command(controller, :tree)
-    assert_receive {:beam_agent_tui, {:panel, tree_title, tree_lines}}
-    assert tree_title =~ "Goal tree"
-    assert Enum.any?(tree_lines, &(&1 =~ "Goal" and &1 =~ "completed"))
+    assert_receive {:beam_agent_tui, {:tree, tree_payload}}
+    assert tree_payload.root.state == :completed
+    assert tree_payload.summary.worker_count >= 1
 
     Controller.command(controller, {:models, "refresh"})
     assert_receive {:beam_agent_tui, {:notice, :muted, refresh_message}}
@@ -226,6 +231,83 @@ defmodule BeamAgent.CLITUITest do
 
     assert_receive {:beam_agent_tui,
                     {:notice, :error, "ChatGPT login is available only for OpenAI profiles"}}
+  end
+
+  test "files command reports changed files and gracefully empty in_context", context do
+    workspace = context.config["workspace_root"]
+    System.cmd("git", ["init", "-q"], cd: workspace)
+    System.cmd("git", ["config", "user.email", "test@example.com"], cd: workspace)
+    System.cmd("git", ["config", "user.name", "Test"], cd: workspace)
+    File.write!(Path.join(workspace, "a.txt"), "one\n")
+    System.cmd("git", ["add", "."], cd: workspace)
+    System.cmd("git", ["commit", "-q", "-m", "init"], cd: workspace)
+    File.write!(Path.join(workspace, "a.txt"), "one\ntwo\n")
+
+    {:ok, controller} =
+      Controller.start_link(
+        client: self(),
+        session_id: context.session_id,
+        config: context.config,
+        config_path: context.config_path
+      )
+
+    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+
+    assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+    assert_receive {:beam_agent_tui, {:context_stats, _stats}}
+
+    Controller.command(controller, {:files, ""})
+    assert_receive {:beam_agent_tui, {:files, payload}}
+    assert payload.in_context == []
+    assert [%{path: "a.txt", insertions: 1, status: "modified"}] = payload.changed
+
+    Controller.command(controller, {:files, "a.txt"})
+    assert_receive {:beam_agent_tui, {:diff, diff}}
+    assert diff.path == "a.txt"
+    assert [%{header: header}] = diff.hunks
+    assert header =~ "@@"
+  end
+
+  test "resume command reconnects the runtime to a different existing session", context do
+    {:ok, other_session_id} =
+      BeamAgent.start_session(
+        provider: :echo,
+        data_dir: context.config["data_dir"],
+        workspace_root: context.config["workspace_root"],
+        approval_handler: self()
+      )
+
+    assert {:ok, "echo(1): hi there"} = BeamAgent.ask(other_session_id, "hi there")
+
+    {:ok, controller} =
+      Controller.start_link(
+        client: self(),
+        session_id: context.session_id,
+        config: context.config,
+        config_path: context.config_path
+      )
+
+    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+
+    assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+    assert_receive {:beam_agent_tui, {:context_stats, _stats}}
+
+    Controller.command(controller, {:resume, other_session_id})
+    assert_receive {:beam_agent_tui, {:session_changed, ^other_session_id, _config}}
+
+    collect_until_message(fn
+      {:stream,
+       %{
+         payload: %{type: "assistant_message", data: %{"content" => "echo(1): hi there"}},
+         scope: %{root?: true}
+       }} ->
+        true
+
+      _message ->
+        false
+    end)
   end
 
   test "controller toggles visible session auto mode", context do
@@ -387,6 +469,15 @@ defmodule BeamAgent.CLITUITest do
       {:beam_agent_tui, message} -> collect_until_turn_finished([message | messages])
     after
       2_000 -> flunk("timed out waiting for the TUI controller turn")
+    end
+  end
+
+  defp collect_until_message(match_fun) do
+    receive do
+      {:beam_agent_tui, message} ->
+        unless match_fun.(message), do: collect_until_message(match_fun)
+    after
+      2_000 -> flunk("timed out waiting for a matching TUI controller message")
     end
   end
 
