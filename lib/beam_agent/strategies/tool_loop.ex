@@ -11,6 +11,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     ModelRequest,
     ModelRouter,
     OutcomeStore,
+    RacePolicy,
     ToolRunner
   }
 
@@ -36,9 +37,113 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "context_fingerprint" => project_context.fingerprint
            }),
          {:ok, _} <- EventLog.append(context.session_id, :user_message, %{"content" => prompt}) do
-      step(context, turn, 1, nil, 0, true)
+      start_turn(context, prompt, turn)
     end
   end
+
+  defp start_turn(context, prompt, turn) do
+    case maybe_race(context, prompt) do
+      {:answered, content} ->
+        with {:ok, _} <-
+               EventLog.append(context.session_id, :assistant_message, %{
+                 "content" => content,
+                 "tool_calls" => []
+               }) do
+          finish(context, turn, 1, content)
+        end
+
+      :continue ->
+        step(context, turn, 1, nil, 0, true)
+    end
+  end
+
+  defp maybe_race(context, prompt) do
+    case RacePolicy.consider(prompt, context) do
+      {:race, plan} ->
+        opts = [
+          justification: plan.justification,
+          maximum_parallelism: length(plan.candidates),
+          worker_options: race_worker_options(context)
+        ]
+
+        case BeamAgent.race_workers(context.session_id, plan.candidates, opts) do
+          {:ok, %{status: :selected} = race} ->
+            case winner_content(race) do
+              content when is_binary(content) and content != "" -> {:answered, content}
+              _missing -> continue_after_inconclusive_race(context, race)
+            end
+
+          {:ok, race} ->
+            continue_after_inconclusive_race(context, race)
+
+          {:error, _reason} ->
+            :continue
+        end
+
+      :skip ->
+        :continue
+    end
+  end
+
+  defp continue_after_inconclusive_race(context, race) do
+    _ =
+      EventLog.append(context.session_id, :user_message, %{
+        "content" => race_judgment_prompt(race)
+      })
+
+    :continue
+  end
+
+  defp race_judgment_prompt(race) do
+    candidates =
+      race.results
+      |> Enum.sort_by(fn {id, _result} -> id end)
+      |> Enum.flat_map(fn
+        {id, {:ok, %{content: content}}} when is_binary(content) and content != "" ->
+          ["- #{id}:\n#{String.slice(content, 0, 2_000)}"]
+
+        _other ->
+          []
+      end)
+
+    """
+    The runtime raced #{map_size(race.results)} independent candidates for this goal and could not select a winner with deterministic evidence. Pick exactly one candidate. Quote it verbatim. Do not merge, blend, or list them.
+
+    Candidates:
+    #{Enum.join(candidates, "\n\n")}
+    """
+    |> String.trim()
+  end
+
+  defp winner_content(%{winner_id: id, results: results}) do
+    case results[id] do
+      {:ok, %{content: content}} -> content
+      _other -> nil
+    end
+  end
+
+  defp race_worker_options(context) do
+    [
+      provider: context.provider,
+      provider_profile: context.provider_profile,
+      provider_options: context.provider_options,
+      strategy: context.strategy,
+      data_dir: context.data_dir,
+      workspace_root: context.workspace_root,
+      approval_policy: context.approval_policy,
+      approval_handler: context.approval_handler,
+      context_window_tokens: context.context_window_tokens,
+      compaction_threshold_percent: context.compaction_threshold_percent,
+      model_strategy: context.model_strategy,
+      correlation_id: runtime_command_field(context, :correlation_id),
+      causation_id: runtime_command_field(context, :event_id)
+    ]
+  end
+
+  defp runtime_command_field(%{runtime_command: command}, field) when is_map(command),
+    do: Map.get(command, field)
+
+  defp runtime_command_field(_context, _field), do: nil
 
   defp step(context, turn, step_number, previous_signature, repetition_count, tools_enabled?) do
     with {:ok, _} <-
