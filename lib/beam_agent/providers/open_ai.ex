@@ -13,8 +13,8 @@ defmodule BeamAgent.Providers.OpenAI do
     %{
       name: "openai",
       label: "OpenAI",
-      capabilities: [:text_generation, :tool_use, :streaming],
-      modalities: [:text],
+      capabilities: [:text_generation, :tool_use, :streaming, :vision],
+      modalities: [:text, :image],
       locality: :remote,
       privacy: :provider,
       cost_hint: :metered,

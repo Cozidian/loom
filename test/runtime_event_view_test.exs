@@ -116,6 +116,28 @@ defmodule BeamAgent.RuntimeEventViewTest do
     assert RuntimeEventView.project(event, :internal) == event
   end
 
+  test "public completion guard events expose bounded non-sensitive recovery metadata" do
+    event = %{
+      payload: %{
+        type: "model_completion_deferred",
+        data: %{
+          "completion_reason" => "future_intent",
+          "attempt" => 1,
+          "maximum_attempts" => 2,
+          "content" => "SECRET_ASSISTANT_TEXT"
+        }
+      }
+    }
+
+    public = RuntimeEventView.project(event, :public)
+
+    assert public.payload.data["completion_reason"] == "future_intent"
+    assert public.payload.data["attempt"] == 1
+    assert public.payload.data["maximum_attempts"] == 2
+    assert public.payload.data["content"]["redacted"]
+    refute JSON.encode!(public) =~ "SECRET_ASSISTANT_TEXT"
+  end
+
   test "public checkpoint summaries preserve event types and numeric usage only" do
     event = %{
       payload: %{

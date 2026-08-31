@@ -2,6 +2,11 @@ defmodule BeamAgent.RuntimeClientTest do
   use ExUnit.Case, async: false
 
   alias BeamAgent.Runtime
+  alias BeamAgent.Session.ToolPolicy
+
+  @png Base.decode64!(
+         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+       )
 
   defmodule BlockingProvider do
     @behaviour BeamAgent.LLMProvider
@@ -79,6 +84,63 @@ defmodule BeamAgent.RuntimeClientTest do
     assert {:ok, snapshot} = Runtime.snapshot(runtime)
     assert snapshot.cursor > bootstrap.cursor
     refute snapshot.running?
+  end
+
+  test "clients import, submit, replay, and remove attachments through the runtime contract",
+       context do
+    :ok = BeamAgent.stop_session(context.session_id)
+
+    assert {:ok, resumed_id} =
+             BeamAgent.resume_session(context.session_id,
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               provider_profile: "vision",
+               model_strategy: :manual,
+               model_endpoints: [
+                 %{
+                   id: "vision",
+                   provider: :echo,
+                   provider_module: BeamAgent.Providers.Echo,
+                   claims: %{modalities: [:text, :image]}
+                 }
+               ]
+             )
+
+    assert resumed_id == context.session_id
+
+    assert {:ok, runtime} = Runtime.connect(context.session_id, view: :internal)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    assert {:ok, attachment} =
+             Runtime.import_attachment(runtime, %{
+               content: @png,
+               name: "pasted-image.png",
+               provenance: "clipboard"
+             })
+
+    assert {:ok, [listed]} = Runtime.attachments(runtime)
+    assert listed.id == attachment.id
+    assert {:ok, [draft]} = Runtime.draft_attachments(runtime)
+    assert draft.id == attachment.id
+    assert {:ok, %{attachments: [snapshot_draft]}} = Runtime.snapshot(runtime)
+    assert snapshot_draft.id == attachment.id
+
+    assert :ok = Runtime.submit(runtime, "", [attachment.id])
+    assert_receive {:beam_agent_runtime, ^runtime, {:turn_started, ""}}
+    assert {:turn_finished, {:ok, _answer}} = List.last(collect_until_finished(runtime, []))
+
+    assert {:ok, events} = BeamAgent.events(context.session_id)
+
+    user_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1["type"] == "user_message"))
+
+    assert get_in(user_event, ["data", "attachments", Access.at(0), "id"]) == attachment.id
+    refute Map.has_key?(get_in(user_event, ["data", "attachments", Access.at(0)]), "data")
+    assert {:ok, []} = Runtime.draft_attachments(runtime)
+    assert {:error, :attachment_in_use} = Runtime.delete_attachment(runtime, attachment.id)
   end
 
   test "a disconnected client resumes from its last durable cursor", context do
@@ -219,6 +281,209 @@ defmodule BeamAgent.RuntimeClientTest do
 
     Runtime.disconnect(runtime)
     assert {:ok, ^owner} = BeamAgent.approval_handler(context.session_id)
+  end
+
+  test "a client recovers and resolves an approval pending in a nested worker", context do
+    owner = self()
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(context.session_id,
+               agent_proposal: %{goal: "Investigate a nested approval"}
+             )
+
+    approval_task =
+      Task.async(fn ->
+        ToolPolicy.authorize(
+          child_id,
+          "create_file",
+          %{"path" => "nested.txt"},
+          :write,
+          %{tools: "create_file"}
+        )
+      end)
+
+    assert_receive {:beam_agent_approval, %{session_id: ^child_id} = initial_request}
+
+    assert {:ok, runtime} = Runtime.connect(context.session_id, after: :latest)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    assert {:ok, bootstrap} = Runtime.bootstrap(runtime)
+
+    assert [%{approval_id: approval_id, session_id: ^child_id}] =
+             Enum.filter(
+               bootstrap.pending_approvals,
+               &(&1.approval_id == initial_request.approval_id)
+             )
+
+    assert :ok = Runtime.respond_approval(runtime, approval_id, :allow_once)
+    assert :ok = Task.await(approval_task, 1_000)
+
+    Runtime.disconnect(runtime)
+    assert {:ok, ^owner} = BeamAgent.approval_handler(context.session_id)
+    assert {:ok, ^owner} = BeamAgent.approval_handler(child_id)
+  end
+
+  test "a capability escalation followed by a distinct child write approval is delivered",
+       context do
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(context.session_id,
+               agent_proposal: %{goal: "Request narrow write authority, then create one file"}
+             )
+
+    assert {:ok, runtime} = Runtime.connect(context.session_id, after: :latest)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+    assert {:ok, _bootstrap} = Runtime.bootstrap(runtime)
+
+    escalation_task =
+      Task.async(fn ->
+        BeamAgent.request_capability(child_id, %{
+          purpose: "Create one generated file",
+          capabilities: %{tools: ["create_file"], paths: ["lib"]},
+          duration_ms: 60_000,
+          operations: 1,
+          fallback: "report blocked"
+        })
+      end)
+
+    assert_receive {:beam_agent_runtime, ^runtime,
+                    {:approval_requested,
+                     %{
+                       approval_id: escalation_id,
+                       session_id: root_id,
+                       tool: "capability_escalation"
+                     }}},
+                   1_000
+
+    assert root_id == context.session_id
+    assert :ok = Runtime.respond_approval(runtime, escalation_id, :allow_once)
+    assert {:ok, _lease} = Task.await(escalation_task, 1_000)
+
+    assert {:ok, tool_context} = BeamAgent.Agent.construction_context(child_id)
+
+    write_task =
+      Task.async(fn ->
+        BeamAgent.ToolRunner.execute(
+          BeamAgent.Tools.CreateFile,
+          %{"path" => "lib/generated.ex", "content" => "defmodule Generated do\nend\n"},
+          tool_context
+        )
+      end)
+
+    assert_receive {:beam_agent_runtime, ^runtime,
+                    {:approval_requested,
+                     %{
+                       approval_id: write_id,
+                       session_id: ^child_id,
+                       tool: "create_file"
+                     }}},
+                   1_000
+
+    refute write_id == escalation_id
+    assert {:ok, snapshot} = Runtime.snapshot(runtime)
+    assert Enum.any?(snapshot.pending_approvals, &(&1.approval_id == write_id))
+
+    assert :ok = Runtime.respond_approval(runtime, write_id, :allow_once)
+    assert {:ok, _result} = Task.await(write_task, 1_000)
+
+    assert File.read!(Path.join(context.workspace, "lib/generated.ex")) ==
+             "defmodule Generated do\nend\n"
+
+    assert_receive {:beam_agent_runtime, ^runtime, {:approval_resolved, ^write_id, :allow_once}}
+
+    assert_receive {:beam_agent_runtime, ^runtime, {:approvals_reconciled, []}}
+    assert {:ok, %{pending_approvals: []}} = Runtime.snapshot(runtime)
+  end
+
+  test "a pending nested decision survives client disconnect and is denied after reconnect",
+       context do
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(context.session_id,
+               agent_proposal: %{goal: "Wait for a reconnecting approval client"}
+             )
+
+    assert {:ok, first} = Runtime.connect(context.session_id, after: :latest)
+
+    authorization =
+      Task.async(fn ->
+        ToolPolicy.authorize(
+          child_id,
+          "create_file",
+          %{"path" => "lib/reconnected.ex"},
+          :write,
+          %{tools: "create_file", paths: "lib/reconnected.ex"}
+        )
+      end)
+
+    assert_receive {:beam_agent_runtime, ^first,
+                    {:approval_requested, %{approval_id: approval_id}}}
+
+    Runtime.disconnect(first)
+    assert Task.yield(authorization, 50) == nil
+
+    assert {:ok, replacement} = Runtime.connect(context.session_id, after: :latest)
+    on_exit(fn -> Runtime.disconnect(replacement) end)
+    assert {:ok, bootstrap} = Runtime.bootstrap(replacement)
+
+    assert Enum.any?(
+             bootstrap.pending_approvals,
+             &(&1.approval_id == approval_id and &1.session_id == child_id)
+           )
+
+    assert :ok = Runtime.respond_approval(replacement, approval_id, :deny)
+    assert {:error, {:tool_denied, "create_file"}} = Task.await(authorization, 1_000)
+    assert {:ok, %{pending_approvals: []}} = Runtime.snapshot(replacement)
+  end
+
+  test "an unknown approval id is rejected and reconciles the authoritative queue", context do
+    assert {:ok, runtime} = Runtime.connect(context.session_id, after: :latest)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    assert {:error, :unknown_approval} =
+             Runtime.respond_approval(runtime, "approval-stale", :allow_once)
+
+    assert_receive {:beam_agent_runtime, ^runtime, {:approvals_reconciled, []}}
+    assert {:ok, %{pending_approvals: []}} = Runtime.snapshot(runtime)
+  end
+
+  test "auto approval applies to the whole goal and future nested workers", context do
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(context.session_id,
+               agent_proposal: %{goal: "Investigate goal-wide approval policy"}
+             )
+
+    approval_task =
+      Task.async(fn ->
+        ToolPolicy.authorize(
+          child_id,
+          "create_file",
+          %{"path" => "nested.txt"},
+          :write,
+          %{tools: "create_file"}
+        )
+      end)
+
+    assert_receive {:beam_agent_approval, %{session_id: ^child_id}}
+    assert {:ok, runtime} = Runtime.connect(context.session_id, after: :latest)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+    assert {:ok, %{pending_approvals: [_ | _]}} = Runtime.bootstrap(runtime)
+
+    assert :ok = Runtime.set_approval_policy(runtime, :auto)
+    assert :ok = Task.await(approval_task, 1_000)
+    assert {:ok, :auto} = BeamAgent.approval_policy(context.session_id)
+    assert {:ok, :auto} = BeamAgent.approval_policy(child_id)
+    assert {:ok, %{pending_approvals: []}} = Runtime.snapshot(runtime)
+
+    assert {:ok, future_child_id} =
+             BeamAgent.spawn_subagent(context.session_id,
+               agent_proposal: %{goal: "Inspect future inherited approval policy"}
+             )
+
+    assert {:ok, :auto} = BeamAgent.approval_policy(future_child_id)
+
+    Runtime.disconnect(runtime)
+    assert {:ok, owner} = BeamAgent.approval_handler(context.session_id)
+    assert owner == self()
+    assert {:ok, ^owner} = BeamAgent.approval_handler(future_child_id)
   end
 
   test "a replacement client can observe and cancel detached runtime work", context do

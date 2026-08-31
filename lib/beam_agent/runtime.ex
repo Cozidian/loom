@@ -10,6 +10,8 @@ defmodule BeamAgent.Runtime do
 
       {:beam_agent_runtime, client, {:event, runtime_event}}
       {:beam_agent_runtime, client, {:approval_requested, request}}
+      {:beam_agent_runtime, client, {:approval_resolved, approval_id, decision}}
+      {:beam_agent_runtime, client, {:approvals_reconciled, pending_requests}}
       {:beam_agent_runtime, client, {:turn_started, prompt}}
       {:beam_agent_runtime, client, {:turn_finished, result}}
       {:beam_agent_runtime, client, :turn_cancelling}
@@ -38,7 +40,17 @@ defmodule BeamAgent.Runtime do
 
   def bootstrap(client), do: Client.bootstrap(client)
   def snapshot(client), do: Client.snapshot(client)
-  def submit(client, prompt), do: Client.submit(client, prompt)
+
+  def submit(client, prompt, attachment_ids \\ []),
+    do: Client.submit(client, prompt, attachment_ids)
+
+  def import_attachment(client, attrs), do: Client.import_attachment(client, attrs)
+  def attachments(client), do: Client.attachments(client)
+  def draft_attachments(client), do: Client.draft_attachments(client)
+
+  def delete_attachment(client, attachment_id),
+    do: Client.delete_attachment(client, attachment_id)
+
   def cancel(client), do: Client.cancel(client)
 
   def respond_approval(client, approval_id, decision),

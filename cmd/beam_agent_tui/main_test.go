@@ -113,6 +113,79 @@ func TestSubmitSendsFramedActionAndAddsUserEntry(t *testing.T) {
 	}
 }
 
+func TestClipboardImageImportAndImageOnlySubmitUseRuntimeAttachments(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+
+	next, cmd := m.Update(clipboardImageMsg{image: clipboardImage{
+		Data:     "iVBORw0KGgo=",
+		Name:     "pasted-image.png",
+		MIMEType: "image/png",
+	}})
+	if cmd == nil {
+		t.Fatal("expected attachment import command")
+	}
+	cmd()
+
+	reader := newProtocol(&wire, &bytes.Buffer{})
+	importAction, err := reader.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importAction.Type != "attachment_import" || importAction.Data != "iVBORw0KGgo=" || importAction.Provenance != "clipboard" {
+		t.Fatalf("unexpected import action: %#v", importAction)
+	}
+
+	updated := next.(model)
+	updated.applyBackend(packet{Type: "attachment_imported", Attachment: &attachmentItem{
+		ID:        "attachment-1",
+		Name:      "pasted-image.png",
+		MIMEType:  "image/png",
+		Width:     20,
+		Height:    10,
+		SizeBytes: 42,
+	}})
+
+	var submitWire bytes.Buffer
+	updated.protocol = newProtocol(bytes.NewReader(nil), &submitWire)
+	submitted, submitCmd := updated.submit()
+	if submitCmd == nil {
+		t.Fatal("expected image-only submit command")
+	}
+	submitCmd()
+
+	submitAction, err := newProtocol(&submitWire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submitAction.Type != "submit" || submitAction.Prompt != "" || len(submitAction.Attachments) != 1 {
+		t.Fatalf("unexpected image submit action: %#v", submitAction)
+	}
+	if submitAction.Attachments[0].ID != "attachment-1" {
+		t.Fatalf("missing stable attachment reference: %#v", submitAction.Attachments)
+	}
+	if !strings.Contains(submitted.(model).entries[0].Content, "pasted-image.png") {
+		t.Fatalf("expected attachment summary in user entry: %#v", submitted.(model).entries[0])
+	}
+}
+
+func TestFailedImageTurnRestoresAttachmentForRetry(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.attachments = []attachmentItem{{ID: "attachment-1", Name: "pasted-image.png"}}
+
+	next, _ := m.submit()
+	working := next.(model)
+	working.applyBackend(packet{Type: "turn_started"})
+	if len(working.attachments) != 0 {
+		t.Fatalf("submitted attachments should leave the composer: %#v", working.attachments)
+	}
+
+	working.applyBackend(packet{Type: "turn_finished", OK: false, Error: "provider unavailable"})
+	if len(working.attachments) != 1 || working.attachments[0].ID != "attachment-1" {
+		t.Fatalf("failed turn must restore its attachment: %#v", working.attachments)
+	}
+}
+
 func TestEventSlashCommandForwardsFiltersToElixir(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)
@@ -211,6 +284,32 @@ func TestSessionChangeRefreshesTheVisibleProvider(t *testing.T) {
 
 	if m.provider != "openai" || m.profile != "openai-chatgpt" || m.llmModel != "gpt-5.4" {
 		t.Fatalf("provider header was not refreshed: %#v", m)
+	}
+}
+
+func TestInitialAndChangedSessionsRestoreDraftAttachments(t *testing.T) {
+	initial := packet{
+		Type:         "init",
+		SessionID:    "session-old",
+		Workspace:    "/tmp/elixir-harness",
+		Provider:     "echo",
+		Profile:      "echo",
+		Model:        "built-in",
+		ApprovalMode: "ask",
+		Attachments:  []attachmentItem{{ID: "attachment-old", Name: "old.png"}},
+	}
+	m := newModel(initial, newProtocol(bytes.NewReader(nil), &bytes.Buffer{}))
+	if len(m.attachments) != 1 || m.attachments[0].ID != "attachment-old" {
+		t.Fatalf("expected initial drafts to be restored: %#v", m.attachments)
+	}
+
+	m.applyBackend(packet{
+		Type:        "session_changed",
+		SessionID:   "session-new",
+		Attachments: []attachmentItem{{ID: "attachment-new", Name: "new.png"}},
+	})
+	if len(m.attachments) != 1 || m.attachments[0].ID != "attachment-new" {
+		t.Fatalf("expected changed session drafts to replace old drafts: %#v", m.attachments)
 	}
 }
 
@@ -341,6 +440,86 @@ func TestApprovalStartsFailClosed(t *testing.T) {
 	}
 }
 
+func TestInitialPendingWorkerApprovalIsRestored(t *testing.T) {
+	m := newModel(packet{
+		Type:         "init",
+		SessionID:    "session-root",
+		Workspace:    "/tmp/elixir-harness",
+		Provider:     "echo",
+		Profile:      "echo",
+		Model:        "built-in",
+		ApprovalMode: "ask",
+		Approvals: []map[string]any{{
+			"approval_id": "approval-child",
+			"session_id":  "session-child-123456",
+			"tool":        "create_file",
+			"access":      "write",
+			"arguments":   map[string]any{"path": "lib/example.ex"},
+		}},
+	}, newProtocol(bytes.NewReader(nil), &bytes.Buffer{}))
+
+	if m.approval == nil || m.approval.ID != "approval-child" {
+		t.Fatalf("expected recovered approval, got %#v", m.approval)
+	}
+	if m.approval.SessionID != "session-child-123456" {
+		t.Fatalf("expected worker identity, got %#v", m.approval)
+	}
+	if m.status != "waiting approval" {
+		t.Fatalf("expected visible waiting state, got %q", m.status)
+	}
+}
+
+func TestNestedApprovalsQueueAndResolveInOrder(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-1",
+			"session_id":  "session-child-1",
+			"tool":        "create_file",
+			"access":      "write",
+		},
+	})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-2",
+			"session_id":  "session-child-2",
+			"tool":        "run_command",
+			"access":      "execute",
+		},
+	})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-2",
+			"session_id":  "session-child-2",
+			"tool":        "run_command",
+			"access":      "execute",
+		},
+	})
+
+	if m.approval == nil || m.approval.ID != "approval-1" || len(m.approvalQueue) != 1 {
+		t.Fatalf("expected one active and one queued approval, got %#v / %#v", m.approval, m.approvalQueue)
+	}
+
+	m.applyBackend(packet{Type: "approval_resolved", ApprovalID: "approval-1", Decision: "allow_once"})
+	if m.approval == nil || m.approval.ID != "approval-2" {
+		t.Fatalf("expected the second approval to be promoted, got %#v", m.approval)
+	}
+	if m.status != "waiting approval" {
+		t.Fatalf("expected waiting state to remain while queued work exists, got %q", m.status)
+	}
+
+	m.applyBackend(packet{Type: "approval_resolved", ApprovalID: "approval-2", Decision: "deny"})
+	if m.approval != nil || len(m.approvalQueue) != 0 {
+		t.Fatalf("expected the approval queue to be empty, got %#v / %#v", m.approval, m.approvalQueue)
+	}
+	if m.status != "ready" {
+		t.Fatalf("expected the prior status to be restored, got %q", m.status)
+	}
+}
+
 func TestApprovalSheetDocksBelowVisibleTranscript(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	m.resize(90, 28)
@@ -389,7 +568,11 @@ func TestApprovalCanPersistAScopedGrant(t *testing.T) {
 		t.Fatalf("expected allow_always, got %q", selected.approval.Choice)
 	}
 
-	_, cmd := selected.updateApproval("enter")
+	submitted, cmd := selected.updateApproval("enter")
+	pending := submitted.(model)
+	if pending.approval == nil || !pending.approval.Resolving {
+		t.Fatalf("approval must remain visible until runtime acknowledgement: %#v", pending.approval)
+	}
 	cmd()
 	reader := newProtocol(&wire, &bytes.Buffer{})
 	action, err := reader.read()
@@ -398,6 +581,98 @@ func TestApprovalCanPersistAScopedGrant(t *testing.T) {
 	}
 	if action.Decision != "allow_always" {
 		t.Fatalf("expected durable approval action, got %#v", action)
+	}
+}
+
+func TestApprovalDecisionFailureStaysVisibleAndCanRetry(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-1",
+			"session_id":  "session-child",
+			"tool":        "create_file",
+			"access":      "write",
+		},
+	})
+
+	submitted, cmd := m.resolveApproval("allow_once")
+	cmd()
+	updated := submitted.(model)
+	if updated.approval == nil || !updated.approval.Resolving {
+		t.Fatalf("expected resolving approval to remain active, got %#v", updated.approval)
+	}
+
+	updated.applyBackend(packet{Type: "approval_failed", ApprovalID: "approval-1", Error: "unknown approval"})
+	if updated.approval == nil || updated.approval.Resolving || updated.approval.Error != "unknown approval" {
+		t.Fatalf("expected failed approval to remain retryable, got %#v", updated.approval)
+	}
+
+	retried, retryCmd := updated.resolveApproval("allow_once")
+	retryCmd()
+	retrying := retried.(model)
+	if retrying.approval == nil || !retrying.approval.Resolving {
+		t.Fatalf("expected retry to await acknowledgement, got %#v", retrying.approval)
+	}
+
+	retrying.applyBackend(packet{Type: "approval_resolved", ApprovalID: "approval-1", Decision: "allow_once"})
+	if retrying.approval != nil {
+		t.Fatalf("expected acknowledged approval to be removed, got %#v", retrying.approval)
+	}
+}
+
+func TestTurnFinishedDoesNotDismissAnUnresolvedApproval(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-child",
+			"session_id":  "session-child",
+			"tool":        "create_file",
+			"access":      "write",
+		},
+	})
+
+	m.applyBackend(packet{Type: "turn_finished", OK: true})
+	if m.approval == nil || m.approval.ID != "approval-child" {
+		t.Fatalf("turn completion must not dismiss an independent pending approval: %#v", m.approval)
+	}
+	if m.status != "waiting approval" {
+		t.Fatalf("expected approval status to remain visible, got %q", m.status)
+	}
+}
+
+func TestApprovalSnapshotReconcilesMissedNestedRequest(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type: "approval_requested",
+		Approval: map[string]any{
+			"approval_id": "approval-escalation",
+			"session_id":  "session-root",
+			"tool":        "capability_escalation",
+			"access":      "write",
+		},
+	})
+
+	submitted, _ := m.resolveApproval("allow_once")
+	m = submitted.(model)
+	m.applyBackend(packet{Type: "approval_resolved", ApprovalID: "approval-escalation", Decision: "allow_once"})
+	m.applyBackend(packet{
+		Type: "approval_snapshot",
+		Approvals: []map[string]any{{
+			"approval_id": "approval-create-file",
+			"session_id":  "session-child",
+			"tool":        "create_file",
+			"access":      "write",
+		}},
+	})
+
+	if m.approval == nil || m.approval.ID != "approval-create-file" {
+		t.Fatalf("expected authoritative snapshot to restore the nested approval, got %#v", m.approval)
+	}
+	if m.status != "waiting approval" {
+		t.Fatalf("expected reconciled approval to be visible, got %q", m.status)
 	}
 }
 

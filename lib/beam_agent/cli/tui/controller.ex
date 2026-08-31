@@ -8,7 +8,15 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def bootstrap(controller), do: GenServer.call(controller, :bootstrap)
 
-  def submit(controller, prompt), do: GenServer.cast(controller, {:submit, prompt})
+  def submit(controller, prompt, attachment_ids \\ []),
+    do: GenServer.cast(controller, {:submit, prompt, attachment_ids})
+
+  def import_attachment(controller, attrs),
+    do: GenServer.cast(controller, {:import_attachment, attrs})
+
+  def delete_attachment(controller, attachment_id),
+    do: GenServer.cast(controller, {:delete_attachment, attachment_id})
+
   def cancel(controller), do: GenServer.cast(controller, :cancel)
 
   def decide(controller, approval_id, decision),
@@ -27,6 +35,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       goal_id: nil,
       cursor: 0,
       bootstrap_events: [],
+      bootstrap_approvals: [],
       config: Keyword.fetch!(opts, :config),
       config_path: Keyword.get(opts, :config_path, Config.path()),
       codex_app_server: Keyword.get(opts, :codex_app_server, BeamAgent.CodexAppServer),
@@ -51,6 +60,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
           goal_id: subscription.goal_id,
           cursor: subscription.cursor,
           bootstrap_events: subscription.events,
+          bootstrap_approvals: subscription.pending_approvals,
           approval_policy: subscription.approval_policy,
           auto_fallback: auto_fallback(subscription.approval_policy, state.config)
       }
@@ -70,16 +80,17 @@ defmodule BeamAgent.CLI.TUI.Controller do
       project_id: state.project_id,
       goal_id: state.goal_id,
       cursor: state.cursor,
-      events: state.bootstrap_events
+      events: state.bootstrap_events,
+      pending_approvals: state.bootstrap_approvals
     }
 
-    {:reply, {:ok, snapshot}, %{state | bootstrap_events: []}}
+    {:reply, {:ok, snapshot}, %{state | bootstrap_events: [], bootstrap_approvals: []}}
   end
 
   @impl true
-  def handle_cast({:submit, prompt}, %{current: nil, verification: nil} = state)
-      when is_binary(prompt) do
-    case Runtime.submit(state.runtime, prompt) do
+  def handle_cast({:submit, prompt, attachment_ids}, %{current: nil, verification: nil} = state)
+      when is_binary(prompt) and is_list(attachment_ids) do
+    case Runtime.submit(state.runtime, prompt, attachment_ids) do
       :ok ->
         {:noreply, %{state | current: :running}}
 
@@ -89,8 +100,26 @@ defmodule BeamAgent.CLI.TUI.Controller do
     end
   end
 
-  def handle_cast({:submit, _prompt}, state) do
+  def handle_cast({:submit, _prompt, _attachment_ids}, state) do
     notify(state, {:notice, :warning, "A turn is already running"})
+    {:noreply, state}
+  end
+
+  def handle_cast({:import_attachment, attrs}, state) do
+    case Runtime.import_attachment(state.runtime, attrs) do
+      {:ok, attachment} -> notify(state, {:attachment_imported, attachment})
+      {:error, reason} -> notify(state, {:attachment_failed, reason})
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:delete_attachment, attachment_id}, state) do
+    case Runtime.delete_attachment(state.runtime, attachment_id) do
+      :ok -> notify(state, {:attachment_deleted, attachment_id})
+      {:error, reason} -> notify(state, {:attachment_failed, reason})
+    end
+
     {:noreply, state}
   end
 
@@ -114,8 +143,12 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_cast({:decide, approval_id, decision}, state)
       when decision in [:allow_once, :allow_always, :deny] do
     case Runtime.respond_approval(state.runtime, approval_id, decision) do
-      :ok -> :ok
-      {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        notify(state, {:approval_failed, approval_id, reason})
+        notify(state, {:notice, :error, format_error(reason)})
     end
 
     {:noreply, state}
@@ -179,6 +212,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
         %{runtime: runtime} = state
       ) do
     notify(state, {:approval_resolved, approval_id, decision})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approvals_reconciled, approvals}},
+        %{runtime: runtime} = state
+      ) do
+    notify(state, {:approvals_reconciled, approvals})
     {:noreply, state}
   end
 
@@ -793,7 +834,11 @@ defmodule BeamAgent.CLI.TUI.Controller do
           current: nil
       }
 
-      notify(state, {:session_changed, session_id, state.config})
+      notify(
+        state,
+        {:session_changed, session_id, state.config, subscription.attachments}
+      )
+
       Enum.each(subscription.events, &notify(state, {:stream, &1}))
       notify_context_stats(state)
       state
@@ -827,7 +872,11 @@ defmodule BeamAgent.CLI.TUI.Controller do
           current: nil
       }
 
-      notify(state, {:session_changed, new_session_id, state.config})
+      notify(
+        state,
+        {:session_changed, new_session_id, state.config, subscription.attachments}
+      )
+
       Enum.each(subscription.events, &notify(state, {:stream, &1}))
       notify_context_stats(state)
       state

@@ -170,6 +170,16 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     assert Enum.any?(search_data["matches"], &String.contains?(&1, "lib/new.ex:1"))
   end
 
+  test "search reports malformed regular expressions as ripgrep failures", context do
+    assert {:error, {:ripgrep_failed, 2, output}} =
+             SearchFiles.execute(%{"query" => "[", "path" => "."}, %{
+               workspace_root: context.workspace
+             })
+
+    assert is_binary(output)
+    assert output != ""
+  end
+
   test "patch-native edits apply all hunks atomically against one observed version", context do
     path = Path.join(context.workspace, "multi.txt")
     File.write!(path, "alpha\nbeta\ngamma\n")

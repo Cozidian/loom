@@ -47,6 +47,17 @@ defmodule BeamAgent.AgentConstructionPolicy do
 
   def evaluate_child(_parent, _proposal), do: {:error, :invalid_agent_proposal}
 
+  def attenuate(decision, %CapabilityEnvelope{} = effective, reason)
+      when is_map(decision) and is_binary(reason) do
+    decision(
+      :attenuated,
+      decision.requested,
+      effective,
+      decision.rejected_fields,
+      decision.reasons ++ [reason]
+    )
+  end
+
   def metadata(decision) do
     %{
       "decision_id" => decision.id,

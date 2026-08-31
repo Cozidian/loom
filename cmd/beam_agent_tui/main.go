@@ -32,6 +32,13 @@ type packet struct {
 	Profile      string           `json:"profile,omitempty"`
 	Model        string           `json:"model,omitempty"`
 	Prompt       string           `json:"prompt,omitempty"`
+	Data         string           `json:"data,omitempty"`
+	Name         string           `json:"name,omitempty"`
+	MIMEType     string           `json:"mime_type,omitempty"`
+	Provenance   string           `json:"provenance,omitempty"`
+	Attachments  []attachmentItem `json:"attachments,omitempty"`
+	Attachment   *attachmentItem  `json:"attachment,omitempty"`
+	AttachmentID string           `json:"attachment_id,omitempty"`
 	Command      string           `json:"command,omitempty"`
 	Query        string           `json:"query,omitempty"`
 	ApprovalID   string           `json:"approval_id,omitempty"`
@@ -48,6 +55,7 @@ type packet struct {
 	Stats        map[string]any   `json:"stats,omitempty"`
 	Event        map[string]any   `json:"event,omitempty"`
 	Approval     map[string]any   `json:"approval,omitempty"`
+	Approvals    []map[string]any `json:"approvals,omitempty"`
 	Providers    []providerOption `json:"providers,omitempty"`
 
 	// Structured tab payloads — see packets.go.
@@ -97,6 +105,19 @@ type entry struct {
 	Streaming  bool           `json:"streaming,omitempty"`
 	Role       spineRole      `json:"-"`
 	SessionID  string         `json:"-"`
+}
+
+type attachmentItem struct {
+	ID         string `json:"id,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Name       string `json:"name,omitempty"`
+	MIMEType   string `json:"mime_type,omitempty"`
+	SizeBytes  int64  `json:"size_bytes,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	Provenance string `json:"provenance,omitempty"`
 }
 
 type protocol struct {
@@ -155,13 +176,21 @@ func (p *protocol) send(message packet) error {
 
 type backendMsg packet
 type backendClosedMsg struct{ err error }
+type clipboardImageMsg struct {
+	image clipboardImage
+	err   error
+}
 
 type approval struct {
 	ID        string
+	SessionID string
 	Tool      string
 	Access    string
 	Arguments map[string]any
 	Choice    string
+	Decision  string
+	Error     string
+	Resolving bool
 }
 
 type commandItem struct {
@@ -204,37 +233,41 @@ var commands = []commandItem{
 }
 
 type model struct {
-	protocol       *protocol
-	composer       textarea.Model
-	viewport       viewport.Model
-	width          int
-	height         int
-	bodyHeight     int
-	sheetHeight    int
-	workspace      string
-	workspaceRoot  string
-	sessionID      string
-	projectID      string
-	goalID         string
-	cursor         int64
-	provider       string
-	profile        string
-	llmModel       string
-	status         string
-	entries        []entry
-	contextStats   map[string]any
-	notice         string
-	noticeTone     string
-	panelTitle     string
-	panelLines     []string
-	sheet          sheetKind
-	paletteIndex   int
-	providerIndex  int
-	providers      []providerOption
-	approval       *approval
-	approvalMode   string
-	toolsExpanded  bool
-	pendingFailure bool
+	protocol                 *protocol
+	composer                 textarea.Model
+	viewport                 viewport.Model
+	width                    int
+	height                   int
+	bodyHeight               int
+	sheetHeight              int
+	workspace                string
+	workspaceRoot            string
+	sessionID                string
+	projectID                string
+	goalID                   string
+	cursor                   int64
+	provider                 string
+	profile                  string
+	llmModel                 string
+	status                   string
+	entries                  []entry
+	contextStats             map[string]any
+	notice                   string
+	noticeTone               string
+	panelTitle               string
+	panelLines               []string
+	sheet                    sheetKind
+	paletteIndex             int
+	providerIndex            int
+	providers                []providerOption
+	approval                 *approval
+	approvalQueue            []approval
+	approvalStatus           string
+	approvalMode             string
+	attachments              []attachmentItem
+	lastSubmittedAttachments []attachmentItem
+	toolsExpanded            bool
+	pendingFailure           bool
 
 	tab         tab
 	unseen      [tabCount]int
@@ -287,6 +320,10 @@ func newModel(initial packet, bridge *protocol) model {
 		entries:       initial.Entries,
 		contextStats:  initial.ContextStats,
 		approvalMode:  initial.ApprovalMode,
+		attachments:   initial.Attachments,
+	}
+	for _, pending := range initial.Approvals {
+		m.enqueueApproval(approvalFromMap(pending))
 	}
 	m.refreshTranscript(true)
 	return m
@@ -315,6 +352,24 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case clipboardImageMsg:
+		if msg.err != nil {
+			m.notice = "Could not attach clipboard image: " + msg.err.Error()
+			m.noticeTone = "error"
+			m.refreshTranscript(false)
+			return m, nil
+		}
+		m.notice = "Importing clipboard image…"
+		m.noticeTone = "muted"
+		m.refreshTranscript(false)
+		return m, m.send(packet{
+			Type:       "attachment_import",
+			Data:       msg.image.Data,
+			Name:       msg.image.Name,
+			MIMEType:   msg.image.MIMEType,
+			Provenance: "clipboard",
+		})
+
 	case backendClosedMsg:
 		if msg.err != nil && !errors.Is(msg.err, io.EOF) {
 			m.notice = "Elixir runtime disconnected: " + msg.err.Error()
@@ -338,6 +393,21 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch key {
+		case "ctrl+v":
+			if m.tab == tabChat && m.status == "ready" {
+				m.notice = "Reading clipboard image…"
+				m.noticeTone = "muted"
+				m.refreshTranscript(false)
+				return m, readClipboardImageCmd()
+			}
+		case "ctrl+x":
+			if m.tab == tabChat && m.status == "ready" && len(m.attachments) > 0 {
+				attachment := m.attachments[len(m.attachments)-1]
+				m.notice = "Removing " + attachment.Name + "…"
+				m.noticeTone = "muted"
+				m.refreshTranscript(false)
+				return m, m.send(packet{Type: "attachment_delete", AttachmentID: attachment.ID})
+			}
 		case "ctrl+c":
 			if m.status == "working" || m.status == "cancelling" {
 				m.status = "cancelling"
@@ -390,7 +460,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.entries = append(m.entries, entry{Kind: "user", Content: prompt, Role: spineUser})
 				m.status = "working"
 				m.refreshTranscript(true)
-				return m, m.send(packet{Type: "submit", Prompt: prompt})
+				return m, m.send(packet{Type: "submit", Prompt: prompt, Attachments: m.lastSubmittedAttachments})
 			}
 		case "esc":
 			if m.sheet != sheetNone {
@@ -459,12 +529,17 @@ func (m model) View() tea.View {
 			composerBorder = colSand
 			label = " Working "
 		}
+		attachmentLines := m.renderComposerAttachments()
+		composerBody := m.composer.View()
+		if attachmentLines != "" {
+			composerBody = attachmentLines + "\n" + composerBody
+		}
 		composer = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(composerBorder).
 			Padding(0, 1).
 			Width(max(10, m.width-2)).
-			Render(mutedStyle.Render(label) + "\n" + m.composer.View())
+			Render(mutedStyle.Render(label) + "\n" + composerBody)
 	}
 
 	footer := mutedStyle.Render(joinEdges(m.footerLeft(), m.footerRight(), m.width))
@@ -482,7 +557,7 @@ func (m model) footerLeft() string {
 	case m.tab != tabChat:
 		return "1 back to chat"
 	default:
-		return "^P commands   wheel/PgUp/PgDn scroll   ^T tool details   1–6 tabs"
+		return "^V image   ^X remove   ^P commands"
 	}
 }
 
@@ -531,7 +606,7 @@ func (m *model) resize(width, height int) {
 		composerHeight = min(4, max(2, m.composer.LineCount()))
 		m.composer.SetHeight(composerHeight)
 		m.composer.SetWidth(max(10, m.width-6))
-		composerHeight += composerBorder
+		composerHeight += composerBorder + len(m.attachments)
 	}
 
 	remaining := max(3, m.height-tabStripHeight-footerHeight-composerHeight)
@@ -550,7 +625,7 @@ func (m *model) resize(width, height int) {
 
 func (m model) submit() (tea.Model, tea.Cmd) {
 	prompt := strings.TrimSpace(m.composer.Value())
-	if prompt == "" {
+	if prompt == "" && len(m.attachments) == 0 {
 		return m, nil
 	}
 	if strings.HasPrefix(prompt, "/") {
@@ -565,14 +640,50 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.entries = append(m.entries, entry{Kind: "user", Content: prompt, Role: spineUser})
+	m.entries = append(m.entries, entry{Kind: "user", Content: userEntryContent(prompt, m.attachments), Role: spineUser})
 	m.status = "working"
 	m.notice = ""
 	m.pendingFailure = false
 	m.composer.Reset()
+	m.lastSubmittedAttachments = append([]attachmentItem(nil), m.attachments...)
 	m.resize(m.width, m.height)
 	m.refreshTranscript(true)
-	return m, m.send(packet{Type: "submit", Prompt: prompt})
+	return m, m.send(packet{Type: "submit", Prompt: prompt, Attachments: m.attachments})
+}
+
+func (m model) renderComposerAttachments() string {
+	if len(m.attachments) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(m.attachments))
+	for _, attachment := range m.attachments {
+		lines = append(lines, styleMint.Render(fmt.Sprintf("▣ %s · %dx%d · %s", attachment.Name, attachment.Width, attachment.Height, humanBytes(attachment.SizeBytes))))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func userEntryContent(prompt string, attachments []attachmentItem) string {
+	if len(attachments) == 0 {
+		return prompt
+	}
+	parts := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		parts = append(parts, fmt.Sprintf("[image: %s · %dx%d]", attachment.Name, attachment.Width, attachment.Height))
+	}
+	if prompt == "" {
+		return strings.Join(parts, " ")
+	}
+	return prompt + "\n" + strings.Join(parts, " ")
+}
+
+func humanBytes(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	if size < 1024*1024 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1024)
+	}
+	return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
 }
 
 func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
@@ -663,6 +774,10 @@ func (m model) updatePalette(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateApproval(key string) (tea.Model, tea.Cmd) {
+	if m.approval.Resolving {
+		return m, nil
+	}
+
 	switch key {
 	case "left", "n":
 		m.approval.Choice = previousApprovalChoice(m.approval.Choice)
@@ -680,7 +795,10 @@ func (m model) updateApproval(key string) (tea.Model, tea.Cmd) {
 
 func (m model) resolveApproval(decision string) (tea.Model, tea.Cmd) {
 	id := m.approval.ID
-	m.approval = nil
+	m.approval.Resolving = true
+	m.approval.Decision = decision
+	m.approval.Error = ""
+	m.status = "resolving approval"
 	m.resize(m.width, m.height)
 	return m, m.send(packet{Type: "approval", ApprovalID: id, Decision: decision})
 }
@@ -689,28 +807,38 @@ func (m *model) applyBackend(message packet) {
 	switch message.Type {
 	case "turn_started":
 		m.status = "working"
+		if m.lastSubmittedAttachments != nil {
+			m.attachments = nil
+		}
 	case "turn_cancelling":
 		m.status = "cancelling"
 	case "turn_finished":
-		m.status = "ready"
-		m.approval = nil
+		if m.approval == nil {
+			m.status = "ready"
+		} else {
+			m.approvalStatus = "ready"
+			if m.approval.Resolving {
+				m.status = "resolving approval"
+			} else {
+				m.status = "waiting approval"
+			}
+		}
 		m.pendingFailure = !message.OK
 		if !message.OK {
+			if len(m.attachments) == 0 && len(m.lastSubmittedAttachments) > 0 {
+				m.attachments = append([]attachmentItem(nil), m.lastSubmittedAttachments...)
+			}
 			m.entries = append(m.entries, entry{Kind: "error", Content: "Turn failed: " + message.Error})
+		} else {
+			m.lastSubmittedAttachments = nil
 		}
 	case "stream":
 		m.applyStream(message.Event)
 	case "approval_requested":
-		m.approval = &approval{
-			ID:        asString(message.Approval["approval_id"]),
-			Tool:      asString(message.Approval["tool"]),
-			Access:    asString(message.Approval["access"]),
-			Arguments: asMap(message.Approval["arguments"]),
-			Choice:    "deny",
-		}
+		m.enqueueApproval(approvalFromMap(message.Approval))
 		m.notice = ""
 	case "approval_resolved":
-		m.approval = nil
+		m.removeApproval(message.ApprovalID)
 		if message.Decision == "allow_once" {
 			m.notice, m.noticeTone = "Approved once", "success"
 		} else if message.Decision == "allow_always" {
@@ -718,10 +846,19 @@ func (m *model) applyBackend(message packet) {
 		} else {
 			m.notice, m.noticeTone = "Tool denied", "warning"
 		}
+	case "approval_failed":
+		m.failApproval(message.ApprovalID, message.Error)
+	case "approval_snapshot":
+		m.reconcileApprovals(message.Approvals)
 	case "approval_mode":
 		m.approvalMode = message.ApprovalMode
 		if m.approvalMode == "auto" {
 			m.approval = nil
+			m.approvalQueue = nil
+			if m.status == "waiting approval" || m.status == "resolving approval" {
+				m.status = m.approvalStatus
+			}
+			m.approvalStatus = ""
 		}
 	case "notice":
 		m.notice, m.noticeTone = message.Message, message.Tone
@@ -746,6 +883,31 @@ func (m *model) applyBackend(message packet) {
 		m.panelTitle = ""
 		m.panelLines = nil
 		m.notice = ""
+	case "attachment_imported":
+		if message.Attachment != nil {
+			alreadyPresent := false
+			for _, attachment := range m.attachments {
+				alreadyPresent = alreadyPresent || attachment.ID == message.Attachment.ID
+			}
+			if !alreadyPresent {
+				m.attachments = append(m.attachments, *message.Attachment)
+			}
+			m.notice = "Attached " + message.Attachment.Name
+			m.noticeTone = "success"
+		}
+	case "attachment_deleted":
+		kept := m.attachments[:0]
+		for _, attachment := range m.attachments {
+			if attachment.ID != message.AttachmentID {
+				kept = append(kept, attachment)
+			}
+		}
+		m.attachments = kept
+		m.notice = "Attachment removed"
+		m.noticeTone = "success"
+	case "attachment_failed":
+		m.notice = "Attachment failed: " + message.Error
+		m.noticeTone = "error"
 	case "session_changed":
 		m.sessionID = message.SessionID
 		m.goalID = message.SessionID
@@ -765,6 +927,8 @@ func (m *model) applyBackend(message packet) {
 		m.panelLines = nil
 		m.sheet = sheetNone
 		m.providers = nil
+		m.attachments = append([]attachmentItem(nil), message.Attachments...)
+		m.lastSubmittedAttachments = nil
 	case "context_stats":
 		m.contextStats = message.Stats
 	case "tree":
@@ -1233,7 +1397,7 @@ func (m model) updateProviderPicker(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderApproval() string {
-	args, _ := json.Marshal(m.approval.Arguments)
+	args := compactArguments(m.approval.Arguments)
 	deny := "[ Deny ]"
 	allow := "  Allow once  "
 	always := "  Allow always  "
@@ -1242,8 +1406,146 @@ func (m model) renderApproval() string {
 	} else if m.approval.Choice == "allow_always" {
 		deny, always = "  Deny  ", "[ Allow always ]"
 	}
-	content := fmt.Sprintf("Tool      %s\nAccess    %s\nArguments %s\n\n%s     %s     %s\n\n←/→ choose · enter confirm · esc deny", m.approval.Tool, m.approval.Access, args, deny, allow, always)
+	worker := shortSession(m.approval.SessionID)
+	footer := "←/→ choose · enter confirm · esc deny"
+	if m.approval.Resolving {
+		footer = "Waiting for runtime acknowledgement…"
+		if m.approval.Decision != "" {
+			footer = "Resolving " + strings.ReplaceAll(m.approval.Decision, "_", " ") + "…"
+		}
+	} else if m.approval.Error != "" {
+		footer = "Decision failed: " + m.approval.Error + "\n←/→ choose · enter retry · esc deny"
+	}
+	content := fmt.Sprintf("Worker    %s\nTool      %s\nAccess    %s\nArguments %s\n\n%s     %s     %s\n\n%s", worker, m.approval.Tool, m.approval.Access, args, deny, allow, always, footer)
 	return m.sheetBox("Approval required", content, colSand)
+}
+
+func approvalFromMap(value map[string]any) approval {
+	return approval{
+		ID:        asString(value["approval_id"]),
+		SessionID: asString(value["session_id"]),
+		Tool:      asString(value["tool"]),
+		Access:    asString(value["access"]),
+		Arguments: asMap(value["arguments"]),
+		Choice:    "deny",
+	}
+}
+
+func (m *model) enqueueApproval(next approval) {
+	if next.ID == "" {
+		return
+	}
+	if m.approval != nil && m.approval.ID == next.ID {
+		return
+	}
+	for _, queued := range m.approvalQueue {
+		if queued.ID == next.ID {
+			return
+		}
+	}
+	if m.approval == nil {
+		m.approvalStatus = m.status
+		m.approval = &next
+	} else {
+		m.approvalQueue = append(m.approvalQueue, next)
+	}
+	m.status = "waiting approval"
+}
+
+func (m *model) removeApproval(id string) {
+	if m.approval != nil && m.approval.ID == id {
+		m.approval = nil
+	}
+	filtered := m.approvalQueue[:0]
+	for _, queued := range m.approvalQueue {
+		if queued.ID != id {
+			filtered = append(filtered, queued)
+		}
+	}
+	m.approvalQueue = filtered
+	if m.approval == nil && len(m.approvalQueue) > 0 {
+		next := m.approvalQueue[0]
+		m.approvalQueue = m.approvalQueue[1:]
+		m.approval = &next
+		if m.approval.Resolving {
+			m.status = "resolving approval"
+		} else {
+			m.status = "waiting approval"
+		}
+	}
+	if m.approval == nil && (m.status == "waiting approval" || m.status == "resolving approval") {
+		m.status = m.approvalStatus
+		m.approvalStatus = ""
+	}
+}
+
+func (m *model) failApproval(id string, message string) {
+	if m.approval != nil && m.approval.ID == id {
+		m.approval.Resolving = false
+		m.approval.Decision = ""
+		m.approval.Error = message
+		m.status = "waiting approval"
+		return
+	}
+	for i := range m.approvalQueue {
+		if m.approvalQueue[i].ID == id {
+			m.approvalQueue[i].Resolving = false
+			m.approvalQueue[i].Decision = ""
+			m.approvalQueue[i].Error = message
+			return
+		}
+	}
+}
+
+func (m *model) reconcileApprovals(values []map[string]any) {
+	existing := make(map[string]approval, len(m.approvalQueue)+1)
+	activeID := ""
+	if m.approval != nil {
+		activeID = m.approval.ID
+		existing[m.approval.ID] = *m.approval
+	}
+	for _, queued := range m.approvalQueue {
+		existing[queued.ID] = queued
+	}
+
+	next := make([]approval, 0, len(values))
+	for _, value := range values {
+		item := approvalFromMap(value)
+		if previous, ok := existing[item.ID]; ok {
+			item.Choice = previous.Choice
+			item.Decision = previous.Decision
+			item.Error = previous.Error
+			item.Resolving = previous.Resolving
+		}
+		next = append(next, item)
+	}
+
+	if activeID != "" {
+		for i := range next {
+			if next[i].ID == activeID {
+				next[0], next[i] = next[i], next[0]
+				break
+			}
+		}
+	}
+
+	m.approval = nil
+	m.approvalQueue = nil
+	if len(next) > 0 {
+		m.approval = &next[0]
+		m.approvalQueue = append(m.approvalQueue, next[1:]...)
+		if m.approvalStatus == "" {
+			m.approvalStatus = m.status
+		}
+		if m.approval.Resolving {
+			m.status = "resolving approval"
+		} else {
+			m.status = "waiting approval"
+		}
+	} else if m.status == "waiting approval" || m.status == "resolving approval" {
+		m.status = m.approvalStatus
+		m.approvalStatus = ""
+	}
 }
 
 func nextApprovalChoice(choice string) string {

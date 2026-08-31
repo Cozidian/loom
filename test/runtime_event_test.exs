@@ -39,6 +39,11 @@ defmodule BeamAgent.RuntimeEventTest do
     assert category("completion_report_generated") == :outcome
   end
 
+  test "semantic completion guard events stay with model activity" do
+    assert category("model_completion_deferred") == :model
+    assert category("model_completion_rejected") == :model
+  end
+
   test "resource governance events stay in the resource category" do
     assert category("budget_allocated") == :resource
     assert category("capability_lease_issued") == :resource

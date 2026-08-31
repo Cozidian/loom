@@ -6,6 +6,7 @@ defmodule BeamAgent.SessionSupervisor do
   alias BeamAgent.Goal.{BudgetManager, DelegationManager}
 
   alias BeamAgent.Session.{
+    AttachmentStore,
     ConversationContext,
     Context,
     EventLog,
@@ -353,6 +354,7 @@ defmodule BeamAgent.SessionSupervisor do
   def init(opts) do
     children = [
       {EventLog, opts},
+      {AttachmentStore, opts},
       {StreamHub, opts},
       {ResourceSupervisor, opts},
       {Context, opts},

@@ -105,8 +105,14 @@ defmodule BeamAgent.Providers.Ollama do
     end
   end
 
-  defp message(%{role: :user, content: content}),
-    do: %{"role" => "user", "content" => content}
+  defp message(%{role: :user, content: content} = message) do
+    images = Enum.map(Map.get(message, :attachments, []), & &1.data)
+
+    %{"role" => "user", "content" => content}
+    |> then(fn formatted ->
+      if images == [], do: formatted, else: Map.put(formatted, "images", images)
+    end)
+  end
 
   defp message(%{role: :assistant} = message) do
     calls = Map.get(message, :tool_calls, [])

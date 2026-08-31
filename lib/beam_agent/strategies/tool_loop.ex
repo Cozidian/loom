@@ -20,15 +20,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
   @repeated_tool_result_limit 3
+  @non_final_response_limit 2
   @tool_loop_recovery_prompt """
   The runtime detected the same tool calls returning the same results repeatedly.
   Tools are disabled for this recovery response. Use the tool results already in
   the conversation and answer the user's request directly without calling tools.
   """
+  @completion_recovery_prompt """
+  The runtime rejected your previous response as non-terminal: %{reason}.
+  Continue the same user request now. Do not write or update a plan, claim progress,
+  ask for permission to begin work the user already requested, or repeat the blocker
+  unless no appropriate tool is available. Never claim a step completed unless a tool
+  result in the conversation proves it. End only with a completed result or a concrete
+  blocker that truly requires user input.
+  """
 
   @impl true
   def run(context, prompt) do
     turn = count_events(context.session_id, "turn_started") + 1
+    attachments = Map.get(context, :turn_attachments, [])
 
     with {:ok, project_context} <- Context.snapshot(context.session_id),
          {:ok, _} <-
@@ -36,7 +46,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "turn" => turn,
              "context_fingerprint" => project_context.fingerprint
            }),
-         {:ok, _} <- EventLog.append(context.session_id, :user_message, %{"content" => prompt}) do
+         {:ok, _} <-
+           EventLog.append(context.session_id, :user_message, %{
+             "content" => prompt,
+             "attachments" => attachments
+           }) do
       start_turn(context, prompt, turn)
     end
   end
@@ -58,8 +72,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp maybe_race(context, prompt) do
-    case RacePolicy.consider(prompt, context) do
-      {:race, plan} ->
+    case {Map.get(context, :turn_attachments, []), RacePolicy.consider(prompt, context)} do
+      {[_ | _], _decision} ->
+        :continue
+
+      {[], {:race, plan}} ->
         opts = [
           justification: plan.justification,
           maximum_parallelism: length(plan.candidates),
@@ -80,7 +97,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
             :continue
         end
 
-      :skip ->
+      {[], :skip} ->
         :continue
     end
   end
@@ -158,7 +175,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
              do: available_tool_schemas(context),
              else: []
            ),
-         system_prompt <- recovery_prompt(project_context.system_prompt, tools_enabled?),
+         system_prompt <-
+           project_context.system_prompt
+           |> turn_execution_prompt(context, tool_schemas)
+           |> recovery_prompt(
+             context,
+             tools_enabled?,
+             completion_recovery_reason(context.session_id, turn, step_number),
+             tool_schemas
+           ),
          {:ok, route} <- route_model(context, tool_schemas, turn, step_number),
          {:ok, messages, _context_stats} <-
            ConversationContext.messages(
@@ -185,7 +210,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "tool_calls" => response.tool_calls
            }) do
       if response.tool_calls == [] do
-        finish(context, turn, step_number, response.content || "")
+        handle_terminal_response(
+          context,
+          turn,
+          step_number,
+          response.content,
+          tool_schemas
+        )
       else
         continue_tool_calls(
           context,
@@ -459,22 +490,24 @@ defmodule BeamAgent.Strategies.ToolLoop do
     prompt = latest_user_prompt(context.session_id)
     requirements = context.agent_spec.model_requirements
 
-    input = %{
-      prompt: prompt,
-      workspace_root: context.workspace_root,
-      strategy: context.model_strategy,
-      preferred_endpoint_id: context.provider_profile,
-      preferred_provider: context.provider,
-      tools: tool_schemas,
-      context_tokens: estimated_context_tokens(context.session_id),
-      latency_preference: requirements.latency,
-      cost_preference: requirements.cost,
-      reasoning_requirement: requirements.reasoning,
-      locality_requirement: requirements.locality,
-      privacy_requirement: requirements.privacy,
-      capability_envelope: context.capability_envelope,
-      fallback_endpoint: current_endpoint(context)
-    }
+    input =
+      %{
+        prompt: prompt,
+        workspace_root: context.workspace_root,
+        strategy: context.model_strategy,
+        preferred_endpoint_id: context.provider_profile,
+        preferred_provider: context.provider,
+        tools: tool_schemas,
+        context_tokens: estimated_context_tokens(context.session_id),
+        latency_preference: requirements.latency,
+        cost_preference: requirements.cost,
+        reasoning_requirement: requirements.reasoning,
+        locality_requirement: requirements.locality,
+        privacy_requirement: requirements.privacy,
+        capability_envelope: context.capability_envelope,
+        fallback_endpoint: current_endpoint(context)
+      }
+      |> Map.put(:modalities_required, required_modalities(context.session_id))
 
     with {:ok, route} <- ModelRouter.route(context.project_id, input),
          {:ok, _} <-
@@ -514,6 +547,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end)
   end
 
+  defp required_modalities(session_id) do
+    {:ok, events} = EventLog.events(session_id)
+
+    compacted_through =
+      events
+      |> Enum.reverse()
+      |> Enum.find_value(-1, fn event ->
+        if event["type"] == "context_compaction_completed", do: event["data"]["through_seq"]
+      end)
+
+    image_in_context? =
+      Enum.any?(events, fn event ->
+        event["seq"] > compacted_through and event["type"] == "user_message" and
+          match?([_ | _], event["data"]["attachments"])
+      end)
+
+    if image_in_context?, do: [:text, :image], else: [:text]
+  end
+
   defp estimated_context_tokens(session_id) do
     {:ok, events} = EventLog.events(session_id)
 
@@ -548,6 +600,163 @@ defmodule BeamAgent.Strategies.ToolLoop do
        do: :ok
 
   defp validate_response(other), do: {:error, {:invalid_provider_response, other}}
+
+  defp handle_terminal_response(context, turn, step, content, tool_schemas) do
+    case completion_guard(context, turn, content, tool_schemas) do
+      :complete ->
+        finish(context, turn, step, content || "")
+
+      {:non_final, reason} ->
+        continue_after_non_final_response(context, turn, step, reason)
+    end
+  end
+
+  defp completion_guard(context, turn, content, tool_schemas) do
+    cond do
+      not is_binary(content) or String.trim(content) == "" ->
+        {:non_final, :empty_response}
+
+      action_required?(context) and future_intent?(content) ->
+        {:non_final, :future_intent}
+
+      action_required?(context) and implementation_tool_names(context, tool_schemas) != [] and
+          turn_action_count(context, turn) == 0 ->
+        {:non_final, :action_not_started}
+
+      true ->
+        :complete
+    end
+  end
+
+  defp continue_after_non_final_response(context, turn, step, reason) do
+    attempt = completion_deferral_count(context.session_id, turn) + 1
+
+    if attempt <= @non_final_response_limit do
+      with {:ok, _} <-
+             EventLog.append(context.session_id, :model_completion_deferred, %{
+               "turn" => turn,
+               "step" => step,
+               "completion_reason" => to_string(reason),
+               "attempt" => attempt,
+               "maximum_attempts" => @non_final_response_limit
+             }),
+           {:ok, _} <-
+             EventLog.append(context.session_id, :step_finished, %{
+               "turn" => turn,
+               "step" => step,
+               "reason" => "non_final_response"
+             }) do
+        step(context, turn, step + 1, nil, 0, true)
+      else
+        {:error, event_error} -> fail_turn(context, turn, event_error)
+      end
+    else
+      _ =
+        EventLog.append(context.session_id, :model_completion_rejected, %{
+          "turn" => turn,
+          "step" => step,
+          "completion_reason" => to_string(reason),
+          "attempts" => attempt - 1
+        })
+
+      fail_turn(
+        context,
+        turn,
+        {:non_final_model_response, reason, @non_final_response_limit}
+      )
+    end
+  end
+
+  defp completion_deferral_count(session_id, turn) do
+    {:ok, events} = EventLog.events(session_id)
+
+    Enum.count(events, fn event ->
+      event["type"] == "model_completion_deferred" and event["data"]["turn"] == turn
+    end)
+  end
+
+  defp completion_recovery_reason(session_id, turn, step) when step > 1 do
+    {:ok, events} = EventLog.events(session_id)
+
+    Enum.find_value(Enum.reverse(events), fn event ->
+      data = event["data"] || %{}
+
+      if event["type"] == "model_completion_deferred" and data["turn"] == turn and
+           data["step"] == step - 1 do
+        data["completion_reason"]
+      end
+    end)
+  end
+
+  defp completion_recovery_reason(_session_id, _turn, _step), do: nil
+
+  defp turn_action_count(context, turn) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    calls =
+      events
+      |> Enum.filter(fn event ->
+        event["type"] == "tool_called" and event["data"]["turn"] == turn
+      end)
+      |> Map.new(fn event -> {event["data"]["tool_call_id"], event["data"]["name"]} end)
+
+    Enum.count(events, fn event ->
+      data = event["data"] || %{}
+
+      event["type"] == "tool_result" and data["turn"] == turn and
+        data["is_error"] == false and action_tool?(calls[data["tool_call_id"]], context)
+    end)
+  end
+
+  defp action_tool?("mcp__" <> _name, _context), do: true
+
+  defp action_tool?(name, context) when is_binary(name) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} ->
+        access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
+
+        (access == :write and name != "reload_context") or
+          (access == :delegate and not direct_implementation_worker?(context))
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp action_tool?(_name, _context), do: false
+
+  defp action_required?(context) do
+    prompt = latest_user_prompt(context.session_id)
+    classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
+    text = String.downcase(prompt)
+
+    classification.task_type == :implementation or
+      Regex.match?(~r/\b(implement|fix|modify|refactor)\b/u, text) or
+      String.contains?(text, ["add support", "make a plan and then", "do that, make"])
+  end
+
+  defp future_intent?(content) do
+    Enum.any?(
+      [
+        ~r/(?:^|\n)\s*(?:i['’]ll|i will|let me|i(?:'m| am) going to)\s+(?:start|begin|first|now|locate|inspect|trace|investigate|implement|change|edit|modify|plan)/iu,
+        ~r/\bwould you like me to (?:start|begin|proceed|do that|locate|implement)\b/iu,
+        ~r/\bshall i (?:start|begin|proceed|implement)\b/iu,
+        ~r/\bto proceed,?\s+(?:i['’]ll|i will|i need to)\b/iu,
+        ~r/\bi can start by\b/iu
+      ],
+      &Regex.match?(&1, content)
+    )
+  end
+
+  defp completion_reason_text("empty_response"), do: "the model returned no answer or tool call"
+
+  defp completion_reason_text("action_not_started"),
+    do: "implementation requires a successful source write or delegation, but none occurred"
+
+  defp completion_reason_text("future_intent"),
+    do: "the response described future work instead of performing the requested work"
+
+  defp completion_reason_text(reason), do: to_string(reason)
 
   defp execute_tools(context, turn, step, calls) do
     Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, outcomes} ->
@@ -628,10 +837,101 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp call_summary(call), do: %{"name" => call.name, "arguments" => call.arguments}
 
-  defp recovery_prompt(system_prompt, true), do: system_prompt
+  defp turn_execution_prompt(system_prompt, context, tool_schemas) do
+    if action_required?(context) do
+      action_tools = implementation_tool_names(context, tool_schemas)
+      direct_worker? = direct_implementation_worker?(context)
 
-  defp recovery_prompt(system_prompt, false),
-    do: system_prompt <> "\n\n" <> @tool_loop_recovery_prompt
+      contract =
+        case {direct_worker?, action_tools} do
+          {_direct_worker?, []} ->
+            """
+            # Current turn execution contract
+            Task type: implementation.
+            The current user request is the active goal for this turn. This worker has no
+            source-write or delegation tool, so it may investigate and report a concrete
+            missing-authority blocker, but it must not claim that implementation occurred.
+            """
+
+          {true, names} ->
+            """
+            # Current turn execution contract
+            Task type: implementation.
+            This is a bounded implementation worker. Perform the delegated change directly.
+            Delegation and read-only investigation are intermediate work and do not satisfy
+            this worker's goal. Before returning a terminal response, successfully invoke at
+            least one source-write tool: #{Enum.join(names, ", ")}.
+            Then verify the resulting change and report only what execution evidence supports.
+            """
+
+          {false, names} ->
+            """
+            # Current turn execution contract
+            Task type: implementation.
+            The current user request is the active goal for this turn. A persistent
+            coordinator may perform bounded implementation directly or delegate it.
+            Read-only investigation, planning, and scope summaries are intermediate work,
+            not terminal results. Before returning a terminal response, successfully invoke
+            at least one implementation-capable tool: #{Enum.join(names, ", ")}.
+            Then verify the resulting change and report only what execution evidence supports.
+            """
+        end
+
+      append_prompt(system_prompt, String.trim(contract))
+    else
+      system_prompt
+    end
+  end
+
+  defp recovery_prompt(
+         system_prompt,
+         context,
+         tools_enabled?,
+         completion_reason,
+         tool_schemas
+       ) do
+    system_prompt
+    |> append_prompt(if(tools_enabled?, do: nil, else: @tool_loop_recovery_prompt))
+    |> append_prompt(completion_recovery_prompt(context, completion_reason, tool_schemas))
+  end
+
+  defp append_prompt(prompt, nil), do: prompt
+  defp append_prompt(prompt, addition), do: prompt <> "\n\n" <> addition
+
+  defp completion_recovery_prompt(_context, nil, _tool_schemas), do: nil
+
+  defp completion_recovery_prompt(context, reason, tool_schemas) do
+    base =
+      @completion_recovery_prompt
+      |> String.replace("%{reason}", completion_reason_text(reason))
+      |> String.trim()
+
+    case {reason, implementation_tool_names(context, tool_schemas)} do
+      {"action_not_started", [_ | _] = names} ->
+        base <>
+          "\nRead-only investigation has already been recorded and does not satisfy " <>
+          "implementation. Your next response must invoke one of these tools through " <>
+          "the provider's native tool protocol: #{Enum.join(names, ", ")}. " <>
+          "Do not perform another read-only round or return another scope or plan."
+
+      {_reason, _names} ->
+        base
+    end
+  end
+
+  defp implementation_tool_names(context, tool_schemas) do
+    tool_schemas
+    |> Enum.map(& &1.name)
+    |> Enum.filter(&action_tool?(&1, context))
+    |> Enum.sort()
+  end
+
+  defp direct_implementation_worker?(%{
+         agent_spec: %{execution_strategy: %{id: "implement"}}
+       }),
+       do: true
+
+  defp direct_implementation_worker?(_context), do: false
 
   defp available_tool_schemas(context) do
     (CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id))

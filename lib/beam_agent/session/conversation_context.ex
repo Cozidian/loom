@@ -8,7 +8,7 @@ defmodule BeamAgent.Session.ConversationContext do
   use GenServer
 
   alias BeamAgent.{ModelInvocation, ModelRequest, Names}
-  alias BeamAgent.Session.EventLog
+  alias BeamAgent.Session.{AttachmentStore, EventLog}
 
   @default_window_tokens 32_000
   @default_threshold_percent 75
@@ -199,16 +199,21 @@ defmodule BeamAgent.Session.ConversationContext do
   defp projection_plan(state, system_prompt, tool_schemas, force?) do
     with {:ok, events} <- EventLog.events(state.session_id) do
       projection = project(events)
-      stats = context_stats(state, projection, system_prompt, tool_schemas, events)
-      projection = Map.put(projection, :stats, stats)
 
-      if force? or stats.estimated_tokens >= stats.threshold_tokens do
-        case compaction_plan(events, projection, stats, force?) do
-          nil -> {:ready, projection}
-          plan -> {:compact, plan}
+      with {:ok, messages} <-
+             AttachmentStore.hydrate_messages(state.session_id, projection.messages) do
+        projection = Map.put(projection, :messages, messages)
+        stats = context_stats(state, projection, system_prompt, tool_schemas, events)
+        projection = Map.put(projection, :stats, stats)
+
+        if force? or stats.estimated_tokens >= stats.threshold_tokens do
+          case compaction_plan(events, projection, stats, force?) do
+            nil -> {:ready, projection}
+            plan -> {:compact, plan}
+          end
+        else
+          {:ready, projection}
         end
-      else
-        {:ready, projection}
       end
     else
       {:error, _reason} = error -> error
@@ -367,7 +372,18 @@ defmodule BeamAgent.Session.ConversationContext do
     |> String.trim()
   end
 
-  defp render_message(%{role: :user, content: content}), do: "USER:\n#{content}"
+  defp render_message(%{role: :user, content: content} = message) do
+    attachments =
+      message
+      |> Map.get(:attachments, [])
+      |> Enum.map_join("\n", fn attachment ->
+        "[image #{value(attachment, :id)} #{value(attachment, :width)}x#{value(attachment, :height)}]"
+      end)
+
+    ["USER:\n#{content}", attachments]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
+  end
 
   defp render_message(%{role: :assistant} = message) do
     calls =
@@ -414,4 +430,6 @@ defmodule BeamAgent.Session.ConversationContext do
   defp compaction_id do
     "compaction-" <> (:crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false))
   end
+
+  defp value(map, key), do: Map.get(map, key, Map.get(map, to_string(key)))
 end

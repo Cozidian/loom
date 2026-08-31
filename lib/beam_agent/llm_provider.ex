@@ -11,6 +11,7 @@ defmodule BeamAgent.LLMProvider do
   @type message :: %{
           required(:role) => :user | :assistant | :tool,
           optional(:content) => String.t() | nil,
+          optional(:attachments) => [map()],
           optional(:tool_calls) => [map()],
           optional(:tool_call_id) => String.t(),
           optional(:name) => String.t(),

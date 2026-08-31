@@ -3,7 +3,7 @@ defmodule BeamAgent.Agent do
   use GenServer
 
   alias BeamAgent.{AgentSpec, CapabilityCatalog, Names, RuntimeCommand}
-  alias BeamAgent.Session.{Context, EventLog}
+  alias BeamAgent.Session.{AttachmentStore, Context, EventLog}
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -11,8 +11,13 @@ defmodule BeamAgent.Agent do
   end
 
   def ask(session_id, prompt, timeout \\ :infinity) do
+    ask(session_id, prompt, [], timeout)
+  end
+
+  def ask(session_id, prompt, attachment_ids, timeout)
+      when is_list(attachment_ids) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
-      GenServer.call(pid, {:ask, prompt}, timeout)
+      GenServer.call(pid, {:ask, prompt, attachment_ids}, timeout)
     end
   end
 
@@ -44,6 +49,23 @@ defmodule BeamAgent.Agent do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :agent_spec)
     end
+  end
+
+  def goal_sessions(goal_id) when is_binary(goal_id) do
+    session_ids =
+      BeamAgent.Registry
+      |> Registry.select([
+        {{{:agent, :"$1"}, :"$2", :"$3"}, [], [:"$1"]}
+      ])
+      |> Enum.uniq()
+
+    sessions =
+      Enum.filter(session_ids, fn session_id ->
+        match?({:ok, %{goal_id: ^goal_id}}, runtime_identity(session_id))
+      end)
+      |> Enum.sort()
+
+    {:ok, sessions}
   end
 
   def cancel(session_id) do
@@ -129,8 +151,8 @@ defmodule BeamAgent.Agent do
   end
 
   @impl true
-  def handle_call({:ask, prompt}, from, %{current_turn: nil} = state)
-      when is_binary(prompt) and prompt != "" do
+  def handle_call({:ask, prompt, attachment_ids}, from, %{current_turn: nil} = state)
+      when is_binary(prompt) and is_list(attachment_ids) do
     command =
       RuntimeCommand.new(
         :submit_prompt,
@@ -149,29 +171,35 @@ defmodule BeamAgent.Agent do
       causation_id: command.causation_id
     ]
 
-    with {:ok, command_event} <-
+    with {:ok, attachments} <- AttachmentStore.references(state.session_id, attachment_ids),
+         true <- prompt != "" or attachments != [],
+         {:ok, command_event} <-
            EventLog.append(
              state.session_id,
              :command_received,
              %{
                "command_id" => command.command_id,
                "name" => command.name,
-               "version" => command.version
+               "version" => command.version,
+               "attachment_ids" => Enum.map(attachments, & &1.id)
              },
              metadata
            ),
          {:ok, supervisor} <- Names.pid(:resource_supervisor, state.session_id) do
-      start_turn(supervisor, state, from, prompt, command, command_event)
+      start_turn(supervisor, state, from, prompt, attachments, command, command_event)
     else
+      false -> {:reply, {:error, :empty_message}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:ask, _prompt}, _from, %{current_turn: current} = state)
+  def handle_call({:ask, _prompt, _attachment_ids}, _from, %{current_turn: current} = state)
       when not is_nil(current),
       do: {:reply, {:error, :agent_busy}, state}
 
-  def handle_call({:ask, _prompt}, _from, state), do: {:reply, {:error, :empty_prompt}, state}
+  def handle_call({:ask, _prompt, _attachment_ids}, _from, state),
+    do: {:reply, {:error, :invalid_message}, state}
+
   def handle_call(:status, _from, state), do: {:reply, {:ok, state.status}, state}
 
   def handle_call(:runtime_identity, _from, state) do
@@ -297,11 +325,15 @@ defmodule BeamAgent.Agent do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:turn_result, _ref, _pid, _result}, state), do: {:noreply, state}
 
-  defp start_turn(supervisor, state, from, prompt, command, command_event) do
+  defp start_turn(supervisor, state, from, prompt, attachments, command, command_event) do
     agent = self()
     turn_ref = make_ref()
     command = Map.put(command, :event_id, event_id(command_event))
-    turn_context = Map.put(state, :runtime_command, command)
+
+    turn_context =
+      state
+      |> Map.put(:runtime_command, command)
+      |> Map.put(:turn_attachments, attachments)
 
     task = fn ->
       # The session resource supervisor owns the worker, while this extra link
@@ -321,6 +353,7 @@ defmodule BeamAgent.Agent do
           ref: turn_ref,
           from: from,
           prompt: prompt,
+          attachments: attachments,
           command: command,
           cancel_requested: false
         }

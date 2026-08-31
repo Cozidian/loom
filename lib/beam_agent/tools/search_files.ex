@@ -33,7 +33,7 @@ defmodule BeamAgent.Tools.SearchFiles do
     path = Map.get(arguments, "path", ".")
     limit = Map.get(arguments, "limit", 100)
 
-    with true <- is_integer(limit) and limit in 1..500,
+    with :ok <- validate_limit(limit),
          {:ok, target} <- FileSupport.resolve(context, path),
          rg when is_binary(rg) <- System.find_executable("rg"),
          args <- rg_args(query, target, arguments["glob"]),
@@ -43,7 +43,7 @@ defmodule BeamAgent.Tools.SearchFiles do
              timeout_ms: 15_000,
              max_output_bytes: 200_000
            ),
-         true <- result.status in [0, 1] do
+         :ok <- accept_status(result) do
       matches =
         result.output
         |> String.split("\n", trim: true)
@@ -57,14 +57,20 @@ defmodule BeamAgent.Tools.SearchFiles do
          truncated: result.truncated or length(matches) == limit
        })}
     else
-      false -> {:error, :invalid_search_options}
       nil -> {:error, :ripgrep_not_found}
-      {:ok, %{status: status, output: output}} -> {:error, {:ripgrep_failed, status, output}}
       {:error, reason} -> {:error, reason}
     end
   end
 
   def execute(_arguments, _context), do: {:error, :expected_non_empty_query}
+
+  defp validate_limit(limit) when is_integer(limit) and limit in 1..500, do: :ok
+  defp validate_limit(_limit), do: {:error, :invalid_search_options}
+
+  defp accept_status(%{status: status}) when status in [0, 1], do: :ok
+
+  defp accept_status(%{status: status, output: output}),
+    do: {:error, {:ripgrep_failed, status, output}}
 
   defp rg_args(query, target, glob) do
     base = ["--line-number", "--no-heading", "--color", "never"]

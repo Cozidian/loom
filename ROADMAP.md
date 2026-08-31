@@ -1,6 +1,6 @@
 # BeamAgent roadmap
 
-Updated: 2026-08-27
+Updated: 2026-08-28
 
 BeamAgent is evolving into an OTP-native runtime for autonomous software work:
 a fault-tolerant, observable, and concurrent system where specialized processes
@@ -242,10 +242,145 @@ Retain the broader OTP test:
 ## Work order
 
 The phase numbers express architectural dependency groups, not a rule that
-every earlier item must finish before a high-value safety slice. Based on the
-2026-08-27 autonomous `/tree` experiment, item 21 (verified completion) is the
-immediate next implementation priority; item 1 (runtime agent representation)
-should follow on the stronger execution substrate.
+every earlier item must finish before a high-value product or safety slice.
+
+### Immediate product priority
+
+- [x] Fix nested and repeated approval delivery and acknowledgement
+
+    - Guarantee that every distinct pending approval from every live worker in
+      a goal reaches attached clients, including approvals created after an
+      earlier `allow once` decision. Deduplicate only by approval identifier;
+      never suppress a later request merely because its worker or turn already
+      received an approval.
+    - Keep `allow once` scoped to the exact pending operation. It must neither
+      silently authorize unrelated later operations nor prevent their approval
+      requests from being surfaced.
+    - Make approval UI acknowledgement-driven: selecting a decision should show
+      a resolving state, and the dialog must remain or reappear until the
+      runtime confirms `approval_resolved`. On unknown approval, routing error,
+      handler loss, or failed persistence, retain the request and show the
+      concrete error instead of optimistically dismissing it.
+    - Reconcile the client queue against runtime-owned goal-wide pending
+      approvals after every decision, worker spawn, reconnect, handler change,
+      and process restart. Detect and surface orphaned approval requests.
+    - Preserve a correlated lifecycle from request through decision,
+      grant/denial, permission or lease issuance, tool execution, and result so
+      the event inspector can identify exactly where an approval stopped.
+    - Add a regression scenario matching the observed failure: approve a
+      capability escalation once, let the nested worker continue, then require
+      a separate `create_file` approval and verify it appears, resolves against
+      the correct child session, and allows the blocked tool call to continue.
+      Cover queued concurrent requests, reconnect, duplicate notifications,
+      stale IDs, denial, and client disconnect while a decision is in flight.
+
+    Delivered 2026-08-30:
+
+    - Runtime clients now reconcile exact goal-wide pending requests after
+      decisions, worker lifecycle changes, reconnects, snapshots, and on a
+      periodic ownership check that repairs handler loss or replacement.
+      Approval IDs no longer fall back to the root session when routing state
+      is stale.
+    - Clients receive authoritative approval snapshots, and the TUI keeps a
+      decision visible in a resolving state until `approval_resolved`; failed
+      decisions remain visible and retryable. Turn completion cannot dismiss
+      an independently pending worker approval.
+    - Policy restarts record unresolved historical requests as
+      `tool_approval_orphaned`, keeping silent approval loss visible in the
+      event stream. The control plane also consumes resolved and reconciled
+      approval state.
+    - Regression coverage executes the observed two-stage flow through the real
+      guarded `create_file` path, plus queued duplicates, stale identifiers,
+      denial after client reconnect, failed-decision retry, and authoritative
+      snapshot recovery. Verified with 251 Elixir tests and the full Go suite.
+
+- [x] Support pasting images into a conversation
+
+    - Accept clipboard image paste in the TUI and represent it through the
+      interface-neutral runtime API so CLI, editor, web, and external clients
+      can attach images through the same contract.
+    - Store each image as a runtime-owned attachment with a stable identifier,
+      MIME type, dimensions, size, content hash, provenance, and lifecycle;
+      keep binary payloads out of prompts and the public event stream.
+    - Add attachment references to versioned commands, messages, replay, and
+      context construction so pasted images survive reconnect, compaction, and
+      supervised process recovery.
+    - Validate decoded content rather than trusting filenames or clipboard MIME
+      claims; enforce supported formats, size and pixel limits, metadata
+      stripping where appropriate, workspace/session scope, and safe cleanup.
+    - Extend model endpoint descriptors and routing requirements with image
+      input support. Route image-bearing work only to eligible vision-capable
+      endpoints and explain clearly when no compatible endpoint is available.
+    - Make paste/upload progress, attachment previews or summaries, routing,
+      failures, removal, token/cost impact, and model consumption observable
+      without leaking raw image data into broadly visible events.
+    - Verify clipboard paste, multiple images, mixed text and images, unsupported
+      formats, oversized images, provider fallback, cancellation, replay, and
+      deletion with focused runtime and TUI tests.
+    - Delivered: clipboard images now enter through the interface-neutral runtime
+      attachment API, are structurally validated and normalized as private PNG
+      assets, and leave only stable metadata references in commands and events.
+      Drafts survive TUI/runtime reconnects, submitted images replay through the
+      conversation context, and OpenAI, ChatGPT-plan/Codex, and Anthropic receive
+      native image inputs. Routing retains the image requirement for the entire
+      active context so later turns cannot fall back to a text-only endpoint.
+      Provider error decoding is defensive for both nested and string-shaped
+      error responses. The TUI supports image-only and mixed submissions,
+      multiple drafts, removal, failure retry, safe history summaries, and
+      visible import status. Focused attachment, provider, runtime, replay, and
+      Go TUI coverage accompanies the end-to-end implementation.
+
+- [ ] Support `@` file references in conversation input
+
+    - Recognize explicit file mentions such as `@lib/beam_agent.ex` and quoted
+      paths containing spaces while preserving a clear escape for literal `@`
+      text and avoiding accidental matches in ordinary prose or email addresses.
+    - Provide repository-aware completion and filtering from the runtime's file
+      index, honoring ignore rules and showing enough path context to resolve
+      duplicate filenames without making the TUI the source of truth.
+    - Resolve mentions into typed, runtime-owned file references carried by
+      versioned commands and messages rather than relying on the model to infer
+      paths from raw prompt text.
+    - Build bounded context lazily from referenced files, retaining path,
+      content hash or Git revision, range when applicable, provenance, and
+      truncation metadata so the model and user can see exactly what was used.
+    - Enforce workspace confinement, capability and path policy, symlink escape
+      protection, secret and binary-file handling, size limits, and explicit
+      errors for missing, renamed, unreadable, or disallowed files.
+    - Preserve references across replay, reconnect, compaction, delegation, and
+      recovery. Child agents receive referenced content only when their context
+      and capability policy allows it.
+    - Make resolved, rejected, stale, changed, and truncated references visible
+      through safe events and every client, and allow a reference to be removed
+      before prompt submission.
+    - Verify single and multiple mentions, quoted and Unicode paths, completion,
+      literal `@`, ignored and out-of-workspace paths, symlinks, changed/deleted
+      files, large and binary files, delegation, replay, and compaction.
+
+- [ ] Make active, waiting, blocked, and stalled work visually unmistakable
+
+    - Derive status from runtime-owned process state and durable/ephemeral events,
+      not interface timers alone. Use a shared state vocabulary across the TUI,
+      task tree, web control plane, CLI, and API.
+    - Distinguish model inference, tool execution, delegation, scheduler queueing,
+      backpressure, verification, retry/recovery, approval wait, user-input wait,
+      idle, completed, failed, cancelled, and suspected-stalled states.
+    - Show the current worker, activity, blocker or dependency, last meaningful
+      progress time, and elapsed duration. Pending approvals must identify the
+      worker and tool and remain prominent until resolved.
+    - Treat slow work and confirmed stalls differently: display heartbeats and
+      elapsed time during legitimate long-running calls, mark work as
+      `suspected stalled` only after an evidence-based threshold, and reserve
+      `stalled` for a detected timeout, dead dependency, lost handler, repeated
+      no-progress loop, or other concrete runtime condition.
+    - Surface goal-level summaries such as `3 active · 1 queued · 1 awaiting
+      approval`, highlight the critical blocking path in the worker tree, and
+      provide direct inspect, approve, cancel, retry, or recover actions when
+      policy allows them.
+    - Preserve status through replay and reconnect, and verify nested approvals,
+      long model calls, hung tools, scheduler backpressure, retries, process
+      restarts, disconnected clients, and false-positive stall thresholds with
+      deterministic clock-driven tests.
 
 ### Delivered platform foundations
 
@@ -779,6 +914,110 @@ should follow on the stronger execution substrate.
       knowledge can be challenged by current code and runtime evidence.
     - Avoid turning old model conclusions into an unquestioned second source of
       truth.
+
+### Portable skills and polyglot tools
+
+34. [ ] Adopt the open Agent Skills package format
+
+    - Treat a skill as a directory containing a required `SKILL.md` plus optional
+      `scripts/`, `references/`, `assets/`, and ecosystem-specific metadata.
+    - Preserve compatibility with the conventions used by Codex, Claude Code,
+      and the open Agent Skills specification instead of inventing a
+      BeamAgent-only authoring format.
+    - Continue requiring `name` and `description`, validate standard metadata,
+      and preserve unknown compatible fields without treating them as authority.
+    - Support project, nested-project, user, administrator, bundled, and
+      installed-package sources with explicit precedence, provenance, enablement,
+      and collision behavior.
+
+35. [ ] Complete progressive skill disclosure and activation
+
+    - Keep the initial context bounded to skill identity, description, source,
+      and path; load the complete `SKILL.md` only on explicit or policy/model
+      selection.
+    - Add explicit invocation from the TUI and clients while retaining implicit
+      description matching when policy allows it.
+    - Make active skills durable runtime state that survives compaction, replay,
+      reconnect, and process recovery rather than relying only on an old tool
+      result remaining in conversational context.
+    - Load referenced documentation, templates, examples, and other resources on
+      demand with workspace/skill-root confinement and observable access events.
+
+36. [ ] Add skill packaging, installation, and trust provenance
+
+    - Support local authoring, repository installation, versioned packages, and
+      pinned immutable releases without coupling the runtime to one marketplace.
+    - Record source, version, content hashes, signer or repository identity where
+      available, compatibility requirements, installation time, and update state.
+    - Make enable, disable, inspect, update, and remove operations available
+      through the CLI and later through every control-plane client.
+    - Require review or policy approval before newly installed executable content
+      becomes eligible to run.
+
+37. [ ] Add a supervised polyglot skill-script boundary
+
+    - Execute skill-bundled helpers as supervised operating-system processes
+      through Ports rather than loading untrusted code into the BEAM.
+    - Define one language-neutral JSON request, response, streaming, error,
+      health, and cancellation contract instead of a separate tool system for
+      every programming language.
+    - Support shebang-driven and declared interpreted runtimes such as shell,
+      Python, JavaScript, Elixir, Ruby, and other available interpreters.
+    - Support compiled tools written in Rust, C, C++, Go, Zig, and other
+      languages through approved builds or platform-matched, checksum-verified
+      executables.
+    - Reserve NIFs and in-process native extensions for trusted, audited core
+      components because a faulty native extension can compromise the VM's
+      failure boundary.
+
+38. [ ] Govern skill builds, dependencies, and executable artifacts
+
+    - Separate installation/build authority from execution authority; discovering
+      a source file must never implicitly compile or run it.
+    - Run approved builds in bounded sandboxes with explicit network, filesystem,
+      compiler, package-manager, CPU, memory, output, and wall-time policy.
+    - Cache artifacts by source, toolchain, target, dependency lock, and content
+      hash; invalidate them deterministically and expose reproducibility evidence.
+    - Prefer self-contained helpers and locked dependencies, and fail clearly
+      when a declared runtime or platform artifact is unavailable.
+
+39. [ ] Integrate skill tools with the existing capability runtime
+
+    - Route bundled executables through the same capability envelopes, temporary
+      leases, approvals, budgets, schedulers, sandboxing, cancellation, and event
+      contracts as native and MCP tools.
+    - Interpret standard fields such as `allowed-tools` as requested or preferred
+      authority, never as authority the skill can grant to itself.
+    - Resolve requested tools, paths, commands, hosts, secrets, models, MCP
+      servers, and approval scopes through runtime policy before activation.
+    - Keep native BEAM tools for trusted core operations, supervised executables
+      for small language-agnostic helpers, and MCP for long-lived or multi-tool
+      external services.
+
+40. [ ] Make skills inputs to dynamic agent construction
+
+    - Let a selected skill propose role, instructions, context resources,
+      execution strategy, tool requirements, model requirements, budget hints,
+      verification requirements, and delegation suggestions.
+    - Convert those proposals into policy-evaluated `AgentSpec` fields while the
+      runtime remains authoritative for effective capabilities, resources,
+      secrets, sandbox, lifetime, and model eligibility.
+    - Allow dynamically constructed workers to preload a bounded set of relevant
+      skills and to request additional skills as new subproblems emerge.
+    - Keep templates, skills, and dynamically generated specialization
+      composable rather than turning a skill into a fixed persona or workflow.
+
+41. [ ] Measure and verify skill effectiveness
+
+    - Record skill selection reason, version, activated resources, requested and
+      effective authority, model/tool usage, latency, cost, failures, retries,
+      verification evidence, and final outcome.
+    - Distinguish instruction failure, missing runtime/dependency, denied
+      capability, executable failure, model failure, and verification failure.
+    - Use verified outcomes to improve skill suggestions and execution strategy
+      in shadow mode before allowing learned selection to alter live behavior.
+    - Expose active skills, executable processes, provenance, permissions, and
+      results in the event stream, task tree, TUI, and control plane.
 
 ## Completed implementation map
 

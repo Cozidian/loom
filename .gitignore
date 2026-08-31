@@ -3,6 +3,7 @@
 /deps/
 /doc/
 /.elixir_ls/
+/.tmp/
 /beam_agent
 /beam_agent_tui
 erl_crash.dump

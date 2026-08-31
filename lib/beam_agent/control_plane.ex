@@ -93,6 +93,21 @@ defmodule BeamAgent.ControlPlane do
     {:noreply, put_in(state, [:pending_approvals, request.approval_id], request)}
   end
 
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approval_resolved, approval_id, _decision}},
+        %{runtime: runtime} = state
+      ) do
+    {:noreply, update_in(state, [:pending_approvals], &Map.delete(&1, approval_id))}
+  end
+
+  def handle_info(
+        {:beam_agent_runtime, runtime, {:approvals_reconciled, approvals}},
+        %{runtime: runtime} = state
+      ) do
+    pending = Map.new(approvals, &{&1.approval_id, &1})
+    {:noreply, %{state | pending_approvals: pending}}
+  end
+
   def handle_info({:beam_agent_runtime, _runtime, _message}, state), do: {:noreply, state}
 
   @impl true

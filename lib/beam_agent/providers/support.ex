@@ -60,9 +60,14 @@ defmodule BeamAgent.Providers.Support do
   def accept(status, body) when status in 200..299, do: {:ok, body}
 
   def accept(status, body) do
-    message = get_in(body, ["error", "message"]) || body["error"] || body["message"] || body
+    message = provider_error_message(body)
     {:error, {:provider_http_error, status, message}}
   end
+
+  defp provider_error_message(%{"error" => %{"message" => message}}), do: message
+  defp provider_error_message(%{"error" => error}) when not is_nil(error), do: error
+  defp provider_error_message(%{"message" => message}), do: message
+  defp provider_error_message(body), do: body
 
   def tool_schema(tool) do
     %{

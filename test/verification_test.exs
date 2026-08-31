@@ -64,7 +64,7 @@ defmodule BeamAgent.VerificationTest do
           provider: :echo
         )
 
-      assert {:ok, _answer} = BeamAgent.ask(session_id, "implement a small change")
+      assert {:ok, _answer} = BeamAgent.ask(session_id, "record a task")
       {:ok, goal} = BeamAgent.goal(session_id)
 
       {:ok, [task_before]} = BeamAgent.outcomes(goal.project_id, kind: :task)
@@ -120,7 +120,7 @@ defmodule BeamAgent.VerificationTest do
           provider: :echo
         )
 
-      assert {:ok, _answer} = BeamAgent.ask(session_id, "implement a broken change")
+      assert {:ok, _answer} = BeamAgent.ask(session_id, "record a task")
       {:ok, goal} = BeamAgent.goal(session_id)
 
       assert {:ok, result} =

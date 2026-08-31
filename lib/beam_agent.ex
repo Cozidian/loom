@@ -23,7 +23,15 @@ defmodule BeamAgent do
     Workspace
   }
 
-  alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub, ToolPolicy}
+  alias BeamAgent.Session.{
+    AttachmentStore,
+    Context,
+    ConversationContext,
+    EventLog,
+    StreamHub,
+    ToolPolicy
+  }
+
   alias BeamAgent.Goal.EventHub
   alias BeamAgent.Goal.Verifier
 
@@ -235,7 +243,16 @@ defmodule BeamAgent do
 
   def secret_handles(goal_id), do: BeamAgent.Goal.SecretBroker.handles(goal_id)
 
-  def ask(session_id, prompt, timeout \\ :infinity), do: Agent.ask(session_id, prompt, timeout)
+  def ask(session_id, prompt), do: Agent.ask(session_id, prompt)
+
+  def ask(session_id, prompt, attachment_ids) when is_list(attachment_ids),
+    do: Agent.ask(session_id, prompt, attachment_ids, :infinity)
+
+  def ask(session_id, prompt, timeout), do: Agent.ask(session_id, prompt, timeout)
+
+  def ask(session_id, prompt, attachment_ids, timeout),
+    do: Agent.ask(session_id, prompt, attachment_ids, timeout)
+
   def cancel(session_id), do: Agent.cancel(session_id)
   def subscribe(session_id, subscriber \\ self()), do: StreamHub.subscribe(session_id, subscriber)
 
@@ -308,8 +325,24 @@ defmodule BeamAgent do
 
   def set_approval_handler(session_id, handler), do: ToolPolicy.set_handler(session_id, handler)
   def approval_handler(session_id), do: ToolPolicy.handler(session_id)
+  def pending_approvals(session_id), do: ToolPolicy.pending(session_id)
   def approval_policy(session_id), do: ToolPolicy.policy(session_id)
   def set_approval_policy(session_id, policy), do: ToolPolicy.set_policy(session_id, policy)
+
+  def goal_sessions(goal_id), do: Agent.goal_sessions(goal_id)
+
+  def set_goal_approval_policy(goal_id, policy) do
+    with {:ok, session_ids} <- Agent.goal_sessions(goal_id) do
+      Enum.reduce_while(session_ids, :ok, fn session_id, :ok ->
+        case ToolPolicy.set_policy(session_id, policy) do
+          :ok -> {:cont, :ok}
+          {:error, :not_found} -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, {session_id, reason}}}
+        end
+      end)
+    end
+  end
+
   def permissions(session_id), do: ToolPolicy.permissions(session_id)
 
   def revoke_permission(session_id, permission_id),
@@ -354,6 +387,14 @@ defmodule BeamAgent do
   def skills(session_id), do: Context.skills(session_id)
   def reload_context(session_id), do: Context.reload(session_id)
   def event_log_path(session_id), do: EventLog.path(session_id)
+  def import_attachment(session_id, attrs), do: AttachmentStore.import(session_id, attrs)
+  def attachments(session_id), do: AttachmentStore.list(session_id)
+  def draft_attachments(session_id), do: AttachmentStore.drafts(session_id)
+
+  def delete_attachment(session_id, attachment_id),
+    do: AttachmentStore.delete(session_id, attachment_id)
+
+  def attachment_store_pid(session_id), do: Names.pid(:attachment_store, session_id)
   def agent_pid(session_id), do: Names.pid(:agent, session_id)
   def event_log_pid(session_id), do: Names.pid(:event_log, session_id)
   def stream_hub_pid(session_id), do: Names.pid(:stream_hub, session_id)

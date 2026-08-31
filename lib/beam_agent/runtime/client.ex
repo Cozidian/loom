@@ -3,12 +3,25 @@ defmodule BeamAgent.Runtime.Client do
   use GenServer
 
   alias BeamAgent.Agent
+  alias BeamAgent.Session.AttachmentStore
 
   def start(opts), do: GenServer.start(__MODULE__, opts)
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def bootstrap(client), do: GenServer.call(client, :bootstrap)
   def snapshot(client), do: GenServer.call(client, :snapshot)
-  def submit(client, prompt), do: GenServer.call(client, {:submit, prompt})
+
+  def submit(client, prompt, attachment_ids \\ []),
+    do: GenServer.call(client, {:submit, prompt, attachment_ids})
+
+  def import_attachment(client, attrs),
+    do: GenServer.call(client, {:import_attachment, attrs}, 30_000)
+
+  def attachments(client), do: GenServer.call(client, :attachments)
+  def draft_attachments(client), do: GenServer.call(client, :draft_attachments)
+
+  def delete_attachment(client, attachment_id),
+    do: GenServer.call(client, {:delete_attachment, attachment_id})
+
   def cancel(client), do: GenServer.call(client, :cancel)
 
   def respond_approval(client, approval_id, decision),
@@ -91,50 +104,71 @@ defmodule BeamAgent.Runtime.Client do
       bootstrap_events: [],
       approval_policy: :ask,
       agent_status: :idle,
-      previous_approval_handler: nil,
+      previous_approval_handlers: %{},
       pending_approvals: %{},
       current: nil
     }
 
     case bind(state, Keyword.fetch!(opts, :session_id), opts) do
-      {:ok, state, _snapshot} -> {:ok, state}
-      {:error, reason} -> {:stop, reason}
+      {:ok, state, _snapshot} ->
+        schedule_approval_reconciliation()
+        {:ok, state}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
   @impl true
   def handle_call(:bootstrap, _from, state) do
-    state = refresh_agent_status(state)
+    state = state |> refresh_agent_status() |> reconcile_approvals()
     snapshot = Map.put(connection_snapshot(state), :events, state.bootstrap_events)
     {:reply, {:ok, snapshot}, %{state | bootstrap_events: []}}
   end
 
   def handle_call(:snapshot, _from, state) do
-    state = refresh_agent_status(state)
+    state = state |> refresh_agent_status() |> reconcile_approvals()
     {:reply, {:ok, connection_snapshot(state)}, state}
   end
 
-  def handle_call({:submit, prompt}, _from, %{current: nil} = state)
-      when is_binary(prompt) and prompt != "" do
-    case Agent.status(state.session_id) do
-      {:ok, :idle} ->
-        start_turn(state, prompt)
+  def handle_call({:submit, prompt, attachment_ids}, _from, %{current: nil} = state)
+      when is_binary(prompt) and is_list(attachment_ids) do
+    prompt = String.trim(prompt)
 
-      {:ok, _running} ->
-        {:reply, {:error, :turn_running}, state}
+    if prompt == "" and attachment_ids == [] do
+      {:reply, {:error, :empty_message}, state}
+    else
+      case Agent.status(state.session_id) do
+        {:ok, :idle} ->
+          start_turn(state, prompt, attachment_ids)
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:ok, _running} ->
+          {:reply, {:error, :turn_running}, state}
+
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     end
   end
 
-  def handle_call({:submit, ""}, _from, state), do: {:reply, {:error, :empty_prompt}, state}
+  def handle_call({:submit, _prompt, _attachment_ids}, _from, %{current: nil} = state),
+    do: {:reply, {:error, :invalid_message}, state}
 
-  def handle_call({:submit, _prompt}, _from, %{current: nil} = state),
-    do: {:reply, {:error, :invalid_prompt}, state}
-
-  def handle_call({:submit, _prompt}, _from, state),
+  def handle_call({:submit, _prompt, _attachment_ids}, _from, state),
     do: {:reply, {:error, :turn_running}, state}
+
+  def handle_call({:import_attachment, attrs}, _from, state) when is_map(attrs),
+    do: {:reply, AttachmentStore.import(state.session_id, attrs), state}
+
+  def handle_call(:attachments, _from, state),
+    do: {:reply, AttachmentStore.list(state.session_id), state}
+
+  def handle_call(:draft_attachments, _from, state),
+    do: {:reply, AttachmentStore.drafts(state.session_id), state}
+
+  def handle_call({:delete_attachment, attachment_id}, _from, state)
+      when is_binary(attachment_id),
+      do: {:reply, AttachmentStore.delete(state.session_id, attachment_id), state}
 
   def handle_call(:cancel, _from, state) do
     with {:ok, status} when status != :idle <- Agent.status(state.session_id),
@@ -149,17 +183,31 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call({:respond_approval, approval_id, decision}, _from, state)
       when decision in [:allow_once, :allow_always, :deny] do
-    session_id = Map.get(state.pending_approvals, approval_id, state.session_id)
+    state = reconcile_approvals(state, notify_new: true)
 
-    case BeamAgent.respond_approval(session_id, approval_id, decision) do
-      :ok ->
-        notify(state, {:approval_resolved, approval_id, decision})
+    case Map.fetch(state.pending_approvals, approval_id) do
+      {:ok, %{session_id: session_id}} ->
+        case BeamAgent.respond_approval(session_id, approval_id, decision) do
+          :ok ->
+            notify(state, {:approval_resolved, approval_id, decision})
 
-        {:reply, :ok,
-         %{state | pending_approvals: Map.delete(state.pending_approvals, approval_id)}}
+            state =
+              state
+              |> Map.update!(:pending_approvals, &Map.delete(&1, approval_id))
+              |> reconcile_approvals(notify_new: true)
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+            notify_approval_snapshot(state)
+            {:reply, :ok, state}
+
+          {:error, reason} ->
+            state = reconcile_approvals(state, notify_new: true)
+            notify_approval_snapshot(state)
+            {:reply, {:error, reason}, state}
+        end
+
+      :error ->
+        notify_approval_snapshot(state)
+        {:reply, {:error, :unknown_approval}, state}
     end
   end
 
@@ -170,11 +218,18 @@ defmodule BeamAgent.Runtime.Client do
     do: {:reply, {:ok, state.approval_policy}, state}
 
   def handle_call({:set_approval_policy, policy}, _from, state) do
-    case BeamAgent.set_approval_policy(state.session_id, policy) do
+    case BeamAgent.set_goal_approval_policy(state.goal_id, policy) do
       :ok ->
         {:ok, policy} = BeamAgent.approval_policy(state.session_id)
         notify(state, {:approval_policy_changed, policy})
-        {:reply, :ok, %{state | approval_policy: policy}}
+
+        state =
+          state
+          |> Map.put(:approval_policy, policy)
+          |> reconcile_approvals(notify_new: policy != :auto)
+
+        notify_approval_snapshot(state)
+        {:reply, :ok, state}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -319,14 +374,36 @@ defmodule BeamAgent.Runtime.Client do
 
     notify(state, {:event, event})
 
+    state =
+      if worker_lifecycle_event?(event) do
+        state = reconcile_approvals(state, notify_new: true)
+        notify_approval_snapshot(state)
+        state
+      else
+        state
+      end
+
     {:noreply,
      %{state | cursor: cursor, agent_status: event_agent_status(event, state.agent_status)}}
   end
 
   def handle_info({:beam_agent_approval, request}, state) do
-    pending = Map.put(state.pending_approvals, request.approval_id, request.session_id)
-    notify(state, {:approval_requested, request})
+    existing? = Map.has_key?(state.pending_approvals, request.approval_id)
+    pending = Map.put(state.pending_approvals, request.approval_id, request)
+    unless existing?, do: notify(state, {:approval_requested, request})
     {:noreply, %{state | pending_approvals: pending}}
+  end
+
+  def handle_info(:reconcile_approvals, state) do
+    previous = state.pending_approvals
+    state = reconcile_approvals(state, notify_new: true)
+
+    if state.pending_approvals != previous do
+      notify_approval_snapshot(state)
+    end
+
+    schedule_approval_reconciliation()
+    {:noreply, state}
   end
 
   def handle_info({result_ref, result}, %{current: %{result_ref: result_ref} = current} = state) do
@@ -364,7 +441,7 @@ defmodule BeamAgent.Runtime.Client do
 
   @impl true
   def terminate(_reason, state) do
-    restore_approval_handler(state)
+    restore_approval_handlers(state)
     if state.goal_id, do: BeamAgent.unsubscribe_goal(state.goal_id, self())
     :ok
   end
@@ -373,22 +450,19 @@ defmodule BeamAgent.Runtime.Client do
     view = Keyword.get(opts, :view, state.view)
     after_cursor = Keyword.get(opts, :after)
 
+    restore_approval_handlers(state)
+
     with :ok <- validate_view(view),
          :ok <- validate_after(after_cursor),
          {:ok, identity} <- Agent.runtime_identity(session_id),
          {:ok, subscription} <-
            BeamAgent.subscribe_goal_from(identity.goal_id, after_value(after_cursor), view: view),
-         {:ok, observed_handler} <- BeamAgent.approval_handler(session_id),
-         :ok <- BeamAgent.set_approval_handler(session_id, self()),
+         {:ok, session_ids} <- BeamAgent.goal_sessions(identity.goal_id),
+         {:ok, previous_handlers, pending_approvals} <-
+           attach_approval_handlers(session_ids, self()),
          {:ok, approval_policy} <- BeamAgent.approval_policy(session_id),
          {:ok, agent_status} <- Agent.status(session_id) do
-      previous_handler =
-        if state.session_id == session_id and observed_handler == self(),
-          do: state.previous_approval_handler,
-          else: observed_handler
-
       if state.goal_id && state.goal_id != identity.goal_id do
-        restore_approval_handler(state)
         _ = BeamAgent.unsubscribe_goal(state.goal_id, self())
       end
 
@@ -406,8 +480,8 @@ defmodule BeamAgent.Runtime.Client do
           bootstrap_events: events,
           approval_policy: approval_policy,
           agent_status: agent_status,
-          previous_approval_handler: previous_handler,
-          pending_approvals: %{}
+          previous_approval_handlers: previous_handlers,
+          pending_approvals: pending_approvals
       }
 
       {:ok, state, Map.put(connection_snapshot(state), :events, events)}
@@ -424,8 +498,18 @@ defmodule BeamAgent.Runtime.Client do
       view: state.view,
       cursor: state.cursor,
       approval_policy: state.approval_policy,
+      attachments: list_draft_attachments(state.session_id),
+      pending_approvals:
+        state.pending_approvals |> Map.values() |> Enum.sort_by(& &1.approval_id),
       running?: state.agent_status != :idle
     }
+  end
+
+  defp list_draft_attachments(session_id) do
+    case AttachmentStore.drafts(session_id) do
+      {:ok, attachments} -> attachments
+      {:error, _reason} -> []
+    end
   end
 
   defp notify(state, message) do
@@ -446,11 +530,13 @@ defmodule BeamAgent.Runtime.Client do
   defp after_value(:latest), do: nil
   defp after_value(after_cursor), do: after_cursor
 
-  defp start_turn(state, prompt) do
+  defp start_turn(state, prompt, attachment_ids) do
     owner = self()
     result_ref = make_ref()
 
-    case Task.start(fn -> send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt)}) end) do
+    case Task.start(fn ->
+           send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt, attachment_ids)})
+         end) do
       {:ok, pid} ->
         current = %{pid: pid, monitor: Process.monitor(pid), result_ref: result_ref}
         notify(state, {:turn_started, prompt})
@@ -493,19 +579,145 @@ defmodule BeamAgent.Runtime.Client do
     end
   end
 
-  defp restore_approval_handler(%{session_id: nil}), do: :ok
+  defp reconcile_approvals(state, opts \\ [])
 
-  defp restore_approval_handler(state) do
-    case BeamAgent.approval_handler(state.session_id) do
-      {:ok, current} when current == self() and is_pid(state.previous_approval_handler) ->
-        if Process.alive?(state.previous_approval_handler) do
-          BeamAgent.set_approval_handler(state.session_id, state.previous_approval_handler)
-        else
-          :ok
-        end
+  defp reconcile_approvals(%{goal_id: nil} = state, _opts), do: state
 
-      _other ->
-        :ok
+  defp reconcile_approvals(state, opts) do
+    notify_new? = Keyword.get(opts, :notify_new, false)
+    {:ok, session_ids} = Agent.goal_sessions(state.goal_id)
+
+    {handlers, approvals} =
+      Enum.reduce(session_ids, {state.previous_approval_handlers, %{}}, fn
+        session_id, {handlers, approvals} ->
+          with {:ok, current_handler} <- BeamAgent.approval_handler(session_id),
+               {:ok, pending} <- BeamAgent.pending_approvals(session_id) do
+            handlers = remember_previous_handler(handlers, session_id, current_handler)
+
+            if current_handler != self() do
+              _ = BeamAgent.set_approval_handler(session_id, self())
+            end
+
+            approvals =
+              Enum.reduce(pending, approvals, fn request, acc ->
+                Map.put(acc, request.approval_id, request)
+              end)
+
+            {handlers, approvals}
+          else
+            {:error, :not_found} -> {handlers, approvals}
+            {:error, _reason} -> {handlers, approvals}
+          end
+      end)
+
+    if notify_new? do
+      approvals
+      |> Map.drop(Map.keys(state.pending_approvals))
+      |> Map.values()
+      |> Enum.sort_by(& &1.approval_id)
+      |> Enum.each(&notify(state, {:approval_requested, &1}))
     end
+
+    %{
+      state
+      | previous_approval_handlers: handlers,
+        pending_approvals: approvals
+    }
+  end
+
+  defp remember_previous_handler(handlers, session_id, handler)
+       when is_pid(handler) and handler != self() do
+    Map.put_new(handlers, session_id, handler)
+  end
+
+  defp remember_previous_handler(handlers, _session_id, _handler), do: handlers
+
+  defp notify_approval_snapshot(state) do
+    approvals =
+      state.pending_approvals
+      |> Map.values()
+      |> Enum.sort_by(& &1.approval_id)
+
+    notify(state, {:approvals_reconciled, approvals})
+  end
+
+  defp schedule_approval_reconciliation do
+    Process.send_after(self(), :reconcile_approvals, 1_000)
+    :ok
+  end
+
+  defp worker_lifecycle_event?(%{payload: %{type: type}})
+       when type in [
+              "agent_constructed",
+              :agent_constructed,
+              "agent_ready",
+              :agent_ready,
+              "agent_started",
+              :agent_started,
+              "subagent_spawned",
+              :subagent_spawned,
+              "tool_approval_orphaned",
+              :tool_approval_orphaned
+            ],
+       do: true
+
+  defp worker_lifecycle_event?(_event), do: false
+
+  defp attach_approval_handlers(session_ids, handler) do
+    Enum.reduce_while(session_ids, {:ok, %{}, %{}}, fn session_id, {:ok, handlers, approvals} ->
+      with {:ok, previous} <- BeamAgent.approval_handler(session_id),
+           {:ok, pending} <- BeamAgent.pending_approvals(session_id),
+           :ok <- BeamAgent.set_approval_handler(session_id, handler) do
+        handlers =
+          if is_pid(previous), do: Map.put(handlers, session_id, previous), else: handlers
+
+        approvals =
+          Enum.reduce(pending, approvals, fn request, acc ->
+            Map.put(acc, request.approval_id, request)
+          end)
+
+        {:cont, {:ok, handlers, approvals}}
+      else
+        {:error, :not_found} -> {:cont, {:ok, handlers, approvals}}
+        {:error, reason} -> {:halt, {:error, {session_id, reason}}}
+      end
+    end)
+  end
+
+  defp restore_approval_handlers(%{
+         previous_approval_handlers: handlers,
+         goal_id: goal_id,
+         session_id: root_session_id
+       }) do
+    fallback =
+      case Map.get(handlers, root_session_id) do
+        handler when is_pid(handler) ->
+          handler
+
+        _other ->
+          handlers
+          |> Map.values()
+          |> Enum.find(&(is_pid(&1) and Process.alive?(&1)))
+      end
+
+    session_ids =
+      case goal_id && Agent.goal_sessions(goal_id) do
+        {:ok, sessions} -> Enum.uniq(Map.keys(handlers) ++ sessions)
+        _other -> Map.keys(handlers)
+      end
+
+    Enum.each(session_ids, fn session_id ->
+      previous = Map.get(handlers, session_id, fallback)
+
+      with true <- is_pid(previous) and Process.alive?(previous),
+           {:ok, current} <- BeamAgent.approval_handler(session_id),
+           true <- current == self() do
+        _ = BeamAgent.set_approval_handler(session_id, previous)
+      else
+        _other -> :ok
+      end
+    end)
+
+    :ok
   end
 end

@@ -52,6 +52,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.goal == "Coordinate a repository investigation"
     assert spec.role == "Goal coordinator"
     assert spec.lifecycle.depth == 0
+    assert spec.lifecycle.maximum_delegation_depth == 4
     assert spec.lifecycle.restart == :temporary
     refute spec.lifecycle.terminate_after_result
     assert spec.lifecycle.retention == :until_goal_shutdown
@@ -61,6 +62,9 @@ defmodule BeamAgent.AgentConstructionTest do
     assert {:ok, context_snapshot} = BeamAgent.context_snapshot(session_id)
     assert context_snapshot.system_prompt =~ "Role: Goal coordinator"
     assert context_snapshot.system_prompt =~ "Goal: Coordinate a repository investigation"
+
+    assert context_snapshot.system_prompt =~
+             "perform bounded work with granted tools or delegate it"
 
     {:ok, events} = BeamAgent.events(session_id)
     constructed = Enum.find(events, &(&1["type"] == "agent_constructed"))
@@ -266,5 +270,75 @@ defmodule BeamAgent.AgentConstructionTest do
 
     assert {:ok, "captured"} = BeamAgent.ask(session_id, "Inspect one file")
     assert_receive {:visible_tools, ["read_file"]}
+  end
+
+  test "implementation workers are direct leaves and cannot recursively delegate implementation",
+       context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Implement image paste support in the TUI",
+                 template: "implementer"
+               }
+             )
+
+    assert {:ok, spec} = BeamAgent.agent_spec(child_id)
+    assert spec.execution_strategy.id == "implement"
+    assert spec.authority_decision.disposition == :attenuated
+    assert is_list(spec.effective_capabilities.scopes.tools)
+    refute "delegate_tasks" in spec.effective_capabilities.scopes.tools
+    refute "spawn_subagent" in spec.effective_capabilities.scopes.tools
+    assert "create_file" in spec.effective_capabilities.scopes.tools
+    assert "apply_patch" in spec.effective_capabilities.scopes.tools
+
+    assert {:error, :recursive_implementation_delegation} =
+             AgentConstructor.child(child_id, %{
+               goal: "Implement the remaining image paste changes",
+               template: "implementer"
+             })
+  end
+
+  test "the configurable delegation depth is inherited and remains a safety fuse", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               maximum_delegation_depth: 1
+             )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Investigate how image paste events reach the runtime",
+                 template: "researcher"
+               }
+             )
+
+    assert {:ok, spec} = BeamAgent.agent_spec(child_id)
+    assert spec.lifecycle.depth == 1
+    assert spec.lifecycle.maximum_delegation_depth == 1
+    refute "delegate_tasks" in spec.effective_capabilities.scopes.tools
+    refute "spawn_subagent" in spec.effective_capabilities.scopes.tools
+
+    assert {:error, :delegation_depth_exceeded} =
+             AgentConstructor.child(child_id, %{goal: "Inspect one more hypothesis"})
+  end
+
+  test "invalid delegation depth configuration fails closed", context do
+    assert {:error, :invalid_maximum_delegation_depth} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               maximum_delegation_depth: 99
+             )
   end
 end

@@ -12,12 +12,17 @@ defmodule BeamAgent.AgentConstructor do
     AgentConstructionPolicy,
     AgentSpec,
     AgentTemplate,
+    CapabilityCatalog,
+    CapabilityEnvelope,
     ProjectContext,
     ResourceBudget,
     TaskClassifier
   }
 
-  @maximum_delegation_depth 4
+  alias BeamAgent.MCP.Registry, as: MCPRegistry
+
+  @default_maximum_delegation_depth 4
+  @hard_maximum_delegation_depth 8
 
   def root(opts) when is_list(opts) do
     envelope = Keyword.fetch!(opts, :capability_envelope)
@@ -26,6 +31,7 @@ defmodule BeamAgent.AgentConstructor do
     classification = TaskClassifier.classify(goal, workspace_root)
     template = AgentTemplate.resolve("coordinator", classification)
     role = Keyword.get(opts, :role) || template.role
+    maximum_delegation_depth = maximum_delegation_depth(opts)
 
     instructions =
       normalize_instructions(
@@ -33,7 +39,8 @@ defmodule BeamAgent.AgentConstructor do
           normalize_instructions(Keyword.get(opts, :agent_instructions, []))
       )
 
-    with {:ok, context} <- ProjectContext.load(workspace_root),
+    with :ok <- validate_maximum_delegation_depth(maximum_delegation_depth),
+         {:ok, context} <- ProjectContext.load(workspace_root),
          {:ok, authority} <- AgentConstructionPolicy.evaluate_root(envelope) do
       AgentSpec.new(%{
         goal: goal,
@@ -51,7 +58,7 @@ defmodule BeamAgent.AgentConstructor do
             template.verification_requirements
           ),
         parent: nil,
-        lifecycle: lifecycle(0),
+        lifecycle: lifecycle(0, maximum_delegation_depth),
         template: template.id,
         template_version: template.version,
         template_source: template.source,
@@ -83,11 +90,12 @@ defmodule BeamAgent.AgentConstructor do
     with {:ok, parent} <- Agent.construction_context(parent_session_id),
          {:ok, project_context} <- ProjectContext.load(parent.workspace_root),
          depth <- parent_depth(parent.agent_spec) + 1,
-         :ok <- validate_depth(depth),
+         maximum_delegation_depth <- parent_maximum_delegation_depth(parent.agent_spec),
+         :ok <- validate_depth(depth, maximum_delegation_depth),
          goal when is_binary(goal) and goal != "" <- value(proposal, :goal),
+         classification <- TaskClassifier.classify(goal, parent.workspace_root),
          {:ok, authority} <-
            AgentConstructionPolicy.evaluate_child(parent.capability_envelope, proposal) do
-      classification = TaskClassifier.classify(goal, parent.workspace_root)
       template = AgentTemplate.resolve(value(proposal, :template), classification)
       role = role(proposal, classification, template)
 
@@ -96,60 +104,70 @@ defmodule BeamAgent.AgentConstructor do
           template.instructions ++ normalize_instructions(value(proposal, :instructions) || [])
         )
 
-      AgentSpec.new(%{
-        goal: goal,
-        role: role,
-        instructions: instructions,
-        context_refs: [
-          %{kind: "project_context", id: project_context.fingerprint},
-          %{kind: "parent_worker", id: parent_session_id}
-        ],
-        requested_capabilities: authority.requested,
-        effective_capabilities: authority.effective,
-        restrictions: restrictions(parent.workspace_root, authority.effective),
-        resources: resources_from_parent(parent, opts),
-        model_requirements: model_requirements(proposal, parent, template),
-        verification_requirements: verification_requirements(proposal, template),
-        parent: %{
-          worker_id: parent_session_id,
-          delegation_id: Keyword.get(opts, :delegation_id),
-          spec_id: parent.agent_spec && parent.agent_spec.spec_id,
-          capability_envelope_id: parent.capability_envelope.id
-        },
-        lifecycle: lifecycle(depth),
-        template: template.id,
-        template_version: template.version,
-        template_source: template.source,
-        execution_strategy: template.execution_strategy,
-        authority_decision: authority,
-        provenance: %{
-          goal: "parent_proposal",
-          role: if(value(proposal, :role), do: "parent_proposal", else: "runtime_inference"),
-          instructions:
-            if(value(proposal, :instructions),
-              do: "parent_proposal",
-              else: "runtime_default"
-            ),
-          context_refs: "runtime_context_selection",
-          requested_capabilities:
-            if(authority.requested == :inherit,
-              do: "parent_inheritance",
-              else: "parent_proposal"
-            ),
-          effective_capabilities: "runtime_policy",
-          restrictions: "runtime_policy",
-          resources: "parent_allocation",
-          model_requirements:
-            if(value(proposal, :model_requirements),
-              do: "parent_proposal_runtime_constrained",
-              else: "parent_inheritance"
-            ),
-          verification_requirements: "runtime_policy",
-          lifecycle: "runtime_policy",
-          template:
-            if(value(proposal, :template), do: "parent_proposal", else: "runtime_inference")
-        }
-      })
+      with :ok <- validate_delegation_shape(parent.agent_spec, template.execution_strategy),
+           {:ok, authority} <-
+             constrain_delegation_authority(
+               authority,
+               parent,
+               template,
+               depth,
+               maximum_delegation_depth
+             ) do
+        AgentSpec.new(%{
+          goal: goal,
+          role: role,
+          instructions: instructions,
+          context_refs: [
+            %{kind: "project_context", id: project_context.fingerprint},
+            %{kind: "parent_worker", id: parent_session_id}
+          ],
+          requested_capabilities: authority.requested,
+          effective_capabilities: authority.effective,
+          restrictions: restrictions(parent.workspace_root, authority.effective),
+          resources: resources_from_parent(parent, opts),
+          model_requirements: model_requirements(proposal, parent, template),
+          verification_requirements: verification_requirements(proposal, template),
+          parent: %{
+            worker_id: parent_session_id,
+            delegation_id: Keyword.get(opts, :delegation_id),
+            spec_id: parent.agent_spec && parent.agent_spec.spec_id,
+            capability_envelope_id: parent.capability_envelope.id
+          },
+          lifecycle: lifecycle(depth, maximum_delegation_depth),
+          template: template.id,
+          template_version: template.version,
+          template_source: template.source,
+          execution_strategy: template.execution_strategy,
+          authority_decision: authority,
+          provenance: %{
+            goal: "parent_proposal",
+            role: if(value(proposal, :role), do: "parent_proposal", else: "runtime_inference"),
+            instructions:
+              if(value(proposal, :instructions),
+                do: "parent_proposal",
+                else: "runtime_default"
+              ),
+            context_refs: "runtime_context_selection",
+            requested_capabilities:
+              if(authority.requested == :inherit,
+                do: "parent_inheritance",
+                else: "parent_proposal"
+              ),
+            effective_capabilities: "runtime_policy",
+            restrictions: "runtime_policy",
+            resources: "parent_allocation",
+            model_requirements:
+              if(value(proposal, :model_requirements),
+                do: "parent_proposal_runtime_constrained",
+                else: "parent_inheritance"
+              ),
+            verification_requirements: "runtime_policy",
+            lifecycle: "runtime_policy",
+            template:
+              if(value(proposal, :template), do: "parent_proposal", else: "runtime_inference")
+          }
+        })
+      end
     else
       nil -> {:error, :missing_agent_goal}
       false -> {:error, :missing_agent_goal}
@@ -318,18 +336,85 @@ defmodule BeamAgent.AgentConstructor do
     }
   end
 
-  defp lifecycle(depth) do
+  defp lifecycle(depth, maximum_delegation_depth) do
     %{
       depth: depth,
-      maximum_delegation_depth: @maximum_delegation_depth,
+      maximum_delegation_depth: maximum_delegation_depth,
       restart: :temporary,
       terminate_after_result: false,
       retention: :until_goal_shutdown
     }
   end
 
-  defp validate_depth(depth) when depth <= @maximum_delegation_depth, do: :ok
-  defp validate_depth(_depth), do: {:error, :delegation_depth_exceeded}
+  defp maximum_delegation_depth(opts),
+    do: Keyword.get(opts, :maximum_delegation_depth, @default_maximum_delegation_depth)
+
+  defp validate_maximum_delegation_depth(depth)
+       when is_integer(depth) and depth in 1..@hard_maximum_delegation_depth,
+       do: :ok
+
+  defp validate_maximum_delegation_depth(_depth),
+    do: {:error, :invalid_maximum_delegation_depth}
+
+  defp validate_depth(depth, maximum) when depth <= maximum, do: :ok
+  defp validate_depth(_depth, _maximum), do: {:error, :delegation_depth_exceeded}
+
+  defp parent_maximum_delegation_depth(%AgentSpec{
+         lifecycle: %{maximum_delegation_depth: depth}
+       })
+       when is_integer(depth),
+       do: depth
+
+  defp parent_maximum_delegation_depth(_spec), do: @default_maximum_delegation_depth
+
+  defp validate_delegation_shape(
+         %AgentSpec{execution_strategy: %{id: "implement"}},
+         %{id: "implement"}
+       ),
+       do: {:error, :recursive_implementation_delegation}
+
+  defp validate_delegation_shape(_parent_spec, _execution_strategy), do: :ok
+
+  defp constrain_delegation_authority(authority, parent, template, depth, maximum) do
+    if template.execution_strategy.id == "implement" or depth >= maximum do
+      allowed_tools =
+        authority.effective
+        |> effective_tool_names(parent.goal_id)
+        |> Enum.reject(&(&1 in ["delegate_tasks", "spawn_subagent"]))
+
+      with {:ok, effective} <-
+             CapabilityEnvelope.restrict(authority.effective, %{tools: allowed_tools}) do
+        reason =
+          if depth >= maximum,
+            do: "delegation is disabled at the configured maximum depth",
+            else: "delegation tools require an explicit runtime capability lease for this worker"
+
+        {:ok,
+         AgentConstructionPolicy.attenuate(
+           authority,
+           effective,
+           reason
+         )}
+      end
+    else
+      {:ok, authority}
+    end
+  end
+
+  defp effective_tool_names(%CapabilityEnvelope{scopes: %{tools: :all}}, goal_id) do
+    builtin = Enum.map(CapabilityCatalog.tool_schemas(), & &1.name)
+
+    mcp =
+      case MCPRegistry.tool_schemas(goal_id) do
+        schemas when is_list(schemas) -> Enum.map(schemas, & &1.name)
+        _other -> []
+      end
+
+    Enum.uniq(builtin ++ mcp)
+  end
+
+  defp effective_tool_names(%CapabilityEnvelope{scopes: %{tools: tools}}, _goal_id),
+    do: tools
 
   defp parent_depth(%AgentSpec{lifecycle: %{depth: depth}}) when is_integer(depth), do: depth
   defp parent_depth(_spec), do: 0

@@ -150,6 +150,10 @@ defmodule BeamAgent.RuntimeEvent do
     do: :command
 
   defp category(type)
+       when type in ["attachment_imported", "attachment_import_failed", "attachment_deleted"],
+       do: :context
+
+  defp category(type)
        when type in ["tool_called", "tool_result", "tool_loop_stalled", "command_output_delta"],
        do: :tool
 
@@ -172,6 +176,8 @@ defmodule BeamAgent.RuntimeEvent do
               "model_response_checkpoint",
               "model_response_finished",
               "model_response_failed",
+              "model_completion_deferred",
+              "model_completion_rejected",
               "assistant_message",
               "text_delta",
               "tool_call_delta",
@@ -198,6 +204,7 @@ defmodule BeamAgent.RuntimeEvent do
               "tool_approval_requested",
               "tool_approval_granted",
               "tool_approval_cancelled",
+              "tool_approval_orphaned",
               "tool_denied",
               "approval_policy_changed",
               "permission_granted",

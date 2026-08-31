@@ -164,15 +164,18 @@ defmodule BeamAgent.ModelRouter do
         latency_preference: Map.get(input, :latency_preference, :interactive),
         cost_preference: Map.get(input, :cost_preference, :prefer_low),
         privacy_requirement: Map.get(input, :privacy_requirement, :provider_allowed),
+        modalities_required: Map.get(input, :modalities_required, [:text]),
         tools_required: input.tools != []
       })
       |> apply_reasoning_requirement(Map.get(input, :reasoning_requirement))
 
     strategy = Map.get(input, :strategy, :manual)
     candidates = candidates(endpoints, input, strategy)
+    modalities_required = Map.get(input, :modalities_required, [:text])
 
     cond do
-      strategy == :auto and classification.deterministic_answer != nil ->
+      strategy == :auto and classification.deterministic_answer != nil and
+          modalities_required == [:text] ->
         {:ok,
          decision(
            nil,
@@ -186,7 +189,13 @@ defmodule BeamAgent.ModelRouter do
         custom(strategy, candidates, input, classification)
 
       candidates == [] ->
-        select_fallback(strategy, input, classification)
+        case select_fallback(strategy, input, classification) do
+          {:error, _reason} when modalities_required != [:text] ->
+            {:error, {:no_eligible_model_for_modalities, modalities_required}}
+
+          result ->
+            result
+        end
 
       strategy == :manual ->
         select_manual(candidates, input, classification)
@@ -208,6 +217,12 @@ defmodule BeamAgent.ModelRouter do
     end)
     |> Enum.filter(fn endpoint ->
       Map.get(input, :privacy_requirement) != :local or endpoint.claims.privacy == :local
+    end)
+    |> Enum.filter(fn endpoint ->
+      Enum.all?(
+        Map.get(input, :modalities_required, [:text]),
+        &(&1 in endpoint.claims.modalities)
+      )
     end)
     |> Enum.filter(fn endpoint ->
       CapabilityEnvelope.authorize(Map.get(input, :capability_envelope), %{
@@ -451,6 +466,10 @@ defmodule BeamAgent.ModelRouter do
     (strategy != :local_only or endpoint.claims.locality == :local) and
       (locality == :any or endpoint.claims.locality == locality) and
       (privacy != :local or endpoint.claims.privacy == :local) and
+      Enum.all?(
+        Map.get(input, :modalities_required, [:text]),
+        &(&1 in endpoint.claims.modalities)
+      ) and
       CapabilityEnvelope.authorize(Map.get(input, :capability_envelope), %{
         model_classes: model_class(endpoint)
       }) == :ok

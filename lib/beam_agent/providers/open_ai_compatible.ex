@@ -80,8 +80,30 @@ defmodule BeamAgent.Providers.OpenAICompatible do
     end
   end
 
-  defp message(%{role: :user, content: content}) do
-    %{"role" => "user", "content" => content}
+  defp message(%{role: :user, content: content} = message) do
+    attachments = Map.get(message, :attachments, [])
+
+    if attachments == [] do
+      %{"role" => "user", "content" => content}
+    else
+      text =
+        if is_binary(content) and content != "",
+          do: [%{"type" => "text", "text" => content}],
+          else: []
+
+      images =
+        Enum.map(attachments, fn attachment ->
+          %{
+            "type" => "image_url",
+            "image_url" => %{
+              "url" => "data:#{attachment.mime_type};base64,#{attachment.data}",
+              "detail" => "auto"
+            }
+          }
+        end)
+
+      %{"role" => "user", "content" => text ++ images}
+    end
   end
 
   defp message(%{role: :assistant} = message) do

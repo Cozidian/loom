@@ -61,13 +61,16 @@ defmodule BeamAgent.CLI.TUI do
     {:ok, identity} = BeamAgent.Agent.runtime_identity(session_id)
     {:ok, events} = BeamAgent.goal_events(identity.goal_id, view: :internal)
     {:ok, approval_policy} = BeamAgent.approval_policy(session_id)
+    pending_approvals = goal_pending_approvals(identity.goal_id)
 
     initial_payload(session_id, config, %{
       project_id: identity.project_id,
       goal_id: identity.goal_id,
       cursor: event_cursor(events),
       events: events,
-      approval_policy: approval_policy
+      pending_approvals: pending_approvals,
+      approval_policy: approval_policy,
+      attachments: draft_attachments(session_id)
     })
   end
 
@@ -84,9 +87,26 @@ defmodule BeamAgent.CLI.TUI do
       profile: config["profile"],
       model: config["model"] || "built-in",
       approval_mode: approval_mode(bootstrap, config),
+      approvals: json_safe(Map.get(bootstrap, :pending_approvals, [])),
+      attachments: json_safe(Map.get(bootstrap, :attachments, [])),
       entries: history(bootstrap.events),
       context_stats: context_stats(session_id)
     }
+  end
+
+  defp goal_pending_approvals(goal_id) do
+    case BeamAgent.goal_sessions(goal_id) do
+      {:ok, session_ids} ->
+        Enum.flat_map(session_ids, fn session_id ->
+          case BeamAgent.pending_approvals(session_id) do
+            {:ok, approvals} -> approvals
+            {:error, _reason} -> []
+          end
+        end)
+
+      {:error, _reason} ->
+        []
+    end
   end
 
   @doc false
@@ -115,6 +135,21 @@ defmodule BeamAgent.CLI.TUI do
     }
   end
 
+  def notification_payload({:approval_failed, approval_id, reason}) do
+    %{
+      type: "approval_failed",
+      approval_id: approval_id,
+      error: format_error(reason)
+    }
+  end
+
+  def notification_payload({:approvals_reconciled, approvals}) do
+    %{
+      type: "approval_snapshot",
+      approvals: json_safe(approvals)
+    }
+  end
+
   def notification_payload({:notice, tone, message}),
     do: %{type: "notice", tone: to_string(tone), message: message}
 
@@ -123,6 +158,15 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:provider_picker, providers}),
     do: %{type: "provider_picker", providers: json_safe(providers)}
+
+  def notification_payload({:attachment_imported, attachment}),
+    do: %{type: "attachment_imported", attachment: json_safe(attachment)}
+
+  def notification_payload({:attachment_deleted, attachment_id}),
+    do: %{type: "attachment_deleted", attachment_id: attachment_id}
+
+  def notification_payload({:attachment_failed, reason}),
+    do: %{type: "attachment_failed", error: format_error(reason)}
 
   def notification_payload({:tree, payload}),
     do: Map.put(json_safe(payload), :type, "tree")
@@ -145,13 +189,14 @@ defmodule BeamAgent.CLI.TUI do
   def notification_payload({:session_detail, payload}),
     do: Map.put(json_safe(payload), :type, "session_detail")
 
-  def notification_payload({:session_changed, session_id, config}) do
+  def notification_payload({:session_changed, session_id, config, attachments}) do
     %{
       type: "session_changed",
       session_id: session_id,
       provider: config["provider"],
       profile: config["profile"],
-      model: config["model"] || "built-in"
+      model: config["model"] || "built-in",
+      attachments: json_safe(attachments)
     }
   end
 
@@ -166,6 +211,13 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:controller_ready, _controller}), do: nil
   def notification_payload(_message), do: nil
+
+  defp draft_attachments(session_id) do
+    case BeamAgent.draft_attachments(session_id) do
+      {:ok, attachments} -> attachments
+      {:error, _reason} -> []
+    end
+  end
 
   defp bridge_loop(port, controller, monitor) do
     receive do
@@ -200,9 +252,54 @@ defmodule BeamAgent.CLI.TUI do
     end
   end
 
+  defp dispatch_action(
+         %{"type" => "submit", "prompt" => prompt, "attachments" => attachments},
+         controller
+       )
+       when is_binary(prompt) and is_list(attachments) do
+    attachment_ids = Enum.map(attachments, & &1["id"])
+    Controller.submit(controller, prompt, attachment_ids)
+    :ok
+  end
+
   defp dispatch_action(%{"type" => "submit", "prompt" => prompt}, controller)
        when is_binary(prompt) do
-    Controller.submit(controller, prompt)
+    Controller.submit(controller, prompt, [])
+    :ok
+  end
+
+  defp dispatch_action(
+         %{
+           "type" => "attachment_import",
+           "data" => encoded,
+           "mime_type" => mime_type,
+           "name" => name,
+           "provenance" => provenance
+         },
+         controller
+       )
+       when is_binary(encoded) and is_binary(mime_type) and is_binary(name) and
+              is_binary(provenance) do
+    with {:ok, content} <- Base.decode64(encoded) do
+      Controller.import_attachment(controller, %{
+        content: content,
+        mime_type: mime_type,
+        name: name,
+        provenance: provenance
+      })
+
+      :ok
+    else
+      :error -> {:error, :invalid_attachment_encoding}
+    end
+  end
+
+  defp dispatch_action(
+         %{"type" => "attachment_delete", "attachment_id" => attachment_id},
+         controller
+       )
+       when is_binary(attachment_id) do
+    Controller.delete_attachment(controller, attachment_id)
     :ok
   end
 
@@ -334,7 +431,7 @@ defmodule BeamAgent.CLI.TUI do
          %{payload: %{type: "user_message", data: data}, scope: %{root?: true}},
          entries
        ) do
-    entries ++ [%{kind: "user", content: data["content"]}]
+    entries ++ [%{kind: "user", content: user_history_content(data)}]
   end
 
   defp history_event(
@@ -386,6 +483,22 @@ defmodule BeamAgent.CLI.TUI do
       nil -> entries
       content -> entries ++ [%{kind: "info", content: content}]
     end
+  end
+
+  defp user_history_content(data) do
+    prompt = if is_binary(data["content"]), do: data["content"], else: ""
+
+    images =
+      Enum.map(data["attachments"] || [], fn attachment ->
+        name = attachment["name"] || "image"
+        width = attachment["width"] || "?"
+        height = attachment["height"] || "?"
+        "[image: #{name} · #{width}x#{height}]"
+      end)
+
+    [prompt | images]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
   defp info_entry(%{
@@ -444,8 +557,18 @@ defmodule BeamAgent.CLI.TUI do
        }),
        do: "Model response failed · #{short_id(session_id)}"
 
+  defp info_entry(%{payload: %{type: "model_completion_deferred", data: data}}),
+    do:
+      "Agent continuing · #{completion_reason(data["completion_reason"])} · #{data["attempt"]}/#{data["maximum_attempts"]}"
+
+  defp info_entry(%{payload: %{type: "model_completion_rejected", data: data}}),
+    do: "Agent response rejected · #{completion_reason(data["completion_reason"])}"
+
   defp info_entry(%{payload: %{type: "approval_policy_changed", data: data}}),
     do: "Approval policy · #{data["from"]} → #{data["to"]}"
+
+  defp info_entry(%{payload: %{type: "tool_approval_orphaned", data: data}}),
+    do: "Approval stopped · #{short_id(data["approval_id"])} · worker policy restarted"
 
   defp info_entry(%{payload: %{type: "tool_loop_stalled", data: data}}),
     do: "Repeated tool result ×#{data["repetitions"]} · switching to answer-only"
@@ -579,6 +702,11 @@ defmodule BeamAgent.CLI.TUI do
     |> Enum.reject(&(&1 in [nil, ""]))
     |> Enum.join(" · ")
   end
+
+  defp completion_reason("empty_response"), do: "empty model response"
+  defp completion_reason("future_intent"), do: "work was only announced"
+  defp completion_reason("action_not_started"), do: "no successful repository action was taken"
+  defp completion_reason(reason), do: reason || "non-final response"
 
   defp routing_evidence_suffix(%{"evidence" => %{"state" => "ready"} = evidence}),
     do: " · #{evidence["mode"] || "shadow"} prefers #{evidence["recommended_endpoint_id"]}"

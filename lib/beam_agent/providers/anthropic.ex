@@ -13,8 +13,8 @@ defmodule BeamAgent.Providers.Anthropic do
     %{
       name: "anthropic",
       label: "Anthropic Claude",
-      capabilities: [:text_generation, :tool_use, :streaming],
-      modalities: [:text],
+      capabilities: [:text_generation, :tool_use, :streaming, :vision],
+      modalities: [:text, :image],
       locality: :remote,
       privacy: :provider,
       cost_hint: :metered,
@@ -116,8 +116,8 @@ defmodule BeamAgent.Providers.Anthropic do
   defp format_messages(messages) do
     {formatted, _grouping_tools?} =
       Enum.reduce(messages, {[], false}, fn
-        %{role: :user, content: content}, {acc, _grouping} ->
-          {acc ++ [%{"role" => "user", "content" => content}], false}
+        %{role: :user, content: content} = message, {acc, _grouping} ->
+          {acc ++ [%{"role" => "user", "content" => user_blocks(content, message)}], false}
 
         %{role: :assistant} = message, {acc, _grouping} ->
           blocks = assistant_blocks(message)
@@ -132,6 +132,37 @@ defmodule BeamAgent.Providers.Anthropic do
       end)
 
     formatted
+  end
+
+  defp user_blocks(content, message) do
+    attachments = Map.get(message, :attachments, [])
+
+    if attachments == [] do
+      content
+    else
+      attachment_blocks(content, attachments)
+    end
+  end
+
+  defp attachment_blocks(content, attachments) do
+    text =
+      if is_binary(content) and content != "",
+        do: [%{"type" => "text", "text" => content}],
+        else: []
+
+    images =
+      Enum.map(attachments, fn attachment ->
+        %{
+          "type" => "image",
+          "source" => %{
+            "type" => "base64",
+            "media_type" => attachment.mime_type,
+            "data" => attachment.data
+          }
+        }
+      end)
+
+    text ++ images
   end
 
   defp assistant_blocks(message) do

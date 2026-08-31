@@ -23,7 +23,10 @@ defmodule BeamAgent.AgentTemplate do
   @templates %{
     "coordinator" => %{
       role: "Goal coordinator",
-      instructions: ["Decompose only when independent work or expertise justifies it."],
+      instructions: [
+        "Decompose only when independent work or expertise justifies it.",
+        "For implementation requests, perform bounded work with granted tools or delegate it; read-only investigation is not a terminal result."
+      ],
       execution_strategy: "coordinate"
     },
     "researcher" => %{

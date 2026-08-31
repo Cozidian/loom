@@ -304,7 +304,13 @@ defmodule BeamAgent.Session.EventLog do
   end
 
   defp to_message(%{"type" => "user_message", "data" => data}) do
-    [%{role: :user, content: data["content"]}]
+    [
+      %{
+        role: :user,
+        content: data["content"] || "",
+        attachments: data["attachments"] || []
+      }
+    ]
   end
 
   defp to_message(%{"type" => "assistant_message", "data" => data}) do

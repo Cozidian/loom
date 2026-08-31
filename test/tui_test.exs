@@ -83,6 +83,49 @@ defmodule BeamAgent.CLITUITest do
            )
 
     assert is_map(payload.context_stats)
+    assert payload.attachments == []
+  end
+
+  test "initial bridge payload restores durable draft attachments", context do
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+      )
+
+    assert {:ok, attachment} =
+             BeamAgent.import_attachment(context.session_id, %{
+               content: png,
+               provenance: "clipboard"
+             })
+
+    payload = TUI.initial_payload(context.session_id, context.config)
+    assert [%{"id" => id, "mime_type" => "image/png"}] = payload.attachments
+    assert id == attachment.id
+  end
+
+  test "replayed image-only messages render a safe attachment summary", context do
+    png =
+      Base.decode64!(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+      )
+
+    assert {:ok, attachment} =
+             BeamAgent.import_attachment(context.session_id, %{
+               content: png,
+               name: "screen.png",
+               provenance: "clipboard"
+             })
+
+    assert {:ok, _event} =
+             BeamAgent.Session.EventLog.append(context.session_id, :user_message, %{
+               "content" => "",
+               "attachments" => [attachment]
+             })
+
+    payload = TUI.initial_payload(context.session_id, context.config)
+    user = Enum.find(payload.entries, &(&1.kind == "user"))
+    assert user.content == "[image: screen.png · 1x1]"
+    assert payload.attachments == []
   end
 
   test "bridge notifications are JSON-safe and preserve approval semantics", context do
@@ -136,6 +179,43 @@ defmodule BeamAgent.CLITUITest do
              approval_id: "approval-1",
              decision: "deny"
            }
+
+    assert TUI.notification_payload({:approval_failed, "approval-1", :unknown_approval}) == %{
+             type: "approval_failed",
+             approval_id: "approval-1",
+             error: ":unknown_approval"
+           }
+
+    assert TUI.notification_payload({:approvals_reconciled, [request]}) == %{
+             type: "approval_snapshot",
+             approvals: [
+               %{
+                 "access" => "execute",
+                 "approval_id" => "approval-1",
+                 "arguments" => %{"command" => "mix test"},
+                 "session_id" => context.session_id,
+                 "tool" => "run_command"
+               }
+             ]
+           }
+  end
+
+  test "initial history explains why a non-final model response was continued", context do
+    {:ok, _event} =
+      BeamAgent.Session.EventLog.append(context.session_id, :model_completion_deferred, %{
+        "turn" => 1,
+        "step" => 1,
+        "completion_reason" => "future_intent",
+        "attempt" => 1,
+        "maximum_attempts" => 2
+      })
+
+    payload = TUI.initial_payload(context.session_id, context.config)
+
+    assert Enum.any?(
+             payload.entries,
+             &(&1.content == "Agent continuing · work was only announced · 1/2")
+           )
   end
 
   test "controller completes a real echo turn through the generic client bridge", context do
@@ -224,7 +304,7 @@ defmodule BeamAgent.CLITUITest do
     assert refresh_message =~ "Checking 1 model endpoints"
 
     Controller.command(controller, :connect)
-    assert_receive {:beam_agent_tui, {:provider_picker, providers}}
+    assert_receive {:beam_agent_tui, {:provider_picker, providers}}, 1_000
     assert [%{profile: "echo", provider: "echo", connected: true, active: true}] = providers
 
     Controller.command(controller, {:connect, "chatgpt"})
@@ -295,7 +375,7 @@ defmodule BeamAgent.CLITUITest do
     assert_receive {:beam_agent_tui, {:context_stats, _stats}}
 
     Controller.command(controller, {:resume, other_session_id})
-    assert_receive {:beam_agent_tui, {:session_changed, ^other_session_id, _config}}
+    assert_receive {:beam_agent_tui, {:session_changed, ^other_session_id, _config, _attachments}}
 
     collect_until_message(fn
       {:stream,
@@ -380,7 +460,7 @@ defmodule BeamAgent.CLITUITest do
                        "provider" => "openai",
                        "profile" => "openai-chatgpt",
                        "model" => "gpt-5.4"
-                     }}}
+                     }, _attachments}}
 
     assert new_session_id != context.session_id
     assert {:ok, config} = Config.load(context.config_path)
@@ -408,7 +488,7 @@ defmodule BeamAgent.CLITUITest do
         })
       )
 
-      assert {:ok, _answer} = BeamAgent.ask(context.session_id, "implement something")
+      assert {:ok, _answer} = BeamAgent.ask(context.session_id, "hello")
 
       {:ok, controller} =
         Controller.start_link(

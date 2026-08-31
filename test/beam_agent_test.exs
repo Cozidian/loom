@@ -70,6 +70,160 @@ defmodule BeamAgentTest do
     end
   end
 
+  defmodule ProgressThenWorkingProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :progress_then_working_test
+
+    @impl true
+    def complete(messages, _tools, options) do
+      if pid = options[:test_pid],
+        do: send(pid, {:progress_system_prompt, options[:system_prompt]})
+
+      case Enum.count(messages, &(&1.role == :assistant)) do
+        0 ->
+          {:ok,
+           %{
+             content: "I'll start by locating the implementation before changing anything.",
+             tool_calls: []
+           }}
+
+        1 ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "recovery-create",
+                 name: "create_file",
+                 arguments: %{
+                   "path" => "completion-guard.txt",
+                   "content" => "implemented"
+                 }
+               }
+             ]
+           }}
+
+        _ ->
+          {:ok, %{content: "Implemented and verified the requested change.", tool_calls: []}}
+      end
+    end
+  end
+
+  defmodule EmptyThenAnswerProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :empty_then_answer_test
+
+    @impl true
+    def complete(messages, _tools, _options) do
+      if Enum.any?(messages, &(&1.role == :assistant)) do
+        {:ok, %{content: "Recovered after the empty response.", tool_calls: []}}
+      else
+        {:ok, %{content: nil, tool_calls: []}}
+      end
+    end
+  end
+
+  defmodule AlwaysEmptyProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :always_empty_test
+
+    @impl true
+    def complete(_messages, _tools, _options), do: {:ok, %{content: nil, tool_calls: []}}
+  end
+
+  defmodule ClaimsWorkWithoutToolsProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :claims_work_without_tools_test
+
+    @impl true
+    def complete(_messages, _tools, options) do
+      if pid = options[:test_pid],
+        do: send(pid, {:claims_system_prompt, options[:system_prompt]})
+
+      {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+    end
+  end
+
+  defmodule DirectWorkerClaimsProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :direct_worker_claims_test
+
+    @impl true
+    def complete(_messages, _tools, options) do
+      send(options[:test_pid], {:direct_worker_system_prompt, options[:system_prompt]})
+      {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+    end
+  end
+
+  defmodule ReadOnlyBlockerProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :read_only_blocker_test
+
+    @impl true
+    def complete(_messages, _tools, options) do
+      send(options[:test_pid], {:read_only_system_prompt, options[:system_prompt]})
+
+      {:ok,
+       %{
+         content: "Blocked: this worker has no source-write or delegation capability.",
+         tool_calls: []
+       }}
+    end
+  end
+
+  defmodule ExecuteOnlyTool do
+    @behaviour BeamAgent.Tool
+
+    @impl true
+    def name, do: "execute_only_test_tool"
+
+    @impl true
+    def description, do: "Exercise execution-only completion semantics."
+
+    @impl true
+    def input_schema, do: %{type: "object", properties: %{}}
+
+    @impl true
+    def access, do: :execute
+
+    @impl true
+    def execute(_arguments, _context), do: {:ok, "executed"}
+  end
+
+  defmodule ExecuteThenClaimsProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :execute_then_claims_test
+
+    @impl true
+    def complete(messages, _tools, _options) do
+      if Enum.any?(messages, &(&1.role == :tool)) do
+        {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+      else
+        {:ok,
+         %{
+           content: nil,
+           tool_calls: [
+             %{id: "execute-only-call", name: "execute_only_test_tool", arguments: %{}}
+           ]
+         }}
+      end
+    end
+  end
+
   defp data_dir do
     path = Path.join(System.tmp_dir!(), "beam-agent-test-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf(path) end)
@@ -136,6 +290,197 @@ defmodule BeamAgentTest do
     assert Enum.any?(events, &(&1["type"] == "turn_finished"))
 
     assert Enum.any?(events, fn event ->
+             event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
+           end)
+  end
+
+  test "future-intent responses continue the same implementation turn instead of completing" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(ProgressThenWorkingProvider)
+    root = data_dir()
+    File.mkdir_p!(root)
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: root,
+        workspace_root: root,
+        provider: :progress_then_working_test,
+        provider_options: [test_pid: self()],
+        approval_policy: :auto
+      )
+
+    assert {:ok, "Implemented and verified the requested change."} =
+             BeamAgent.ask(id, "implement the requested feature")
+
+    assert {:ok, events} = BeamAgent.events(id)
+
+    assert %{"data" => %{"completion_reason" => "future_intent", "attempt" => 1}} =
+             Enum.find(events, &(&1["type"] == "model_completion_deferred"))
+
+    assert_receive {:progress_system_prompt, initial_prompt}
+    assert initial_prompt =~ "# Current turn execution contract"
+    assert initial_prompt =~ "Task type: implementation"
+    assert initial_prompt =~ "create_file"
+
+    assert_receive {:progress_system_prompt, recovery_prompt}
+    assert recovery_prompt =~ "described future work instead of performing"
+    assert recovery_prompt =~ "Never claim a step completed"
+
+    assert Enum.count(events, &(&1["type"] == "tool_called")) == 1
+    assert Enum.count(events, &(&1["type"] == "turn_finished")) == 1
+    assert File.read!(Path.join(root, "completion-guard.txt")) == "implemented"
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "step_finished" and
+               event["data"]["reason"] == "non_final_response"
+           end)
+  end
+
+  test "an empty provider response is retried before the turn can complete" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(EmptyThenAnswerProvider)
+    {:ok, id} = BeamAgent.start_session(data_dir: data_dir(), provider: :empty_then_answer_test)
+
+    assert {:ok, "Recovered after the empty response."} = BeamAgent.ask(id, "hello")
+    assert {:ok, events} = BeamAgent.events(id)
+
+    assert %{"data" => %{"completion_reason" => "empty_response", "attempt" => 1}} =
+             Enum.find(events, &(&1["type"] == "model_completion_deferred"))
+
+    assert Enum.count(events, &(&1["type"] == "turn_finished")) == 1
+  end
+
+  test "repeated empty responses fail rather than recording false completion" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(AlwaysEmptyProvider)
+    {:ok, id} = BeamAgent.start_session(data_dir: data_dir(), provider: :always_empty_test)
+
+    assert {:error, {:non_final_model_response, :empty_response, 2}} =
+             BeamAgent.ask(id, "hello")
+
+    assert {:ok, events} = BeamAgent.events(id)
+    assert Enum.count(events, &(&1["type"] == "model_completion_deferred")) == 2
+    assert Enum.count(events, &(&1["type"] == "model_completion_rejected")) == 1
+
+    refute Enum.any?(events, fn event ->
+             event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
+           end)
+  end
+
+  test "implementation claims without a successful action tool cannot complete" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(ClaimsWorkWithoutToolsProvider)
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :claims_work_without_tools_test,
+        provider_options: [test_pid: self()]
+      )
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(id, "implement the requested feature")
+
+    assert {:ok, events} = BeamAgent.events(id)
+
+    assert Enum.count(events, fn event ->
+             event["type"] == "model_completion_deferred" and
+               event["data"]["completion_reason"] == "action_not_started"
+           end) == 2
+
+    assert_receive {:claims_system_prompt, _initial_prompt}
+    assert_receive {:claims_system_prompt, recovery_prompt}
+    assert recovery_prompt =~ "Read-only investigation has already been recorded"
+    assert recovery_prompt =~ "Your next response must invoke one of these tools"
+    assert recovery_prompt =~ "create_file"
+    assert recovery_prompt =~ "Do not perform another read-only round"
+
+    refute Enum.any?(events, fn event ->
+             event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
+           end)
+  end
+
+  test "implementation workers receive a direct-work completion contract" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(DirectWorkerClaimsProvider)
+
+    {:ok, root_id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :direct_worker_claims_test,
+        provider_options: [test_pid: self()]
+      )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(root_id,
+               agent_proposal: %{
+                 goal: "Implement the requested bounded change",
+                 template: "implementer"
+               }
+             )
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(child_id, "implement the requested bounded change")
+
+    assert_receive {:direct_worker_system_prompt, direct_prompt}
+    assert direct_prompt =~ "This is a bounded implementation worker"
+    assert direct_prompt =~ "Perform the delegated change directly"
+    assert direct_prompt =~ "Delegation and read-only investigation"
+    assert direct_prompt =~ "source-write tool"
+    refute direct_prompt =~ "spawn_subagent"
+    refute direct_prompt =~ "delegate_tasks"
+  end
+
+  test "read-only workers can report an honest implementation blocker" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(ReadOnlyBlockerProvider)
+
+    capabilities = %{
+      tools: ["read_file", "search_files"],
+      paths: :all,
+      commands: [],
+      hosts: [],
+      mcp_servers: [],
+      model_classes: :all
+    }
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :read_only_blocker_test,
+        provider_options: [test_pid: self()],
+        capabilities: capabilities
+      )
+
+    assert {:ok, "Blocked: this worker has no source-write or delegation capability."} =
+             BeamAgent.ask(id, "implement the requested feature")
+
+    assert_receive {:read_only_system_prompt, system_prompt}
+    assert system_prompt =~ "This worker has no"
+    assert system_prompt =~ "must not claim that implementation occurred"
+
+    assert {:ok, events} = BeamAgent.events(id)
+    refute Enum.any?(events, &(&1["type"] == "model_completion_deferred"))
+  end
+
+  test "execution-only tools do not prove that implementation occurred" do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(ExecuteThenClaimsProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_tool(ExecuteOnlyTool)
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :execute_then_claims_test,
+        approval_policy: :auto
+      )
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(id, "implement the requested feature")
+
+    assert {:ok, events} = BeamAgent.events(id)
+    assert Enum.count(events, &(&1["type"] == "tool_called")) == 1
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "tool_result" and
+               event["data"]["name"] == "execute_only_test_tool" and
+               event["data"]["is_error"] == false
+           end)
+
+    refute Enum.any?(events, fn event ->
              event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
            end)
   end

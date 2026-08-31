@@ -90,14 +90,44 @@ defmodule BeamAgent.ProvidersTest do
           )
 
         :text ->
-          send(
+          emit_agent_text(client, state.owner, "hello")
+          complete_turn(client, state.owner)
+
+        :streaming_text ->
+          emit_agent_text(client, state.owner, "hello", ["he", "llo"])
+          complete_turn(client, state.owner)
+
+        :serialized_tool ->
+          emit_agent_text(
+            client,
             state.owner,
-            {:codex_app_server, client,
-             {:notification,
-              %{
-                "method" => "item/completed",
-                "params" => %{"item" => %{"type" => "agentMessage", "text" => "hello"}}
-              }}}
+            "ASSISTANT\n\n" <>
+              JSON.encode!(%{
+                "content" => nil,
+                "tool_calls" => [
+                  %{
+                    "id" => "serialized-call",
+                    "name" => "add",
+                    "arguments" => %{"a" => 2, "b" => 3}
+                  }
+                ]
+              }),
+            ["ASSI", "STANT\n", "\n{", "\"content\":null,"]
+          )
+
+          complete_turn(client, state.owner)
+
+        :serialized_disallowed_tool ->
+          emit_agent_text(
+            client,
+            state.owner,
+            "ASSISTANT\n" <>
+              JSON.encode!(%{
+                "content" => nil,
+                "tool_calls" => [
+                  %{"id" => "bad-call", "name" => "run_command", "arguments" => %{}}
+                ]
+              })
           )
 
           complete_turn(client, state.owner)
@@ -128,6 +158,27 @@ defmodule BeamAgent.ProvidersTest do
           }}}
       )
     end
+
+    defp emit_agent_text(client, owner, text, deltas \\ []) do
+      Enum.each(deltas, fn delta ->
+        send(
+          owner,
+          {:codex_app_server, client,
+           {:notification,
+            %{"method" => "item/agentMessage/delta", "params" => %{"delta" => delta}}}}
+        )
+      end)
+
+      send(
+        owner,
+        {:codex_app_server, client,
+         {:notification,
+          %{
+            "method" => "item/completed",
+            "params" => %{"item" => %{"type" => "agentMessage", "text" => text}}
+          }}}
+      )
+    end
   end
 
   @tools [
@@ -141,6 +192,13 @@ defmodule BeamAgent.ProvidersTest do
       }
     }
   ]
+
+  @image_attachment %{
+    id: "attachment-test",
+    mime_type: "image/png",
+    data: "iVBORw0KGgo=",
+    path: "/tmp/beam-agent-test-image.png"
+  }
 
   test "OpenAI serializes Chat Completions history and parses function calls" do
     response = %{
@@ -202,6 +260,72 @@ defmodule BeamAgent.ProvidersTest do
     assert get_in(hd(body["tools"]), ["function", "name"]) == "add"
   end
 
+  test "vision-capable transports serialize hydrated image attachments natively" do
+    openai_response = %{
+      "choices" => [%{"message" => %{"content" => "I see it", "tool_calls" => []}}]
+    }
+
+    messages = [%{role: :user, content: "describe", attachments: [@image_attachment]}]
+
+    assert {:ok, %{content: "I see it"}} =
+             OpenAI.complete(messages, [],
+               model: "test-model",
+               base_url: "https://openai.example/v1",
+               api_key: "secret",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: openai_response
+             )
+
+    assert_receive {:http_post, _url, _headers, openai_body}
+
+    assert [text, image] = hd(openai_body["messages"])["content"]
+    assert text == %{"type" => "text", "text" => "describe"}
+    assert image["type"] == "image_url"
+    assert get_in(image, ["image_url", "url"]) == "data:image/png;base64,iVBORw0KGgo="
+
+    anthropic_response = %{
+      "stop_reason" => "end_turn",
+      "content" => [%{"type" => "text", "text" => "I see it"}]
+    }
+
+    assert {:ok, %{content: "I see it"}} =
+             Anthropic.complete(messages, [],
+               model: "claude-test",
+               base_url: "https://anthropic.example",
+               api_key: "secret",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: anthropic_response
+             )
+
+    assert_receive {:http_post, _url, _headers, anthropic_body}
+    assert [text, image] = hd(anthropic_body["messages"])["content"]
+    assert text == %{"type" => "text", "text" => "describe"}
+    assert image["type"] == "image"
+    assert get_in(image, ["source", "media_type"]) == "image/png"
+    assert get_in(image, ["source", "data"]) == "iVBORw0KGgo="
+  end
+
+  test "ChatGPT-plan transport passes attachments as native local images" do
+    messages = [%{role: :user, content: "describe", attachments: [@image_attachment]}]
+
+    assert {:ok, %{content: "hello", tool_calls: []}} =
+             OpenAI.complete(messages, [],
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :text]
+             )
+
+    assert_receive {:codex_turn_started, %{"input" => input}}
+
+    assert Enum.any?(input, fn
+             %{"type" => "localImage", "path" => "/tmp/beam-agent-test-image.png"} -> true
+             _item -> false
+           end)
+  end
+
   test "OpenAI ChatGPT-plan transport exposes only BeamAgent tools and returns host calls" do
     assert {:ok, %{content: nil, tool_calls: [call]}} =
              OpenAI.complete([%{role: :user, content: "calculate"}], @tools,
@@ -217,6 +341,11 @@ defmodule BeamAgent.ProvidersTest do
     assert thread["approvalPolicy"] == "never"
     assert thread["sandbox"] == "read-only"
     assert Enum.map(thread["dynamicTools"], & &1["name"]) == ["add"]
+    assert thread["baseInstructions"] =~ "host-provided dynamic tools whenever"
+    assert thread["baseInstructions"] =~ "The presence of a dynamic tool means you are allowed"
+    assert thread["baseInstructions"] =~ "path arguments workspace-relative"
+    assert thread["baseInstructions"] =~ "do not inspect Codex configuration or memory"
+    refute thread["baseInstructions"] =~ "Never inspect the filesystem"
 
     assert_receive {:codex_tool_response, response}
     assert response["success"] == true
@@ -231,6 +360,102 @@ defmodule BeamAgent.ProvidersTest do
                codex_client: CodexClientStub,
                codex_client_options: [test_pid: self(), mode: :text]
              )
+  end
+
+  test "OpenAI ChatGPT-plan transport keeps streaming ordinary text" do
+    emit = fn event -> send(self(), {:codex_delta, event}) end
+
+    assert {:ok, %{content: "hello", tool_calls: []}} =
+             OpenAI.stream(
+               [%{role: :user, content: "say hello"}],
+               [],
+               [
+                 model: "gpt-test",
+                 auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+                 codex_client: CodexClientStub,
+                 codex_client_options: [test_pid: self(), mode: :streaming_text]
+               ],
+               emit
+             )
+
+    assert_receive {:codex_delta, {:text_delta, "he"}}
+    assert_receive {:codex_delta, {:text_delta, "llo"}}
+  end
+
+  test "OpenAI ChatGPT-plan transport recovers an exact serialized tool envelope" do
+    emit = fn event -> send(self(), {:codex_delta, event}) end
+
+    assert {:ok, %{content: nil, tool_calls: [call]}} =
+             OpenAI.stream(
+               [%{role: :user, content: "calculate"}],
+               @tools,
+               [
+                 model: "gpt-test",
+                 auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+                 codex_client: CodexClientStub,
+                 codex_client_options: [test_pid: self(), mode: :serialized_tool]
+               ],
+               emit
+             )
+
+    assert call == %{
+             id: "serialized-call",
+             name: "add",
+             arguments: %{"a" => 2, "b" => 3}
+           }
+
+    assert_receive {:codex_delta,
+                    {:tool_call_delta,
+                     %{
+                       "id" => "serialized-call",
+                       "function" => %{"name" => "add"}
+                     }}}
+
+    refute_receive {:codex_delta, {:text_delta, _text}}
+  end
+
+  test "OpenAI ChatGPT-plan transport never promotes an unadvertised serialized tool" do
+    assert {:error, {:invalid_codex_serialized_tool_envelope, {:tool_not_allowed, "run_command"}}} =
+             OpenAI.complete([%{role: :user, content: "calculate"}], @tools,
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :serialized_disallowed_tool]
+             )
+  end
+
+  test "OpenAI ChatGPT-plan transcript separates history from native tool protocol" do
+    messages = [
+      %{role: :user, content: "calculate <carefully>"},
+      %{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%{id: "prior-call", name: "add", arguments: %{"a" => 1, "b" => 1}}]
+      },
+      %{
+        role: :tool,
+        tool_call_id: "prior-call",
+        name: "add",
+        content: "2",
+        is_error: false
+      }
+    ]
+
+    assert {:ok, %{content: "hello", tool_calls: []}} =
+             OpenAI.complete(messages, @tools,
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :text]
+             )
+
+    assert_receive {:codex_turn_started, %{"input" => [%{"text" => transcript}]}}
+    assert transcript =~ "<beam-agent-conversation>"
+    assert transcript =~ "<message role=\"assistant\">"
+    assert transcript =~ "<tool-request id=\"prior-call\" name=\"add\">"
+    assert transcript =~ "calculate &lt;carefully&gt;"
+    refute transcript =~ ~s("tool_calls")
+    refute transcript =~ "ASSISTANT\n"
   end
 
   test "xAI uses the compatible tool protocol with its own defaults" do
@@ -376,6 +601,18 @@ defmodule BeamAgent.ProvidersTest do
                test_pid: self(),
                stub_status: 400,
                stub_response: response
+             )
+  end
+
+  test "provider HTTP errors may contain a string error without crashing" do
+    assert {:error, {:provider_http_error, 400, "model does not support images"}} =
+             Ollama.complete([%{role: :user, content: "hi"}], [],
+               model: "qwen3:8b",
+               base_url: "http://ollama.example",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_status: 400,
+               stub_response: %{"error" => "model does not support images"}
              )
   end
 

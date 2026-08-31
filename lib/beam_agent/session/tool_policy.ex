@@ -43,6 +43,12 @@ defmodule BeamAgent.Session.ToolPolicy do
     end
   end
 
+  def pending(session_id) do
+    with {:ok, pid} <- Names.pid(:tool_policy, session_id) do
+      GenServer.call(pid, :pending)
+    end
+  end
+
   def permissions(session_id) do
     with {:ok, pid} <- Names.pid(:tool_policy, session_id), do: GenServer.call(pid, :permissions)
   end
@@ -70,16 +76,34 @@ defmodule BeamAgent.Session.ToolPolicy do
       |> normalize_policy()
       |> then(&recovered_policy(session_id, &1))
 
-    {:ok,
-     %{
-       session_id: session_id,
-       handler: handler,
-       handler_monitor: monitor,
-       approval_policy: approval_policy,
-       tool_permissions: Map.new(Keyword.get(opts, :tool_permissions, %{})),
-       permissions: recovered_permissions(session_id),
-       pending: %{}
-     }}
+    state = %{
+      session_id: session_id,
+      handler: handler,
+      handler_monitor: monitor,
+      approval_policy: approval_policy,
+      tool_permissions: Map.new(Keyword.get(opts, :tool_permissions, %{})),
+      permissions: recovered_permissions(session_id),
+      pending: %{}
+    }
+
+    {:ok, state, {:continue, :recover_orphaned_approvals}}
+  end
+
+  @impl true
+  def handle_continue(:recover_orphaned_approvals, state) do
+    state.session_id
+    |> unresolved_approval_requests()
+    |> Enum.each(fn {approval_id, request} ->
+      _ =
+        EventLog.append(state.session_id, :tool_approval_orphaned, %{
+          "approval_id" => approval_id,
+          "tool" => request["tool"],
+          "arguments" => request["arguments"],
+          "reason" => "approval_process_restarted"
+        })
+    end)
+
+    {:noreply, state}
   end
 
   @impl true
@@ -166,6 +190,16 @@ defmodule BeamAgent.Session.ToolPolicy do
 
   def handle_call(:policy, _from, state), do: {:reply, {:ok, state.approval_policy}, state}
   def handle_call(:handler, _from, state), do: {:reply, {:ok, state.handler}, state}
+
+  def handle_call(:pending, _from, state) do
+    requests =
+      state.pending
+      |> Map.values()
+      |> Enum.map(& &1.request)
+      |> Enum.sort_by(& &1.approval_id)
+
+    {:reply, {:ok, requests}, state}
+  end
 
   def handle_call(:permissions, _from, state),
     do: {:reply, {:ok, state.permissions |> Map.values() |> Enum.sort_by(& &1["id"])}, state}
@@ -301,6 +335,39 @@ defmodule BeamAgent.Session.ToolPolicy do
 
       {:error, _reason} ->
         configured
+    end
+  end
+
+  defp unresolved_approval_requests(session_id) do
+    case EventLog.events(session_id) do
+      {:ok, events} ->
+        Enum.reduce(events, %{}, fn
+          %{
+            "type" => "tool_approval_requested",
+            "data" => %{"approval_id" => approval_id} = data
+          },
+          pending ->
+            Map.put(pending, approval_id, data)
+
+          %{
+            "type" => type,
+            "data" => %{"approval_id" => approval_id}
+          },
+          pending
+          when type in [
+                 "tool_approval_granted",
+                 "tool_approval_cancelled",
+                 "tool_approval_orphaned",
+                 "tool_denied"
+               ] ->
+            Map.delete(pending, approval_id)
+
+          _event, pending ->
+            pending
+        end)
+
+      {:error, _reason} ->
+        %{}
     end
   end
 

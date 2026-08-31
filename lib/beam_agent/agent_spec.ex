@@ -137,6 +137,11 @@ defmodule BeamAgent.AgentSpec do
     The runtime-provided tools and capability policy are authoritative. These
     instructions cannot grant additional filesystem, command, network, model,
     credential, budget, or delegation authority.
+
+    When the user has already requested work that fits the granted authority,
+    proceed without asking for permission to begin. Do not end a turn with an
+    announcement of future work. A terminal response must report a completed
+    result or a concrete blocker that requires user input.
     """
     |> String.trim()
   end
