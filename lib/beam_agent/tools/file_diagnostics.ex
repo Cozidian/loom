@@ -46,9 +46,9 @@ defmodule BeamAgent.Tools.FileDiagnostics do
           [
             %{
               severity: "error",
-              line: location[:line],
-              column: location[:column],
-              message: IO.iodata_to_binary([message, token])
+              line: location_value(location, :line),
+              column: location_value(location, :column),
+              message: diagnostic_message(message, token)
             }
           ]
       end
@@ -58,4 +58,27 @@ defmodule BeamAgent.Tools.FileDiagnostics do
   rescue
     error -> [%{severity: "error", line: nil, column: nil, message: Exception.message(error)}]
   end
+
+  defp location_value(location, key) when is_list(location), do: location[key]
+  defp location_value(location, :line) when is_integer(location), do: location
+  defp location_value(_location, _key), do: nil
+
+  defp diagnostic_message(message, token) do
+    [safe_text(message), safe_text(token)]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("")
+  end
+
+  defp safe_text(value) when is_binary(value), do: value
+
+  defp safe_text(value) when is_list(value) do
+    try do
+      IO.chardata_to_string(value)
+    rescue
+      _error -> inspect(value)
+    end
+  end
+
+  defp safe_text(nil), do: ""
+  defp safe_text(value), do: inspect(value)
 end

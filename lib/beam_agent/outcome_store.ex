@@ -205,7 +205,11 @@ defmodule BeamAgent.OutcomeStore do
     end
   end
 
-  defp append(path, entry), do: File.write(path, [JSON.encode!(entry), "\n"], [:append, :binary])
+  defp append(path, entry) do
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      File.write(path, [JSON.encode!(entry), "\n"], [:append, :binary])
+    end
+  end
 
   defp enforce_retention(%{retention: retention, records: records} = state)
        when map_size(records) > retention do
@@ -217,6 +221,7 @@ defmodule BeamAgent.OutcomeStore do
         [JSON.encode!(%{"type" => "outcome_recorded", "record" => stringify(record)}), "\n"]
       end)
 
+    :ok = File.mkdir_p(Path.dirname(state.path))
     :ok = File.write(state.path, lines, [:binary])
     %{state | records: Map.new(kept, &{&1.id, &1})}
   end

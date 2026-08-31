@@ -3,6 +3,70 @@ defmodule BeamAgent.VerificationTest do
 
   alias BeamAgent.VerificationPlan
 
+  defmodule RecoveryAndReviewProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :verification_recovery_and_review_test
+
+    @impl true
+    def complete(messages, _tools, options) do
+      system_prompt = options[:system_prompt] || ""
+      last = List.last(messages)
+
+      cond do
+        String.contains?(system_prompt, "Role: Mandatory completion reviewer") ->
+          send(options[:test_pid], :mandatory_reviewer_ran)
+          {:ok, %{content: "REVIEW_PASS\nThe diff satisfies the request.", tool_calls: []}}
+
+        last && last.role == :user &&
+            String.contains?(last.content || "", "Required verification rejected") ->
+          send(options[:test_pid], {:verification_feedback_seen, last.content})
+
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "write-fixed",
+                 name: "create_file",
+                 arguments: %{"path" => "fixed.txt", "content" => "fixed\n"}
+               }
+             ]
+           }}
+
+        last && last.role == :tool && last.name == "create_file" ->
+          answer =
+            if Enum.any?(messages, fn message ->
+                 message.role == :tool && message.name == "create_file" &&
+                   String.contains?(message.content || "", "fixed.txt")
+               end),
+               do: "Implementation repaired and ready.",
+               else: "Initial completion candidate."
+
+          {:ok, %{content: answer, tool_calls: []}}
+
+        true ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "write-incomplete",
+                 name: "create_file",
+                 arguments: %{"path" => "incomplete.txt", "content" => "incomplete\n"}
+               }
+             ]
+           }}
+      end
+    end
+  end
+
+  setup_all do
+    :ok = BeamAgent.CapabilityCatalog.register_provider(RecoveryAndReviewProvider)
+    :ok
+  end
+
   setup do
     root =
       Path.join(
@@ -187,6 +251,71 @@ defmodule BeamAgent.VerificationTest do
       report = Enum.find(events, &(&1["type"] == "completion_report_generated"))
       assert report["data"]["status"] == "verified"
       assert report["data"]["evidence_count"] == 1
+    end
+  end
+
+  @tag :darwin
+  test "failed verification resumes implementation and mandatory review gates completion",
+       context do
+    if :os.type() != {:unix, :darwin} do
+      :ok
+    else
+      config_dir = Path.join(context.workspace, ".beam_agent")
+      File.mkdir_p!(config_dir)
+
+      File.write!(
+        Path.join(config_dir, "verification.json"),
+        JSON.encode!(%{
+          version: 1,
+          checks: [%{id: "required-file", command: "test -f fixed.txt", timeout_ms: 5_000}]
+        })
+      )
+
+      assert {:ok, session_id} =
+               BeamAgent.start_session(
+                 data_dir: context.data_dir,
+                 workspace_root: context.workspace,
+                 provider: :verification_recovery_and_review_test,
+                 provider_options: [test_pid: self()],
+                 approval_policy: :auto
+               )
+
+      assert {:ok, "Implementation repaired and ready."} =
+               BeamAgent.ask(session_id, "implement the required file change")
+
+      assert_receive {:verification_feedback_seen, feedback}
+      assert feedback =~ "required-file"
+      assert_receive :mandatory_reviewer_ran
+      assert File.exists?(Path.join(context.workspace, "fixed.txt"))
+
+      {:ok, events} = BeamAgent.events(session_id)
+      types = Enum.map(events, & &1["type"])
+
+      assert Enum.count(types, &(&1 == "verification_started")) == 2
+      assert "verification_recovery_started" in types
+      assert "implementation_review_started" in types
+      assert "implementation_review_finished" in types
+      assert "verification_attached" in types
+
+      turn_finished_index = Enum.find_index(types, &(&1 == "turn_finished"))
+      task_outcome_index = Enum.find_index(types, &(&1 == "task_outcome_recorded"))
+
+      second_verification_index =
+        types
+        |> Enum.with_index()
+        |> Enum.filter(&(elem(&1, 0) == "verification_finished"))
+        |> List.last()
+        |> elem(1)
+
+      review_index = Enum.find_index(types, &(&1 == "implementation_review_finished"))
+
+      assert second_verification_index < review_index
+      assert review_index < turn_finished_index
+      assert turn_finished_index < task_outcome_index
+
+      task_event = Enum.at(events, task_outcome_index)
+      assert task_event["data"]["status"] == "succeeded"
+      assert task_event["data"]["verification"]["status"] == "passed"
     end
   end
 end

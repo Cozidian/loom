@@ -506,7 +506,8 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
                  tool_context
                )
 
-      assert JSON.decode!(temp_result)["output"] == "/private/tmp"
+      assert JSON.decode!(temp_result)["output"] ==
+               BeamAgent.Sandbox.temporary_root(context.workspace)
     end
   end
 end

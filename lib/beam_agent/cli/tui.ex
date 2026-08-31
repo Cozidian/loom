@@ -89,10 +89,28 @@ defmodule BeamAgent.CLI.TUI do
       approval_mode: approval_mode(bootstrap, config),
       approvals: json_safe(Map.get(bootstrap, :pending_approvals, [])),
       attachments: json_safe(Map.get(bootstrap, :attachments, [])),
+      workspace_files: repository_files(bootstrap.project_id),
       entries: history(bootstrap.events),
       context_stats: context_stats(session_id)
     }
   end
+
+  defp repository_files(project_id) do
+    case BeamAgent.repository(project_id) do
+      {:ok, %{file_count: 0}} -> refresh_repository_files(project_id)
+      {:ok, %{files: files}} when is_map(files) -> sorted_file_paths(files)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp refresh_repository_files(project_id) do
+    case BeamAgent.refresh_repository(project_id) do
+      {:ok, %{files: files}} when is_map(files) -> sorted_file_paths(files)
+      {:error, _reason} -> []
+    end
+  end
+
+  defp sorted_file_paths(files), do: files |> Map.keys() |> Enum.sort()
 
   defp goal_pending_approvals(goal_id) do
     case BeamAgent.goal_sessions(goal_id) do
@@ -598,6 +616,21 @@ defmodule BeamAgent.CLI.TUI do
 
   defp info_entry(%{payload: %{type: "verification_cancelled"}}),
     do: "Verification cancelled"
+
+  defp info_entry(%{payload: %{type: "verification_recovery_started", data: data}}),
+    do:
+      "Verification rejected candidate · repairing · #{data["attempt"]}/#{data["maximum_attempts"]}"
+
+  defp info_entry(%{payload: %{type: "implementation_review_started"}}),
+    do: "Independent implementation review started"
+
+  defp info_entry(%{payload: %{type: "implementation_review_finished", data: data}}),
+    do: "Independent review · #{data["status"]}"
+
+  defp info_entry(%{
+         payload: %{type: "implementation_review_recovery_started", data: data}
+       }),
+       do: "Review requested fixes · repairing · #{data["attempt"]}/#{data["maximum_attempts"]}"
 
   defp info_entry(%{payload: %{type: "completion_report_generated", data: data}}),
     do: "Completion · #{data["status"]} · #{data["evidence_count"] || 0} evidence items"

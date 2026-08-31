@@ -8,10 +8,10 @@ defmodule BeamAgent.RuntimeEventView do
   """
 
   @safe_scalar_keys MapSet.new(~w(
-    access agent_role agent_spec_id allocation_id approval_id attempt attempts authority authority_decision_id authority_disposition budget_allocation_id cached_tokens cancelled capabilities_requested category check_count check_id child_session_id command_id compacted_count completion_reason
+    access agent_role agent_spec_id allocation_id approval_id attempt attempts authority authority_decision_id authority_disposition budget_allocation_id cached_tokens cancelled capabilities_requested category check_count check_id child_session_id command_id compacted_count completion_reason review_status root_session_id payload_version
     compaction_count context_fingerprint context_tokens correlation_id cost_hint cost_preference count decision duration_ms
-    context_ref_count decision_id depth duration_ms effective_capability_id endpoint_id estimated_cost estimated_tokens expires_at failure_code fallback fingerprint from goal_fingerprint goal_id handle_id health id index instruction_count is_error kind lease_id
-    average_latency_ms best_verified_samples confidence eligible generated_at language latency_ms latency_preference
+    context_ref_count context_artifact_count deduplicated_artifact_count deduplicated_artifact_bytes decision_id depth duration_ms effective_capability_id endpoint_id estimated_cost estimated_tokens expires_at failure_code fallback fingerprint from goal_fingerprint goal_id handle_id health id index instruction_count is_error kind lease_id
+    average_latency_ms best_verified_samples confidence eligible generated_at language latency_ms latency_preference line_count
     limit locality maximum_attempts measured_latency_ms minimum_verified_samples mode model name operational_samples
     operational_success_rate operational_successes outcome_id output_tokens quality_lower_bound
     parent_capability_id parent_session_id parent_worker_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
@@ -31,7 +31,7 @@ defmodule BeamAgent.RuntimeEventView do
   @safe_container_keys MapSet.new(~w(usage))
   @safe_object_keys MapSet.new(~w(evidence inputs verification))
   @safe_list_keys MapSet.new(
-                    ~w(attachments candidate_endpoint_ids candidates endpoints reasons rejected_fields requested_scopes)
+                    ~w(attachments candidate_endpoint_ids candidates endpoints file_references reasons rejected_fields rejected_file_references requested_scopes)
                   )
   @safe_provenance_sources MapSet.new(~w(
     goal_default parent_allocation parent_inheritance parent_proposal
@@ -89,6 +89,9 @@ defmodule BeamAgent.RuntimeEventView do
       MapSet.member?(@safe_object_keys, key) and is_map(value) ->
         public_data(value)
 
+      key in ["file_references", "rejected_file_references"] and is_list(value) ->
+        public_reference_list(value)
+
       MapSet.member?(@safe_list_keys, key) and is_list(value) ->
         public_safe_list(value)
 
@@ -118,6 +121,32 @@ defmodule BeamAgent.RuntimeEventView do
 
       value, redacted? ->
         if scalar?(value), do: {value, redacted?}, else: {redaction(value), true}
+    end)
+  end
+
+  defp public_reference_list(values) do
+    allowed =
+      MapSet.new(
+        ~w(artifact_id path size_bytes source_size_bytes line_count sha256 status reason truncated provenance)
+      )
+
+    Enum.map_reduce(values, false, fn
+      value, redacted? when is_map(value) ->
+        {projected, item_redacted?} =
+          Enum.reduce(value, {%{}, false}, fn {key, item}, {acc, hidden?} ->
+            normalized = to_string(key)
+
+            if MapSet.member?(allowed, normalized) and scalar?(item) do
+              {Map.put(acc, key, item), hidden?}
+            else
+              {Map.put(acc, key, redaction(item)), hidden? or not is_nil(item)}
+            end
+          end)
+
+        {projected, redacted? or item_redacted?}
+
+      value, _redacted? ->
+        {redaction(value), true}
     end)
   end
 

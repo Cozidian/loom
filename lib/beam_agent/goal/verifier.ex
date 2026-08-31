@@ -97,15 +97,8 @@ defmodule BeamAgent.Goal.Verifier do
                "passed_count" => passed,
                "failed_count" => length(checks) - passed
              }),
-           :ok <- attach_to_task(goal, session_id, result, Keyword.get(opts, :outcome_id)),
-           {:ok, _event} <-
-             append(session_id, :completion_report_generated, %{
-               "verification_id" => verification_id,
-               "status" => completion_status(status),
-               "evidence_count" => length(checks),
-               "passed_count" => passed,
-               "failed_count" => length(checks) - passed
-             }) do
+           :ok <- maybe_attach(goal, session_id, result, opts),
+           :ok <- maybe_report(session_id, result, opts) do
         {:ok, result}
       end
     end
@@ -177,6 +170,29 @@ defmodule BeamAgent.Goal.Verifier do
     else
       nil -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_attach(goal, session_id, result, opts) do
+    if Keyword.get(opts, :attach, true),
+      do: attach_to_task(goal, session_id, result, Keyword.get(opts, :outcome_id)),
+      else: :ok
+  end
+
+  defp maybe_report(session_id, result, opts) do
+    if Keyword.get(opts, :completion_report, true) do
+      case append(session_id, :completion_report_generated, %{
+             "verification_id" => result.verification_id,
+             "status" => completion_status(result.status),
+             "evidence_count" => length(result.checks),
+             "passed_count" => Enum.count(result.checks, &(&1.status == :passed)),
+             "failed_count" => Enum.count(result.checks, &(&1.status != :passed))
+           }) do
+        {:ok, _event} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      :ok
     end
   end
 

@@ -21,6 +21,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   @repeated_tool_result_limit 3
   @non_final_response_limit 2
+  @verification_recovery_limit 2
+  @review_recovery_limit 2
   @tool_loop_recovery_prompt """
   The runtime detected the same tool calls returning the same results repeatedly.
   Tools are disabled for this recovery response. Use the tool results already in
@@ -39,6 +41,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   def run(context, prompt) do
     turn = count_events(context.session_id, "turn_started") + 1
     attachments = Map.get(context, :turn_attachments, [])
+    file_references = Map.get(context, :turn_file_references, [])
 
     with {:ok, project_context} <- Context.snapshot(context.session_id),
          {:ok, _} <-
@@ -49,7 +52,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
          {:ok, _} <-
            EventLog.append(context.session_id, :user_message, %{
              "content" => prompt,
-             "attachments" => attachments
+             "attachments" => attachments,
+             "file_references" => Enum.map(file_references, &Map.delete(&1, :content))
            }) do
       start_turn(context, prompt, turn)
     end
@@ -567,16 +571,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp estimated_context_tokens(session_id) do
-    {:ok, events} = EventLog.events(session_id)
-
-    characters =
-      Enum.reduce(events, 0, fn event, total ->
-        data = event["data"] || %{}
-        content = data["content"]
-        total + if(is_binary(content), do: String.length(content), else: 0)
-      end)
-
-    div(characters + 3, 4)
+    case ConversationContext.stats(session_id, "", []) do
+      {:ok, %{estimated_tokens: tokens}} -> tokens
+      _error -> 0
+    end
   end
 
   defp current_endpoint(context) do
@@ -1020,18 +1018,30 @@ defmodule BeamAgent.Strategies.ToolLoop do
            EventLog.append(context.session_id, :step_finished, %{
              "turn" => turn,
              "step" => step,
-             "reason" => "completed"
-           }),
-         {:ok, _} <-
-           EventLog.append(context.session_id, :turn_finished, %{
-             "turn" => turn,
-             "reason" => "completed"
+             "reason" => "candidate_completed"
            }) do
-      with {:ok, outcome} <- record_task_outcome(context, turn, :completed, nil) do
-        maybe_verify_completion(context, outcome)
-      end
+      case completion_verification(context, turn) do
+        {:ok, verification} ->
+          case completion_review(context, turn) do
+            :skip ->
+              finalize_verified_turn(context, turn, answer, verification)
 
-      {:ok, answer}
+            {:ok, review} ->
+              finalize_verified_turn(context, turn, answer, verification, review)
+
+            {:retry, review, attempt} ->
+              continue_after_review_failure(context, turn, step, review, attempt)
+
+            {:error, review} ->
+              fail_reviewed_turn(context, turn, verification, review)
+          end
+
+        {:retry, result, attempt} ->
+          continue_after_verification_failure(context, turn, step, result, attempt)
+
+        {:error, result} ->
+          fail_verified_turn(context, turn, result)
+      end
     end
   end
 
@@ -1047,7 +1057,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     {:error, reason}
   end
 
-  defp record_task_outcome(context, turn, status, failure) do
+  defp record_task_outcome(context, turn, status, failure, verification \\ nil) do
     prompt = latest_user_prompt(context.session_id)
     classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
 
@@ -1059,16 +1069,18 @@ defmodule BeamAgent.Strategies.ToolLoop do
       task_type: classification.task_type,
       language: classification.language,
       status: status,
-      failure: failure
+      failure: failure,
+      verification: verification_summary(verification)
     }
 
     case OutcomeStore.record(context.project_id, attrs) do
-      {:ok, %{id: id, verification: verification} = outcome} ->
-        with {:ok, _event} <-
+      {:ok, %{id: id} = outcome} ->
+        with :ok <- maybe_attach_completion_verification(context, outcome, verification),
+             {:ok, _event} <-
                EventLog.append(context.session_id, :task_outcome_recorded, %{
                  "outcome_id" => id,
                  "status" => status,
-                 "verification" => verification
+                 "verification" => verification_summary(verification)
                }) do
           {:ok, outcome}
         end
@@ -1078,53 +1090,354 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp maybe_verify_completion(context, outcome) do
+  defp maybe_attach_completion_verification(_context, _outcome, nil), do: :ok
+
+  defp maybe_attach_completion_verification(context, outcome, verification) do
+    OutcomeStore.attach_verification(context.project_id, outcome.id, verification)
+  end
+
+  defp completion_verification(context, turn) do
     requirements = context.agent_spec.verification_requirements
     prompt = latest_user_prompt(context.session_id)
     classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
     required? = (requirements[:required] || requirements["required"]) == true
-    automatic? = classification.task_type in [:implementation, :debugging, :verification]
+    review_or_verifier? = context.agent_spec.template in ["reviewer", "verifier"]
+
+    automatic? =
+      turn_action_count(context, turn) > 0 and not review_or_verifier? and
+        classification.task_type in [:implementation, :debugging, :verification]
 
     if required? or automatic? do
       plan = requirements[:plan] || requirements["plan"] || :auto
 
       case BeamAgent.Goal.Verifier.run(context.goal_id, plan,
              session_id: context.session_id,
-             outcome_id: outcome.id
+             worker_id: context.session_id,
+             attach: false,
+             completion_report: false
            ) do
-        {:ok, _result} ->
-          :ok
+        {:ok, %{status: :passed} = result} ->
+          {:ok, result}
+
+        {:ok, %{status: :failed} = result} ->
+          verification_recovery(context, turn, result)
 
         {:error, reason} ->
-          if required? do
-            result = %{
-              status: :failed,
-              source: "automatic",
-              summary: "Required verification could not run: #{verification_error(reason)}"
-            }
-
-            _ = OutcomeStore.attach_verification(context.project_id, outcome.id, result)
-          end
-
-          _ =
-            EventLog.append(context.session_id, :completion_report_generated, %{
-              "status" => if(required?, do: "verification_failed", else: "unverified"),
-              "evidence_count" => 0,
-              "failure_code" => verification_error(reason)
-            })
-
-          :ok
+          verification_recovery(context, turn, %{
+            status: :failed,
+            source: "automatic",
+            summary: "Verification could not run: #{verification_error(reason)}",
+            checks: []
+          })
       end
     else
-      _ =
-        EventLog.append(context.session_id, :completion_report_generated, %{
-          "status" => "unverified",
-          "evidence_count" => 0
-        })
-
-      :ok
+      {:ok, nil}
     end
   end
+
+  defp verification_recovery(context, turn, result) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    attempt =
+      Enum.count(events, fn event ->
+        event["type"] == "verification_recovery_started" and event["data"]["turn"] == turn
+      end) + 1
+
+    if attempt <= @verification_recovery_limit,
+      do: {:retry, result, attempt},
+      else: {:error, result}
+  end
+
+  defp continue_after_verification_failure(context, turn, step, result, attempt) do
+    feedback = verification_feedback(result)
+
+    with {:ok, _} <-
+           EventLog.append(context.session_id, :verification_recovery_started, %{
+             "turn" => turn,
+             "step" => step,
+             "attempt" => attempt,
+             "maximum_attempts" => @verification_recovery_limit,
+             "verification_id" => Map.get(result, :verification_id),
+             "failure_code" => "required_checks_failed"
+           }),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :verification_feedback, %{
+             "turn" => turn,
+             "attempt" => attempt,
+             "content" => feedback
+           }) do
+      step(context, turn, step + 1, nil, 0, true)
+    else
+      {:error, reason} -> fail_turn(context, turn, reason)
+    end
+  end
+
+  defp finalize_verified_turn(context, turn, answer, verification, review \\ nil) do
+    status = if verification, do: :succeeded, else: :completed
+
+    with {:ok, _} <-
+           EventLog.append(context.session_id, :turn_finished, %{
+             "turn" => turn,
+             "reason" => "completed",
+             "verification_status" => verification_status(verification),
+             "review_status" => review_status(review)
+           }),
+         {:ok, _outcome} <- record_task_outcome(context, turn, status, nil, verification),
+         {:ok, _report} <- append_completion_report(context, verification) do
+      {:ok, answer}
+    end
+  end
+
+  defp completion_review(context, turn) do
+    prompt = latest_user_prompt(context.session_id)
+    classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
+    requirements = context.agent_spec.verification_requirements
+
+    review_required? =
+      Map.get(requirements, :review_required, Map.get(requirements, "review_required", true)) !=
+        false
+
+    cond do
+      not review_required? ->
+        :skip
+
+      context.agent_spec.template in ["reviewer", "verifier"] ->
+        :skip
+
+      turn_action_count(context, turn) == 0 ->
+        :skip
+
+      classification.task_type != :implementation ->
+        :skip
+
+      true ->
+        case BeamAgent.GitDiff.summary(context.workspace_root) do
+          {:ok, %{changed_file_count: 0}} -> :skip
+          {:ok, _summary} -> run_review_worker(context, turn, prompt)
+          {:error, _not_git} -> run_review_worker(context, turn, prompt)
+        end
+    end
+  end
+
+  defp run_review_worker(context, turn, prompt) do
+    with {:ok, goal} <- BeamAgent.Goal.snapshot(context.goal_id) do
+      review_prompt = """
+      Review the current uncommitted workspace changes against this authoritative request:
+
+      #{prompt}
+
+      Inspect the Git diff and relevant source/tests using read-only tools. If Git evidence is
+      unavailable, inspect the changed workspace files and recorded tool evidence directly.
+      Prioritize correctness, security, missing acceptance criteria, and verification gaps. The first line of the final
+      response must be exactly REVIEW_PASS when there are no actionable findings, or REVIEW_FAIL
+      when fixes are required. After REVIEW_FAIL, provide concrete file-and-line findings.
+      """
+
+      proposal = %{
+        goal: "Independently review the current implementation before it may complete",
+        role: "Mandatory completion reviewer",
+        template: "reviewer",
+        instructions: [
+          "Use git_inspect before reaching a conclusion.",
+          "Do not modify files and do not accept claims unsupported by the diff or tests."
+        ],
+        capabilities: %{
+          tools: ["git_inspect", "read_file", "search_files", "file_diagnostics"],
+          paths: :all
+        },
+        verification_requirements: %{required: false},
+        completion_criteria: "Return REVIEW_PASS or REVIEW_FAIL with evidence"
+      }
+
+      opts = review_worker_options(context)
+
+      with {:ok, _} <-
+             EventLog.append(context.session_id, :implementation_review_started, %{
+               "turn" => turn,
+               "root_session_id" => goal.session_id
+             }),
+           {:ok, handle} <- BeamAgent.spawn_worker(goal.session_id, proposal, opts) do
+        try do
+          case BeamAgent.ask(handle.worker_id, review_prompt) do
+            {:ok, answer} ->
+              _ = BeamAgent.complete_worker(handle, answer, %{status: :unverified})
+              finish_review(context, turn, handle.worker_id, answer)
+
+            {:error, reason} ->
+              _ = BeamAgent.cancel_worker(handle, reason)
+              review_recovery(context, turn, %{status: :failed, content: inspect(reason)})
+          end
+        after
+          _ = BeamAgent.stop_session(handle.worker_id)
+        end
+      else
+        {:error, reason} ->
+          review_recovery(context, turn, %{status: :failed, content: inspect(reason)})
+      end
+    else
+      {:error, reason} ->
+        review_recovery(context, turn, %{status: :failed, content: inspect(reason)})
+    end
+  end
+
+  defp finish_review(context, turn, worker_id, answer) do
+    status =
+      if String.starts_with?(String.trim(answer), "REVIEW_PASS"), do: :passed, else: :failed
+
+    review = %{status: status, content: answer, worker_id: worker_id}
+
+    _ =
+      EventLog.append(context.session_id, :implementation_review_finished, %{
+        "turn" => turn,
+        "status" => status,
+        "worker_id" => worker_id,
+        "evidence_count" => if(status == :passed, do: 1, else: 0)
+      })
+
+    if status == :passed, do: {:ok, review}, else: review_recovery(context, turn, review)
+  end
+
+  defp review_recovery(context, turn, review) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    attempt =
+      Enum.count(events, fn event ->
+        event["type"] == "implementation_review_recovery_started" and
+          event["data"]["turn"] == turn
+      end) + 1
+
+    if attempt <= @review_recovery_limit,
+      do: {:retry, review, attempt},
+      else: {:error, review}
+  end
+
+  defp continue_after_review_failure(context, turn, step, review, attempt) do
+    with {:ok, _} <-
+           EventLog.append(context.session_id, :implementation_review_recovery_started, %{
+             "turn" => turn,
+             "step" => step,
+             "attempt" => attempt,
+             "maximum_attempts" => @review_recovery_limit,
+             "worker_id" => Map.get(review, :worker_id)
+           }),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :review_feedback, %{
+             "turn" => turn,
+             "attempt" => attempt,
+             "content" => review.content
+           }) do
+      step(context, turn, step + 1, nil, 0, true)
+    else
+      {:error, reason} -> fail_turn(context, turn, reason)
+    end
+  end
+
+  defp fail_reviewed_turn(context, turn, verification, review) do
+    reason = {:implementation_review_failed, String.slice(review.content || "", 0, 1_000)}
+
+    with {:ok, _} <-
+           EventLog.append(context.session_id, :turn_finished, %{
+             "turn" => turn,
+             "reason" => "implementation_review_failed",
+             "error" => inspect(reason),
+             "verification_status" => verification_status(verification),
+             "review_status" => "failed"
+           }),
+         {:ok, _outcome} <- record_task_outcome(context, turn, :failed, reason, verification),
+         {:ok, _report} <- append_completion_report(context, verification) do
+      {:error, reason}
+    end
+  end
+
+  defp review_worker_options(context) do
+    [
+      provider: context.provider,
+      provider_profile: context.provider_profile,
+      provider_options: context.provider_options,
+      strategy: context.strategy,
+      data_dir: context.data_dir,
+      workspace_root: context.workspace_root,
+      approval_policy: context.approval_policy,
+      approval_handler: context.approval_handler,
+      context_window_tokens: context.context_window_tokens,
+      compaction_threshold_percent: context.compaction_threshold_percent,
+      model_strategy: context.model_strategy,
+      correlation_id: runtime_command_field(context, :correlation_id),
+      causation_id: runtime_command_field(context, :event_id)
+    ]
+  end
+
+  defp review_status(nil), do: "not_required"
+  defp review_status(review), do: to_string(review.status)
+
+  defp fail_verified_turn(context, turn, verification) do
+    reason = {:verification_failed, Map.get(verification, :summary, "required checks failed")}
+
+    with {:ok, _} <-
+           EventLog.append(context.session_id, :turn_finished, %{
+             "turn" => turn,
+             "reason" => "verification_failed",
+             "error" => inspect(reason),
+             "verification_status" => "failed"
+           }),
+         {:ok, _outcome} <- record_task_outcome(context, turn, :failed, reason, verification),
+         {:ok, _report} <- append_completion_report(context, verification) do
+      {:error, reason}
+    end
+  end
+
+  defp append_completion_report(context, nil) do
+    EventLog.append(context.session_id, :completion_report_generated, %{
+      "status" => "unverified",
+      "evidence_count" => 0
+    })
+  end
+
+  defp append_completion_report(context, verification) do
+    checks = Map.get(verification, :checks, [])
+
+    EventLog.append(context.session_id, :completion_report_generated, %{
+      "verification_id" => Map.get(verification, :verification_id),
+      "status" => if(verification.status == :passed, do: "verified", else: "verification_failed"),
+      "evidence_count" => length(checks),
+      "passed_count" => Enum.count(checks, &(&1.status == :passed)),
+      "failed_count" => Enum.count(checks, &(&1.status != :passed))
+    })
+  end
+
+  defp verification_feedback(result) do
+    checks =
+      result
+      |> Map.get(:checks, [])
+      |> Enum.map_join("\n\n", fn check ->
+        output = check.output || "[no output]"
+
+        """
+        Check #{check.id} (required=#{check.required}) failed with exit status #{inspect(check.exit_status)}:
+        #{String.slice(output, 0, 16_000)}
+        """
+        |> String.trim()
+      end)
+
+    """
+    Required verification rejected the previous completion candidate.
+    Summary: #{result.summary}
+
+    #{checks}
+
+    Continue the same implementation now. Fix the reported failures, rerun focused checks as useful, and return a new completion candidate. Do not merely explain the failures.
+    """
+    |> String.trim()
+  end
+
+  defp verification_summary(nil), do: %{status: :unverified}
+
+  defp verification_summary(verification) do
+    Map.take(verification, [:status, :source, :summary, :verification_id])
+  end
+
+  defp verification_status(nil), do: "unverified"
+  defp verification_status(verification), do: to_string(verification.status)
 
   defp verification_error(reason) when is_atom(reason), do: to_string(reason)
   defp verification_error({reason, _detail}) when is_atom(reason), do: to_string(reason)

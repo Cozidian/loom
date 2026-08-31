@@ -77,6 +77,7 @@ defmodule BeamAgent.Goal.Race do
     prompt = value(candidate, :prompt) || value(candidate, :goal)
     worker_id = BeamAgent.new_session_id()
     worker_options = Keyword.get(opts, :worker_options, [])
+    worker_options = Keyword.put(worker_options, :completion_review, :external)
 
     proposal =
       candidate

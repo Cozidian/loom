@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1144,6 +1145,156 @@ func TestFailureRAndEDoNotInterceptNormalTyping(t *testing.T) {
 	}
 }
 
+func TestTypingAtShowsWorkspaceFileSuggestionsForEmptyPrefix(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = suggestionFiles()
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: '@', Text: "@"})
+	updated := next.(model)
+	if !updated.fileSuggestions.open || updated.sheet != sheetPanel {
+		t.Fatalf("expected typing @ to open the file suggestion panel, got panel=%v sheet=%v", updated.fileSuggestions.open, updated.sheet)
+	}
+
+	content := strings.Join(updated.panelLines, "\n")
+	for _, want := range []string{"README.md", "lib/nested/worker.go"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected %q in file suggestions, got:\n%s", want, content)
+		}
+	}
+}
+
+func TestFileSuggestionsFilterCaseInsensitivelyByBasenameAndPath(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = suggestionFiles()
+
+	m.composer.SetValue("@WOR")
+	m.syncFileSuggestionPanel()
+	content := strings.Join(m.panelLines, "\n")
+	if !strings.Contains(content, "lib/nested/worker.go") {
+		t.Fatalf("expected basename filtering to match worker.go, got:\n%s", content)
+	}
+	if strings.Contains(content, "README.md") {
+		t.Fatalf("expected basename filtering to exclude README.md, got:\n%s", content)
+	}
+
+	m.composer.SetValue("@lib/n")
+	m.syncFileSuggestionPanel()
+	content = strings.Join(m.panelLines, "\n")
+	if !strings.Contains(content, "lib/nested/worker.go") {
+		t.Fatalf("expected path-prefix filtering to match lib/nested/worker.go, got:\n%s", content)
+	}
+}
+
+func TestFileSuggestionsShowExplicitNoMatchMessage(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = suggestionFiles()
+	m.composer.SetValue("@zzz")
+	m.syncFileSuggestionPanel()
+
+	if !m.fileSuggestions.open || m.sheet != sheetPanel {
+		t.Fatalf("expected a no-match file suggestion state, got panel=%v sheet=%v", m.fileSuggestions.open, m.sheet)
+	}
+	if got := strings.Join(m.panelLines, "\n"); !strings.Contains(got, "No matching files for @zzz") {
+		t.Fatalf("expected an explicit no-match message, got:\n%s", got)
+	}
+}
+
+func TestFileSuggestionKeyboardSelectionInsertsSecondMatch(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = suggestionFiles()
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: '@', Text: "@"})
+	next, _ = next.(model).Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	next, cmd := next.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("selecting a file suggestion must not submit the prompt")
+	}
+
+	selected := next.(model)
+	if selected.composer.Value() != "@lib/nested/worker.go " {
+		t.Fatalf("expected the second file to be inserted, got %q", selected.composer.Value())
+	}
+	if selected.fileSuggestions.open || selected.sheet != sheetNone {
+		t.Fatal("expected file suggestions to close after selection")
+	}
+}
+
+func TestFileSuggestionSelectionQuotesPathsWithSpaces(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = []string{"docs/design notes.md"}
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: '@', Text: "@"})
+	next, _ = next.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if got := next.(model).composer.Value(); got != "@\"docs/design notes.md\" " {
+		t.Fatalf("expected a quoted file reference, got %q", got)
+	}
+}
+
+func TestFileSuggestionsFilterInsideAnOpenQuotedReference(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = []string{"docs/design notes.md", "docs/release notes.md"}
+	m.composer.SetValue("@\"des")
+	m.syncFileSuggestionPanel()
+
+	if got := m.fileSuggestions.matches; len(got) != 1 || got[0] != "docs/design notes.md" {
+		t.Fatalf("expected quoted filtering to find design notes, got %#v", got)
+	}
+}
+
+func TestFileSuggestionsIgnoreEmailAddressesAndEscapedAtSigns(t *testing.T) {
+	for _, value := range []string{"person@example.test", `literal \@README.md`} {
+		m := testModel(&bytes.Buffer{})
+		m.workspaceFiles = suggestionFiles()
+		m.composer.SetValue(value)
+		m.syncFileSuggestionPanel()
+
+		if m.fileSuggestions.open {
+			t.Fatalf("did not expect file suggestions for %q", value)
+		}
+	}
+}
+
+func TestFileSuggestionSelectionReplacesTokenAtCursor(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.workspaceFiles = []string{"README.md"}
+	m.composer.SetValue("inspect @REA before editing")
+	m.composer.SetCursorColumn(len([]rune("inspect @REA")))
+	m.syncFileSuggestionPanel()
+
+	if !m.fileSuggestions.open {
+		t.Fatal("expected suggestions at the cursor inside an existing prompt")
+	}
+	m.selectFileSuggestion()
+
+	if got := m.composer.Value(); got != "inspect @README.md before editing" {
+		t.Fatalf("expected only the active token to be replaced, got %q", got)
+	}
+	if m.composer.Column() != len([]rune("inspect @README.md")) {
+		t.Fatalf("expected cursor after inserted reference, got column %d", m.composer.Column())
+	}
+}
+
+func TestFileSuggestionSelectionCanNavigateLongLists(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	for i := 0; i < 15; i++ {
+		m.workspaceFiles = append(m.workspaceFiles, fmt.Sprintf("file-%02d.txt", i))
+	}
+	m.composer.SetValue("@")
+	m.syncFileSuggestionPanel()
+
+	for i := 0; i < 12; i++ {
+		m.moveFileSuggestion(1)
+	}
+
+	if m.fileSuggestions.selected != 12 {
+		t.Fatalf("expected selection 12, got %d", m.fileSuggestions.selected)
+	}
+	if got := strings.Join(m.panelLines, "\n"); !strings.Contains(got, "› file-12.txt") {
+		t.Fatalf("expected the selected row to remain visible, got:\n%s", got)
+	}
+}
+
 func TestOpenInEditorReturnsNilWithoutASelectedDiff(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	if cmd := m.openInEditor(); cmd != nil {
@@ -1414,6 +1565,10 @@ func TestEscReturnsToChatTabFromAnotherTab(t *testing.T) {
 	if updated.tab != tabChat {
 		t.Fatalf("expected esc to return to the chat tab, got %v", updated.tab)
 	}
+}
+
+func suggestionFiles() []string {
+	return []string{"README.md", "lib/nested/worker.go"}
 }
 
 func testModel(writer *bytes.Buffer) model {

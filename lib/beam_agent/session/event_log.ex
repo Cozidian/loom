@@ -4,7 +4,7 @@ defmodule BeamAgent.Session.EventLog do
 
   alias BeamAgent.Names
   alias BeamAgent.Goal.EventHub
-  alias BeamAgent.Session.StreamHub
+  alias BeamAgent.Session.{FileReference, StreamHub}
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -307,7 +307,8 @@ defmodule BeamAgent.Session.EventLog do
     [
       %{
         role: :user,
-        content: data["content"] || "",
+        content:
+          FileReference.render_prompt(data["content"] || "", data["file_references"] || []),
         attachments: data["attachments"] || []
       }
     ]
@@ -334,6 +335,14 @@ defmodule BeamAgent.Session.EventLog do
         error: data["error"]
       }
     ]
+  end
+
+  defp to_message(%{"type" => "verification_feedback", "data" => data}) do
+    [%{role: :user, content: data["content"] || "Verification failed; continue the task."}]
+  end
+
+  defp to_message(%{"type" => "review_feedback", "data" => data}) do
+    [%{role: :user, content: data["content"] || "Review failed; continue the task."}]
   end
 
   defp to_message(_event), do: []

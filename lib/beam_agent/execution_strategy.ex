@@ -20,7 +20,7 @@ defmodule BeamAgent.ExecutionStrategy do
       review_required: true
     },
     "verify" => %{mode: :deterministic, maximum_attempts: 1, maximum_parallelism: 1},
-    "coordinate" => %{mode: :coordinator, maximum_attempts: 2, maximum_parallelism: 4}
+    "coordinate" => %{mode: :coordinator, maximum_attempts: 2, maximum_parallelism: 2}
   }
 
   def resolve(id) when is_binary(id) do

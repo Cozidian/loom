@@ -103,6 +103,23 @@ defmodule BeamAgent.CLITUITest do
     assert id == attachment.id
   end
 
+  test "initial bridge payload supplies repository-indexed file suggestions", context do
+    File.mkdir_p!(Path.join(context.config["workspace_root"], "lib/nested"))
+    File.write!(Path.join(context.config["workspace_root"], "README.md"), "hello\n")
+
+    File.write!(
+      Path.join(context.config["workspace_root"], "lib/nested/worker.ex"),
+      "defmodule Nested.Worker do\nend\n"
+    )
+
+    {:ok, identity} = BeamAgent.Agent.runtime_identity(context.session_id)
+    assert {:ok, _snapshot} = BeamAgent.refresh_repository(identity.project_id)
+
+    payload = TUI.initial_payload(context.session_id, context.config)
+
+    assert payload.workspace_files == ["README.md", "lib/nested/worker.ex"]
+  end
+
   test "replayed image-only messages render a safe attachment summary", context do
     png =
       Base.decode64!(
@@ -224,7 +241,8 @@ defmodule BeamAgent.CLITUITest do
         client: self(),
         session_id: context.session_id,
         config: context.config,
-        config_path: context.config_path
+        config_path: context.config_path,
+        codex_app_server: FakeCodexAppServer
       )
 
     on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)

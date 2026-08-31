@@ -22,41 +22,42 @@ import (
 const maxPacketSize = 16 * 1024 * 1024
 
 type packet struct {
-	Type         string           `json:"type"`
-	SessionID    string           `json:"session_id,omitempty"`
-	ProjectID    string           `json:"project_id,omitempty"`
-	GoalID       string           `json:"goal_id,omitempty"`
-	Cursor       int64            `json:"cursor,omitempty"`
-	Workspace    string           `json:"workspace,omitempty"`
-	Provider     string           `json:"provider,omitempty"`
-	Profile      string           `json:"profile,omitempty"`
-	Model        string           `json:"model,omitempty"`
-	Prompt       string           `json:"prompt,omitempty"`
-	Data         string           `json:"data,omitempty"`
-	Name         string           `json:"name,omitempty"`
-	MIMEType     string           `json:"mime_type,omitempty"`
-	Provenance   string           `json:"provenance,omitempty"`
-	Attachments  []attachmentItem `json:"attachments,omitempty"`
-	Attachment   *attachmentItem  `json:"attachment,omitempty"`
-	AttachmentID string           `json:"attachment_id,omitempty"`
-	Command      string           `json:"command,omitempty"`
-	Query        string           `json:"query,omitempty"`
-	ApprovalID   string           `json:"approval_id,omitempty"`
-	ApprovalMode string           `json:"approval_mode,omitempty"`
-	Decision     string           `json:"decision,omitempty"`
-	OK           bool             `json:"ok,omitempty"`
-	Error        string           `json:"error,omitempty"`
-	Tone         string           `json:"tone,omitempty"`
-	Message      string           `json:"message,omitempty"`
-	Title        string           `json:"title,omitempty"`
-	Lines        []string         `json:"lines,omitempty"`
-	Entries      []entry          `json:"entries,omitempty"`
-	ContextStats map[string]any   `json:"context_stats,omitempty"`
-	Stats        map[string]any   `json:"stats,omitempty"`
-	Event        map[string]any   `json:"event,omitempty"`
-	Approval     map[string]any   `json:"approval,omitempty"`
-	Approvals    []map[string]any `json:"approvals,omitempty"`
-	Providers    []providerOption `json:"providers,omitempty"`
+	Type           string           `json:"type"`
+	SessionID      string           `json:"session_id,omitempty"`
+	ProjectID      string           `json:"project_id,omitempty"`
+	GoalID         string           `json:"goal_id,omitempty"`
+	Cursor         int64            `json:"cursor,omitempty"`
+	Workspace      string           `json:"workspace,omitempty"`
+	Provider       string           `json:"provider,omitempty"`
+	Profile        string           `json:"profile,omitempty"`
+	Model          string           `json:"model,omitempty"`
+	Prompt         string           `json:"prompt,omitempty"`
+	Data           string           `json:"data,omitempty"`
+	Name           string           `json:"name,omitempty"`
+	MIMEType       string           `json:"mime_type,omitempty"`
+	Provenance     string           `json:"provenance,omitempty"`
+	Attachments    []attachmentItem `json:"attachments,omitempty"`
+	Attachment     *attachmentItem  `json:"attachment,omitempty"`
+	AttachmentID   string           `json:"attachment_id,omitempty"`
+	Command        string           `json:"command,omitempty"`
+	Query          string           `json:"query,omitempty"`
+	ApprovalID     string           `json:"approval_id,omitempty"`
+	ApprovalMode   string           `json:"approval_mode,omitempty"`
+	Decision       string           `json:"decision,omitempty"`
+	OK             bool             `json:"ok,omitempty"`
+	Error          string           `json:"error,omitempty"`
+	Tone           string           `json:"tone,omitempty"`
+	Message        string           `json:"message,omitempty"`
+	Title          string           `json:"title,omitempty"`
+	Lines          []string         `json:"lines,omitempty"`
+	Entries        []entry          `json:"entries,omitempty"`
+	ContextStats   map[string]any   `json:"context_stats,omitempty"`
+	Stats          map[string]any   `json:"stats,omitempty"`
+	Event          map[string]any   `json:"event,omitempty"`
+	Approval       map[string]any   `json:"approval,omitempty"`
+	Approvals      []map[string]any `json:"approvals,omitempty"`
+	Providers      []providerOption `json:"providers,omitempty"`
+	WorkspaceFiles []string         `json:"workspace_files,omitempty"`
 
 	// Structured tab payloads — see packets.go.
 	Root                *goalNode               `json:"root,omitempty"`
@@ -181,6 +182,13 @@ type clipboardImageMsg struct {
 	err   error
 }
 
+type fileSuggestionState struct {
+	open     bool
+	query    string
+	matches  []string
+	selected int
+}
+
 type approval struct {
 	ID        string
 	SessionID string
@@ -268,6 +276,8 @@ type model struct {
 	lastSubmittedAttachments []attachmentItem
 	toolsExpanded            bool
 	pendingFailure           bool
+	workspaceFiles           []string
+	fileSuggestions          fileSuggestionState
 
 	tab         tab
 	unseen      [tabCount]int
@@ -302,25 +312,26 @@ func newModel(initial packet, bridge *protocol) model {
 	vp.MouseWheelEnabled = true
 
 	m := model{
-		protocol:      bridge,
-		composer:      composer,
-		viewport:      vp,
-		width:         80,
-		height:        24,
-		workspace:     filepath.Base(initial.Workspace),
-		workspaceRoot: initial.Workspace,
-		sessionID:     initial.SessionID,
-		projectID:     initial.ProjectID,
-		goalID:        initial.GoalID,
-		cursor:        initial.Cursor,
-		provider:      initial.Provider,
-		profile:       initial.Profile,
-		llmModel:      initial.Model,
-		status:        "ready",
-		entries:       initial.Entries,
-		contextStats:  initial.ContextStats,
-		approvalMode:  initial.ApprovalMode,
-		attachments:   initial.Attachments,
+		protocol:       bridge,
+		composer:       composer,
+		viewport:       vp,
+		width:          80,
+		height:         24,
+		workspace:      filepath.Base(initial.Workspace),
+		workspaceRoot:  initial.Workspace,
+		sessionID:      initial.SessionID,
+		projectID:      initial.ProjectID,
+		goalID:         initial.GoalID,
+		cursor:         initial.Cursor,
+		provider:       initial.Provider,
+		profile:        initial.Profile,
+		llmModel:       initial.Model,
+		status:         "ready",
+		entries:        initial.Entries,
+		contextStats:   initial.ContextStats,
+		approvalMode:   initial.ApprovalMode,
+		attachments:    initial.Attachments,
+		workspaceFiles: append([]string(nil), initial.WorkspaceFiles...),
 	}
 	for _, pending := range initial.Approvals {
 		m.enqueueApproval(approvalFromMap(pending))
@@ -385,6 +396,28 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.approval != nil {
 			return m.updateApproval(key)
 		}
+		if m.fileSuggestions.open {
+			switch key {
+			case "up":
+				m.moveFileSuggestion(-1)
+				m.resize(m.width, m.height)
+				return m, nil
+			case "down":
+				m.moveFileSuggestion(1)
+				m.resize(m.width, m.height)
+				return m, nil
+			case "enter", "tab":
+				if len(m.fileSuggestions.matches) > 0 {
+					m.selectFileSuggestion()
+					m.resize(m.width, m.height)
+					return m, nil
+				}
+			case "esc":
+				m.clearFileSuggestions()
+				m.resize(m.width, m.height)
+				return m, nil
+			}
+		}
 		switch m.sheet {
 		case sheetProviderPicker:
 			return m.updateProviderPicker(key)
@@ -418,6 +451,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "ctrl+p":
+			m.clearFileSuggestions()
 			m.sheet = sheetPalette
 			m.panelTitle = ""
 			m.panelLines = nil
@@ -430,6 +464,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+o":
 			if m.tab == tabChat {
 				m.composer.InsertString("\n")
+				m.syncFileSuggestionPanel()
 				m.resize(m.width, m.height)
 			}
 			return m, nil
@@ -464,6 +499,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			if m.sheet != sheetNone {
+				m.clearFileSuggestions()
 				m.sheet = sheetNone
 				m.panelTitle = ""
 				m.panelLines = nil
@@ -498,6 +534,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.tab == tabChat {
 		m.composer, cmd = m.composer.Update(message)
+		m.syncFileSuggestionPanel()
 	}
 	m.resize(m.width, m.height)
 	return m, cmd
@@ -630,6 +667,7 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(prompt, "/") {
 		m.composer.Reset()
+		m.clearFileSuggestions()
 		m.resize(m.width, m.height)
 		return m.runSlash(prompt)
 	}
@@ -645,6 +683,7 @@ func (m model) submit() (tea.Model, tea.Cmd) {
 	m.notice = ""
 	m.pendingFailure = false
 	m.composer.Reset()
+	m.clearFileSuggestions()
 	m.lastSubmittedAttachments = append([]attachmentItem(nil), m.attachments...)
 	m.resize(m.width, m.height)
 	m.refreshTranscript(true)
@@ -684,6 +723,235 @@ func humanBytes(size int64) string {
 		return fmt.Sprintf("%.1f KB", float64(size)/1024)
 	}
 	return fmt.Sprintf("%.1f MB", float64(size)/(1024*1024))
+}
+
+func (m *model) syncFileSuggestionPanel() {
+	token, ok := activeFileSuggestionToken(
+		m.composer.Value(),
+		m.composer.Line(),
+		m.composer.Column(),
+	)
+	if !ok {
+		m.clearFileSuggestions()
+		return
+	}
+
+	selected := m.fileSuggestions.selected
+	if !m.fileSuggestions.open || token.query != m.fileSuggestions.query {
+		selected = 0
+	}
+
+	matches := matchFileSuggestions(m.workspaceFiles, token.query)
+	if len(matches) == 0 {
+		selected = 0
+	} else {
+		selected = min(selected, len(matches)-1)
+	}
+
+	m.fileSuggestions = fileSuggestionState{
+		open:     true,
+		query:    token.query,
+		matches:  matches,
+		selected: selected,
+	}
+	m.sheet = sheetPanel
+	m.panelTitle = "File suggestions"
+	m.panelLines = fileSuggestionLines(token.query, matches, selected)
+}
+
+type fileSuggestionToken struct {
+	query string
+	line  int
+	start int
+	end   int
+}
+
+func activeFileSuggestionToken(value string, line, column int) (fileSuggestionToken, bool) {
+	lines := strings.Split(value, "\n")
+	if line < 0 || line >= len(lines) {
+		return fileSuggestionToken{}, false
+	}
+
+	current := []rune(lines[line])
+	column = min(max(column, 0), len(current))
+
+	for start := column - 1; start >= 0; start-- {
+		if current[start] == '@' {
+			if start > 0 && !fileSuggestionBoundary(current[start-1]) {
+				return fileSuggestionToken{}, false
+			}
+
+			queryStart := start + 1
+			quoted := queryStart < len(current) && current[queryStart] == '"'
+			if quoted {
+				queryStart++
+				if queryStart > column || containsRune(current[queryStart:column], '"') {
+					return fileSuggestionToken{}, false
+				}
+			} else if containsFileSuggestionBoundary(current[queryStart:column]) {
+				return fileSuggestionToken{}, false
+			}
+
+			end := column
+			if quoted {
+				for end < len(current) {
+					end++
+					if current[end-1] == '"' {
+						break
+					}
+				}
+			} else {
+				for end < len(current) && !fileSuggestionTerminator(current[end]) {
+					end++
+				}
+			}
+
+			return fileSuggestionToken{
+				query: string(current[queryStart:column]),
+				line:  line,
+				start: start,
+				end:   end,
+			}, true
+		}
+	}
+
+	return fileSuggestionToken{}, false
+}
+
+func fileSuggestionBoundary(ch rune) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n', '(', '[', '{', '<', '"', '\'':
+		return true
+	default:
+		return false
+	}
+}
+
+func fileSuggestionTerminator(ch rune) bool {
+	return fileSuggestionBoundary(ch) || strings.ContainsRune(")]}>,;:!?", ch)
+}
+
+func containsFileSuggestionBoundary(value []rune) bool {
+	for _, ch := range value {
+		if fileSuggestionTerminator(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRune(value []rune, expected rune) bool {
+	for _, ch := range value {
+		if ch == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func matchFileSuggestions(files []string, query string) []string {
+	if query == "" {
+		return files
+	}
+
+	query = strings.ToLower(query)
+	matches := make([]string, 0, len(files))
+	for _, path := range files {
+		if strings.HasPrefix(strings.ToLower(path), query) || strings.HasPrefix(strings.ToLower(filepath.Base(path)), query) {
+			matches = append(matches, path)
+		}
+	}
+	return matches
+}
+
+func fileSuggestionLines(query string, matches []string, selected int) []string {
+	label := "@" + query
+	if len(matches) == 0 {
+		return []string{"No matching files for " + label}
+	}
+
+	start, end := fileSuggestionWindow(len(matches), selected, 10)
+	lines := make([]string, 0, end-start+2)
+	lines = append(lines, fmt.Sprintf("%d matches for %s", len(matches), label))
+	for index := start; index < end; index++ {
+		line := "  " + matches[index]
+		if index == selected {
+			line = styleMint.Bold(true).Render("› " + matches[index])
+		}
+		lines = append(lines, line)
+	}
+	lines = append(lines, "↑/↓ choose · enter/tab insert · esc close")
+	return lines
+}
+
+func fileSuggestionWindow(total, selected, limit int) (int, int) {
+	if total <= limit {
+		return 0, total
+	}
+	start := max(0, min(selected-limit/2, total-limit))
+	return start, start + limit
+}
+
+func (m *model) moveFileSuggestion(delta int) {
+	count := len(m.fileSuggestions.matches)
+	if count == 0 {
+		return
+	}
+	m.fileSuggestions.selected = (m.fileSuggestions.selected + delta + count) % count
+	m.panelLines = fileSuggestionLines(
+		m.fileSuggestions.query,
+		m.fileSuggestions.matches,
+		m.fileSuggestions.selected,
+	)
+}
+
+func (m *model) selectFileSuggestion() {
+	if len(m.fileSuggestions.matches) == 0 {
+		return
+	}
+
+	token, ok := activeFileSuggestionToken(
+		m.composer.Value(),
+		m.composer.Line(),
+		m.composer.Column(),
+	)
+	if !ok {
+		m.clearFileSuggestions()
+		return
+	}
+
+	lines := strings.Split(m.composer.Value(), "\n")
+	current := []rune(lines[token.line])
+	path := m.fileSuggestions.matches[m.fileSuggestions.selected]
+	reference := "@" + path
+	if strings.ContainsAny(path, " \t\r\n") {
+		reference = "@\"" + path + "\""
+	}
+
+	prefix := current[:token.start]
+	suffix := current[token.end:]
+	separator := ""
+	if len(suffix) == 0 {
+		separator = " "
+	}
+
+	lines[token.line] = string(prefix) + reference + separator + string(suffix)
+	m.composer.SetValue(strings.Join(lines, "\n"))
+	for m.composer.Line() > token.line {
+		m.composer.CursorUp()
+	}
+	m.composer.SetCursorColumn(len(prefix) + len([]rune(reference+separator)))
+	m.clearFileSuggestions()
+}
+
+func (m *model) clearFileSuggestions() {
+	wasOpen := m.fileSuggestions.open
+	m.fileSuggestions = fileSuggestionState{}
+	if wasOpen && m.sheet == sheetPanel && m.panelTitle == "File suggestions" {
+		m.sheet = sheetNone
+		m.panelTitle = ""
+		m.panelLines = nil
+	}
 }
 
 func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
@@ -835,6 +1103,7 @@ func (m *model) applyBackend(message packet) {
 	case "stream":
 		m.applyStream(message.Event)
 	case "approval_requested":
+		m.clearFileSuggestions()
 		m.enqueueApproval(approvalFromMap(message.Approval))
 		m.notice = ""
 	case "approval_resolved":
@@ -863,10 +1132,12 @@ func (m *model) applyBackend(message packet) {
 	case "notice":
 		m.notice, m.noticeTone = message.Message, message.Tone
 	case "panel":
+		m.clearFileSuggestions()
 		m.panelTitle, m.panelLines = message.Title, message.Lines
 		m.sheet = sheetPanel
 		m.notice = ""
 	case "provider_picker":
+		m.clearFileSuggestions()
 		m.providers = message.Providers
 		m.providerIndex = 0
 		for i, provider := range m.providers {
@@ -909,6 +1180,7 @@ func (m *model) applyBackend(message packet) {
 		m.notice = "Attachment failed: " + message.Error
 		m.noticeTone = "error"
 	case "session_changed":
+		m.clearFileSuggestions()
 		m.sessionID = message.SessionID
 		m.goalID = message.SessionID
 		if message.Provider != "" {

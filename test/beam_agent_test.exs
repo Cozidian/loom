@@ -298,6 +298,15 @@ defmodule BeamAgentTest do
     :ok = BeamAgent.CapabilityCatalog.register_provider(ProgressThenWorkingProvider)
     root = data_dir()
     File.mkdir_p!(root)
+    File.mkdir_p!(Path.join(root, ".beam_agent"))
+
+    File.write!(
+      Path.join(root, ".beam_agent/verification.json"),
+      JSON.encode!(%{
+        version: 1,
+        checks: [%{id: "completion-guard", command: "test -f completion-guard.txt"}]
+      })
+    )
 
     {:ok, id} =
       BeamAgent.start_session(
@@ -305,7 +314,8 @@ defmodule BeamAgentTest do
         workspace_root: root,
         provider: :progress_then_working_test,
         provider_options: [test_pid: self()],
-        approval_policy: :auto
+        approval_policy: :auto,
+        completion_review: :external
       )
 
     assert {:ok, "Implemented and verified the requested change."} =

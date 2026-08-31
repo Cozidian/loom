@@ -204,6 +204,46 @@ defmodule BeamAgent.ConversationContextTest do
     refute projected =~ "old automatic objective"
   end
 
+  test "deduplicates repeated deterministic artifacts and accounts for saved context", context do
+    first = JSON.encode!(%{path: "lib/example.ex", content: String.duplicate("old", 400)})
+    latest = JSON.encode!(%{path: "lib/example.ex", content: "latest authoritative contents"})
+
+    {:ok, _} = EventLog.append(context.session_id, :user_message, %{"content" => "inspect it"})
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :tool_result, %{
+        "tool_call_id" => "read-1",
+        "name" => "read_file",
+        "content" => first,
+        "is_error" => false
+      })
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :tool_result, %{
+        "tool_call_id" => "read-2",
+        "name" => "read_file",
+        "content" => latest,
+        "is_error" => false
+      })
+
+    assert {:ok, messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               SummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    tool_contents = for %{role: :tool, content: content} <- messages, do: content
+    assert Enum.any?(tool_contents, &(&1 =~ "Earlier duplicate artifact omitted"))
+    assert latest in tool_contents
+    refute first in tool_contents
+    assert stats.context_artifact_count == 2
+    assert stats.deduplicated_artifact_count == 1
+    assert stats.deduplicated_artifact_bytes > 0
+  end
+
   defp append_turn(session_id, turn, label, padding) do
     content = label <> " " <> String.duplicate("x", padding)
 

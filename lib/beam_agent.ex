@@ -416,8 +416,9 @@ defmodule BeamAgent do
         :ok
 
       {:error, :not_found} ->
-        with {:ok, pid} <- Names.pid(:session_supervisor, session_id) do
-          Supervisor.stop(pid, :normal)
+        case Names.pid(:session_supervisor, session_id) do
+          {:ok, pid} -> Supervisor.stop(pid, :normal)
+          {:error, :not_found} -> :ok
         end
     end
   end

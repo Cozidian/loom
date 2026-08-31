@@ -231,7 +231,14 @@ defmodule BeamAgent.Session.ConversationContext do
       |> EventLog.messages_from_events()
       |> prepend_summary(summary, through_seq)
 
-    %{messages: messages, through_seq: through_seq, summary: summary}
+    {messages, artifact_stats} = deduplicate_artifacts(messages)
+
+    %{
+      messages: messages,
+      through_seq: through_seq,
+      summary: summary,
+      artifact_stats: artifact_stats
+    }
   end
 
   defp latest_completion(events) do
@@ -274,8 +281,65 @@ defmodule BeamAgent.Session.ConversationContext do
       compacted_through_seq: projection.through_seq,
       compaction_count: Enum.count(events, &(&1["type"] == "context_compaction_completed")),
       compacted?: false,
-      compaction_failed?: false
+      compaction_failed?: false,
+      context_artifact_count: projection.artifact_stats.count,
+      deduplicated_artifact_count: projection.artifact_stats.deduplicated_count,
+      deduplicated_artifact_bytes: projection.artifact_stats.saved_bytes
     }
+  end
+
+  defp deduplicate_artifacts(messages) do
+    {messages, _seen, count, deduplicated_count, saved_bytes} =
+      messages
+      |> Enum.reverse()
+      |> Enum.reduce({[], MapSet.new(), 0, 0, 0}, fn message,
+                                                     {acc, seen, count, duplicates, saved} ->
+        case artifact_identity(message) do
+          nil ->
+            {[message | acc], seen, count, duplicates, saved}
+
+          identity ->
+            bytes = byte_size(message.content || "")
+
+            if MapSet.member?(seen, identity) do
+              marker_content =
+                "[Earlier duplicate artifact omitted from active context: #{artifact_label(identity)}. Re-read it if the older snapshot is required.]"
+
+              marker = %{message | content: marker_content}
+
+              {[marker | acc], seen, count + 1, duplicates + 1,
+               saved + max(0, bytes - byte_size(marker_content))}
+            else
+              {[message | acc], MapSet.put(seen, identity), count + 1, duplicates, saved}
+            end
+        end
+      end)
+
+    {messages, %{count: count, deduplicated_count: deduplicated_count, saved_bytes: saved_bytes}}
+  end
+
+  defp artifact_identity(%{role: :tool, name: "read_file", content: content})
+       when is_binary(content) do
+    case JSON.decode(content) do
+      {:ok, %{"path" => path}} when is_binary(path) -> {:read_file, path}
+      _other -> {:exact, "read_file", fingerprint(content)}
+    end
+  end
+
+  defp artifact_identity(%{role: :tool, name: name, content: content})
+       when name in ["search_files", "list_files", "file_diagnostics", "file_symbols"] and
+              is_binary(content),
+       do: {:exact, name, fingerprint(content)}
+
+  defp artifact_identity(_message), do: nil
+
+  defp artifact_label({:read_file, path}), do: "read_file #{path}"
+  defp artifact_label({:exact, name, fingerprint}), do: "#{name} #{fingerprint}"
+
+  defp fingerprint(content) do
+    :crypto.hash(:sha256, content)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 12)
   end
 
   defp compaction_plan(events, projection, stats, force?) do
@@ -423,7 +487,10 @@ defmodule BeamAgent.Session.ConversationContext do
       compacted_through_seq: -1,
       compaction_count: 0,
       compacted?: false,
-      compaction_failed?: false
+      compaction_failed?: false,
+      context_artifact_count: 0,
+      deduplicated_artifact_count: 0,
+      deduplicated_artifact_bytes: 0
     }
   end
 

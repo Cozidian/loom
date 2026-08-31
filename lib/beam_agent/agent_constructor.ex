@@ -21,8 +21,8 @@ defmodule BeamAgent.AgentConstructor do
 
   alias BeamAgent.MCP.Registry, as: MCPRegistry
 
-  @default_maximum_delegation_depth 4
-  @hard_maximum_delegation_depth 8
+  @default_maximum_delegation_depth 2
+  @hard_maximum_delegation_depth 4
 
   def root(opts) when is_list(opts) do
     envelope = Keyword.fetch!(opts, :capability_envelope)
@@ -39,6 +39,11 @@ defmodule BeamAgent.AgentConstructor do
           normalize_instructions(Keyword.get(opts, :agent_instructions, []))
       )
 
+    verification_requirements =
+      %{required: false, source: "goal_default"}
+      |> Map.merge(template.verification_requirements)
+      |> Map.put(:review_required, Keyword.get(opts, :completion_review, :runtime) != :external)
+
     with :ok <- validate_maximum_delegation_depth(maximum_delegation_depth),
          {:ok, context} <- ProjectContext.load(workspace_root),
          {:ok, authority} <- AgentConstructionPolicy.evaluate_root(envelope) do
@@ -52,11 +57,7 @@ defmodule BeamAgent.AgentConstructor do
         restrictions: restrictions(workspace_root, envelope),
         resources: resources(opts),
         model_requirements: root_model_requirements(opts, template),
-        verification_requirements:
-          Map.merge(
-            %{required: false, source: "goal_default"},
-            template.verification_requirements
-          ),
+        verification_requirements: verification_requirements,
         parent: nil,
         lifecycle: lifecycle(0, maximum_delegation_depth),
         template: template.id,
@@ -101,7 +102,9 @@ defmodule BeamAgent.AgentConstructor do
 
       instructions =
         normalize_instructions(
-          template.instructions ++ normalize_instructions(value(proposal, :instructions) || [])
+          template.instructions ++
+            inherited_contract(parent, proposal) ++
+            normalize_instructions(value(proposal, :instructions) || [])
         )
 
       with :ok <- validate_delegation_shape(parent.agent_spec, template.execution_strategy),
@@ -126,7 +129,7 @@ defmodule BeamAgent.AgentConstructor do
           restrictions: restrictions(parent.workspace_root, authority.effective),
           resources: resources_from_parent(parent, opts),
           model_requirements: model_requirements(proposal, parent, template),
-          verification_requirements: verification_requirements(proposal, template),
+          verification_requirements: verification_requirements(proposal, template, opts),
           parent: %{
             worker_id: parent_session_id,
             delegation_id: Keyword.get(opts, :delegation_id),
@@ -321,7 +324,7 @@ defmodule BeamAgent.AgentConstructor do
 
   defp constrain_privacy(requirements, _inherited), do: requirements
 
-  defp verification_requirements(proposal, template) do
+  defp verification_requirements(proposal, template, opts) do
     requested = value(proposal, :verification_requirements)
     requested = if is_map(requested), do: requested, else: %{}
 
@@ -332,6 +335,7 @@ defmodule BeamAgent.AgentConstructor do
           :required,
           Map.get(template.verification_requirements, :required, false)
         ),
+      review_required: Keyword.get(opts, :completion_review, :runtime) != :external,
       source: :runtime_policy
     }
   end
@@ -376,28 +380,54 @@ defmodule BeamAgent.AgentConstructor do
   defp validate_delegation_shape(_parent_spec, _execution_strategy), do: :ok
 
   defp constrain_delegation_authority(authority, parent, template, depth, maximum) do
-    if template.execution_strategy.id == "implement" or depth >= maximum do
-      allowed_tools =
-        authority.effective
-        |> effective_tool_names(parent.goal_id)
-        |> Enum.reject(&(&1 in ["delegate_tasks", "spawn_subagent"]))
+    strategy = template.execution_strategy.id
 
-      with {:ok, effective} <-
-             CapabilityEnvelope.restrict(authority.effective, %{tools: allowed_tools}) do
+    cond do
+      strategy in ["investigate", "review", "verify"] ->
+        allowed_tools =
+          authority.effective
+          |> effective_tool_names(parent.goal_id)
+          |> Enum.filter(&read_only_tool?/1)
+
+        attenuate_tools(
+          authority,
+          allowed_tools,
+          "investigation, review, and verification workers receive read-only runtime authority"
+        )
+
+      strategy == "implement" or depth >= maximum ->
+        allowed_tools =
+          authority.effective
+          |> effective_tool_names(parent.goal_id)
+          |> Enum.reject(&(&1 in ["delegate_tasks", "spawn_subagent"]))
+
         reason =
           if depth >= maximum,
             do: "delegation is disabled at the configured maximum depth",
             else: "delegation tools require an explicit runtime capability lease for this worker"
 
-        {:ok,
-         AgentConstructionPolicy.attenuate(
-           authority,
-           effective,
-           reason
-         )}
-      end
-    else
-      {:ok, authority}
+        attenuate_tools(authority, allowed_tools, reason)
+
+      true ->
+        {:ok, authority}
+    end
+  end
+
+  defp attenuate_tools(authority, allowed_tools, reason) do
+    with {:ok, effective} <-
+           CapabilityEnvelope.restrict(authority.effective, %{tools: allowed_tools}) do
+      {:ok, AgentConstructionPolicy.attenuate(authority, effective, reason)}
+    end
+  end
+
+  defp read_only_tool?(name) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} ->
+        access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
+        access in [:read, :trusted]
+
+      {:error, _reason} ->
+        false
     end
   end
 
@@ -418,6 +448,72 @@ defmodule BeamAgent.AgentConstructor do
 
   defp parent_depth(%AgentSpec{lifecycle: %{depth: depth}}) when is_integer(depth), do: depth
   defp parent_depth(_spec), do: 0
+
+  defp inherited_contract(%{agent_spec: %AgentSpec{} = parent_spec} = parent, proposal) do
+    parent_goal = String.trim(parent_spec.goal || "")
+    root_contract = root_acceptance_contract(parent) || parent_goal
+    criteria = value(proposal, :completion_criteria)
+
+    (contract_instructions(
+       "Root acceptance contract (authoritative; do not narrow it or silently replace it with an MVP)",
+       root_contract
+     ) ++
+       contract_instructions("Immediate parent goal", parent_goal) ++
+       [
+         if(is_binary(criteria) and String.trim(criteria) != "",
+           do: "Delegated completion criteria: #{String.trim(criteria)}",
+           else: nil
+         )
+       ])
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp inherited_contract(_parent, _proposal), do: []
+
+  defp root_acceptance_contract(parent) do
+    with {:ok, goal} <- BeamAgent.Goal.snapshot(parent.goal_id),
+         {:ok, events} <- BeamAgent.Session.EventLog.events(goal.session_id) do
+      events
+      |> Enum.reverse()
+      |> Enum.find_value(fn event ->
+        if event["type"] == "user_message" do
+          case event["data"]["content"] do
+            content when is_binary(content) and content != "" -> content
+            _other -> nil
+          end
+        end
+      end)
+    else
+      _error -> nil
+    end
+  end
+
+  defp contract_instructions(_label, ""), do: []
+  defp contract_instructions(_label, nil), do: []
+
+  defp contract_instructions(label, text) when is_binary(text) do
+    text
+    |> utf8_chunks(3_000)
+    |> Enum.with_index(1)
+    |> Enum.map(fn {chunk, index} -> "#{label} [part #{index}]: #{chunk}" end)
+  end
+
+  defp utf8_chunks(text, maximum_bytes) do
+    {chunks, current, _bytes} =
+      Enum.reduce(String.codepoints(text), {[], [], 0}, fn codepoint, {chunks, current, bytes} ->
+        size = byte_size(codepoint)
+
+        if bytes > 0 and bytes + size > maximum_bytes do
+          {[current |> Enum.reverse() |> Enum.join() | chunks], [codepoint], size}
+        else
+          {chunks, [codepoint | current], bytes + size}
+        end
+      end)
+
+    [current |> Enum.reverse() |> Enum.join() | chunks]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reverse()
+  end
 
   defp enum_value(map, key, allowed, default) do
     value = value(map, key)

@@ -1,6 +1,6 @@
 # BeamAgent roadmap
 
-Updated: 2026-08-28
+Updated: 2026-08-31
 
 BeamAgent is evolving into an OTP-native runtime for autonomous software work:
 a fault-tolerant, observable, and concurrent system where specialized processes
@@ -356,6 +356,37 @@ every earlier item must finish before a high-value product or safety slice.
     - Verify single and multiple mentions, quoted and Unicode paths, completion,
       literal `@`, ignored and out-of-workspace paths, symlinks, changed/deleted
       files, large and binary files, delegation, replay, and compaction.
+
+- [ ] Group low-level runtime activity into concise, expandable work blocks
+
+    - Replace long runs of individual `read_file`, `search_files`, model-route,
+      model-outcome, diff-inspection, and similar progress lines with semantic
+      activity groups such as `Investigating file references`, `Reviewing
+      changes`, or `Running verification`.
+    - Derive groups deterministically from runtime identity and lineage—goal,
+      worker, session, turn, step, correlation, and causation—not from fragile
+      timing heuristics or TUI-only state. Keep the canonical event log unchanged
+      and make the grouping projection reusable by every interface.
+    - Update an active group in place with useful rollups: current action,
+      elapsed time, last meaningful progress, files touched, searches, model
+      calls, tool calls, children, and verification counts. Avoid appending a
+      new visible row for every low-level event.
+    - Collapse routine progress by default while allowing the user to expand a
+      group and inspect every underlying event in order. Preserve a direct path
+      to the complete raw event inspector for diagnosis and replay validation.
+    - Nest or clearly associate child-worker activity without flattening it into
+      the parent. Concurrent groups must remain distinct and show which worker
+      owns each activity.
+    - Never hide approvals, failures, retries, cancellations, policy denials,
+      warnings, verification failures, or suspected stalls inside a collapsed
+      group. These remain immediately visible and link back to their surrounding
+      activity.
+    - Keep final assistant messages visually dominant over operational detail,
+      and summarize completed groups compactly—for example `Investigated file
+      references · 6 reads · 3 searches · 2 model calls · 1m 42s`.
+    - Verify deterministic replay, reconnect, interleaved workers, live in-place
+      updates, expand/collapse behavior, raw-event parity, bounded rendering for
+      large histories, and foreground treatment of approvals and failures.
 
 - [ ] Make active, waiting, blocked, and stalled work visually unmistakable
 

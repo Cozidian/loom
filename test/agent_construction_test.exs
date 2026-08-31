@@ -52,7 +52,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.goal == "Coordinate a repository investigation"
     assert spec.role == "Goal coordinator"
     assert spec.lifecycle.depth == 0
-    assert spec.lifecycle.maximum_delegation_depth == 4
+    assert spec.lifecycle.maximum_delegation_depth == 2
     assert spec.lifecycle.restart == :temporary
     refute spec.lifecycle.terminate_after_result
     assert spec.lifecycle.retention == :until_goal_shutdown
@@ -64,7 +64,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert context_snapshot.system_prompt =~ "Goal: Coordinate a repository investigation"
 
     assert context_snapshot.system_prompt =~
-             "perform bounded work with granted tools or delegate it"
+             "perform work with granted tools or delegate it"
 
     {:ok, events} = BeamAgent.events(session_id)
     constructed = Enum.find(events, &(&1["type"] == "agent_constructed"))
@@ -131,7 +131,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.execution_strategy.id == "investigate"
     assert secret_instruction in spec.instructions
     assert spec.lifecycle.depth == 1
-    assert spec.lifecycle.maximum_delegation_depth == 4
+    assert spec.lifecycle.maximum_delegation_depth == 2
     assert spec.restrictions.external_network == :denied
     assert spec.model_requirements.reasoning == :high
     assert spec.model_requirements.locality == :local
@@ -184,6 +184,38 @@ defmodule BeamAgent.AgentConstructionTest do
     assert {:ok, tree} = BeamAgent.goal_tree(parent_id)
     rendered = BeamAgent.RuntimeGoalTree.render(tree)
     assert Enum.any?(rendered, &(&1 =~ "Elixir debugging specialist dynamic-"))
+  end
+
+  test "delegation preserves the root user acceptance contract across generations", context do
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    root_contract =
+      "Implement image paste support, preserve clipboard previews, add regression tests, and update docs"
+
+    assert {:ok, _event} =
+             BeamAgent.Session.EventLog.append(root_id, :user_message, %{
+               "content" => root_contract
+             })
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(root_id,
+               agent_proposal: %{
+                 goal: "Implement the clipboard decoder",
+                 template: "implementer",
+                 completion_criteria: "Decoder tests pass"
+               }
+             )
+
+    assert {:ok, child_context} = BeamAgent.context_snapshot(child_id)
+    assert child_context.system_prompt =~ root_contract
+    assert child_context.system_prompt =~ "Implement the clipboard decoder"
+    assert child_context.system_prompt =~ "Decoder tests pass"
+    assert child_context.system_prompt =~ "do not narrow"
   end
 
   test "a proposal cannot expand parent authority", context do
@@ -303,6 +335,33 @@ defmodule BeamAgent.AgentConstructionTest do
                goal: "Implement the remaining image paste changes",
                template: "implementer"
              })
+  end
+
+  test "investigation workers cannot inherit write, execute, or delegation tools", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Investigate the failing parser",
+                 template: "researcher"
+               }
+             )
+
+    assert {:ok, spec} = BeamAgent.agent_spec(child_id)
+    tools = spec.effective_capabilities.scopes.tools
+    assert "read_file" in tools
+    assert "search_files" in tools
+    refute "create_file" in tools
+    refute "apply_patch" in tools
+    refute "run_command" in tools
+    refute "spawn_subagent" in tools
+    refute "delegate_tasks" in tools
   end
 
   test "the configurable delegation depth is inherited and remains a safety fuse", context do

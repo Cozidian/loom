@@ -8,7 +8,7 @@ defmodule BeamAgent.Tools.SpawnSubagent do
   @impl true
   def description,
     do:
-      "Request a dynamically constructed specialist agent, then await its answer. The runtime controls its actual authority, resources, model eligibility, and lifecycle."
+      "Request one independently bounded specialist, then await its answer. Do not use this to transfer or duplicate ownership of a coherent implementation. The runtime controls authority, resources, model eligibility, and lifecycle."
 
   @impl true
   def input_schema do

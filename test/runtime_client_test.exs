@@ -86,6 +86,44 @@ defmodule BeamAgent.RuntimeClientTest do
     refute snapshot.running?
   end
 
+  test "runtime submit resolves workspace file references into model context", context do
+    File.write!(Path.join(context.workspace, "README.md"), "workspace hello\n")
+
+    assert {:ok, runtime} = Runtime.connect(context.session_id, view: :internal)
+    on_exit(fn -> Runtime.disconnect(runtime) end)
+
+    assert :ok = Runtime.submit(runtime, "summarize @README.md")
+    assert_receive {:beam_agent_runtime, ^runtime, {:turn_started, "summarize @README.md"}}
+
+    messages = collect_until_finished(runtime, [])
+    assert {:turn_finished, {:ok, answer}} = List.last(messages)
+    assert answer =~ "<workspace_file_references untrusted=\"true\">"
+    assert answer =~ ~s(path="README.md")
+    assert answer =~ "workspace hello"
+
+    assert {:ok, events} = BeamAgent.events(context.session_id)
+
+    user_event =
+      events
+      |> Enum.reverse()
+      |> Enum.find(&(&1["type"] == "user_message"))
+
+    assert user_event["data"]["content"] == "summarize @README.md"
+    assert get_in(user_event, ["data", "file_references", Access.at(0), "path"]) == "README.md"
+    refute Map.has_key?(get_in(user_event, ["data", "file_references", Access.at(0)]), "content")
+
+    assert {:ok, public_events} = BeamAgent.goal_events(context.session_id)
+
+    public_command =
+      Enum.find(public_events, &(to_string(&1.payload.type) == "command_received"))
+
+    public_reference = get_in(public_command.payload.data, ["file_references", Access.at(0)])
+    assert public_reference["path"] == "README.md"
+    refute Map.has_key?(public_reference, "content")
+    refute Map.has_key?(public_reference, "snapshot_path")
+    refute Map.has_key?(public_reference, "source_path")
+  end
+
   test "clients import, submit, replay, and remove attachments through the runtime contract",
        context do
     :ok = BeamAgent.stop_session(context.session_id)

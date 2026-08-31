@@ -15,8 +15,14 @@ defmodule BeamAgent.RuntimeCommand do
       at: DateTime.utc_now() |> DateTime.to_iso8601(),
       correlation_id: inherited_correlation || command_id,
       causation_id: Keyword.get(opts, :causation_id),
-      scope: Map.take(scope, [:project_id, :goal_id, :session_id, :worker_id])
+      scope: Map.take(scope, [:project_id, :goal_id, :session_id, :worker_id]),
+      payload_version: 1,
+      payload: Keyword.get(opts, :payload, %{})
     }
+  end
+
+  def put_payload(%{type: :runtime_command} = command, payload) when is_map(payload) do
+    %{command | payload_version: 1, payload: payload}
   end
 
   defp new_id do

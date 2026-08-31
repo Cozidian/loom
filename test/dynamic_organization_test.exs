@@ -74,6 +74,44 @@ defmodule BeamAgent.DynamicOrganizationTest do
              })
   end
 
+  test "decomposition rejects competing owners for one coherent implementation" do
+    assert {:error, {:multiple_implementation_owners, ["api", "ui"]}} =
+             DecompositionPlan.new(%{
+               tasks: [
+                 %{id: "api", goal: "Implement the API portion", template: "implementer"},
+                 %{id: "ui", goal: "Implement the UI portion", template: "implementer"},
+                 %{id: "review", goal: "Review the resulting implementation"}
+               ]
+             })
+
+    assert {:ok, _plan} =
+             DecompositionPlan.new(%{
+               tasks: [
+                 %{id: "research", goal: "Research the relevant modules"},
+                 %{id: "implementation", goal: "Implement the complete coherent change"},
+                 %{id: "review", goal: "Review the resulting implementation"}
+               ]
+             })
+
+    assert {:ok, _plan} =
+             DecompositionPlan.new(%{
+               tasks: [
+                 %{
+                   id: "api",
+                   goal: "Implement the API portion",
+                   template: "implementer",
+                   capabilities: %{paths: ["lib/api"]}
+                 },
+                 %{
+                   id: "ui",
+                   goal: "Implement the UI portion",
+                   template: "implementer",
+                   capabilities: %{paths: ["cmd/ui"]}
+                 }
+               ]
+             })
+  end
+
   test "a temporary worker organization executes dependencies and reclaims workers", context do
     assert {:ok, root_id} =
              BeamAgent.start_session(
@@ -137,7 +175,7 @@ defmodule BeamAgent.DynamicOrganizationTest do
                worker_options: [provider: :echo, data_dir: context.data_dir]
              )
 
-    assert race.status == :selected
+    assert race.status == :selected, inspect(race, pretty: true, limit: :infinity)
     assert race.winner_id == "a"
 
     assert {:ok, events} = BeamAgent.events(root_id)
@@ -202,7 +240,7 @@ defmodule BeamAgent.DynamicOrganizationTest do
                ]
              )
 
-    assert race.status == :selected
+    assert race.status == :selected, inspect(race, pretty: true, limit: :infinity)
     assert race.winner_id == "passing"
     assert {:ok, passing} = race.results["passing"]
     assert {:ok, failing} = race.results["failing"]

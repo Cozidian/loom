@@ -28,6 +28,7 @@ defmodule BeamAgent.DecompositionPlan do
     raw_tasks = value(attributes, :tasks) || []
 
     with {:ok, tasks} <- normalize_tasks(raw_tasks),
+         :ok <- validate_single_implementation_owner(tasks),
          :ok <- validate_dependencies(tasks),
          :ok <- validate_acyclic(tasks) do
       {:ok,
@@ -124,6 +125,64 @@ defmodule BeamAgent.DecompositionPlan do
       nil -> :ok
       task -> {:error, {:invalid_task_dependencies, task.id}}
     end
+  end
+
+  defp validate_single_implementation_owner(tasks) do
+    implementers =
+      Enum.filter(tasks, fn task ->
+        task.template == "implementer" or
+          BeamAgent.TaskClassifier.classify(task.goal).task_type == :implementation
+      end)
+
+    case implementers do
+      [] ->
+        :ok
+
+      [_one] ->
+        :ok
+
+      many ->
+        if explicitly_disjoint_implementers?(many),
+          do: :ok,
+          else: {:error, {:multiple_implementation_owners, Enum.map(many, & &1.id)}}
+    end
+  end
+
+  defp explicitly_disjoint_implementers?(tasks) do
+    with scopes when is_list(scopes) <- Enum.map(tasks, &implementation_paths/1),
+         true <- Enum.all?(scopes, &match?([_ | _], &1)) do
+      scopes
+      |> Enum.with_index()
+      |> Enum.all?(fn {paths, index} ->
+        scopes
+        |> Enum.drop(index + 1)
+        |> Enum.all?(fn other ->
+          Enum.all?(paths, fn path -> Enum.all?(other, &(not overlapping_path?(path, &1))) end)
+        end)
+      end)
+    else
+      _other -> false
+    end
+  end
+
+  defp implementation_paths(task) do
+    capabilities = task.capabilities || %{}
+
+    case value(capabilities, :paths) do
+      paths when is_list(paths) ->
+        paths
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(&String.trim_trailing(&1, "/"))
+        |> Enum.reject(&(&1 == ""))
+
+      _other ->
+        nil
+    end
+  end
+
+  defp overlapping_path?(left, right) do
+    left == right or String.starts_with?(left, right <> "/") or
+      String.starts_with?(right, left <> "/")
   end
 
   defp validate_acyclic(tasks) do

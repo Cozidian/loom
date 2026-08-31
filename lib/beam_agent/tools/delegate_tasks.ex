@@ -7,7 +7,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
 
   @impl true
   def description do
-    "Execute a small dependency graph of dynamically constructed specialist workers with bounded parallelism."
+    "Execute up to four independent specialist tasks with bounded parallelism. Do not delegate duplicate ownership of one coherent implementation."
   end
 
   @impl true
@@ -21,7 +21,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
         },
         tasks: %{
           type: "array",
-          maxItems: 8,
+          maxItems: 4,
           items: %{
             type: "object",
             properties: %{
@@ -46,7 +46,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
 
   @impl true
   def execute(%{"tasks" => tasks} = arguments, context)
-      when is_list(tasks) and length(tasks) in 1..8 do
+      when is_list(tasks) and length(tasks) in 1..4 do
     opts = [
       strategy: arguments["strategy"] || "coordinate",
       worker_options: [
@@ -66,13 +66,19 @@ defmodule BeamAgent.Tools.DelegateTasks do
       ]
     ]
 
-    case BeamAgent.execute_decomposition(context.session_id, %{tasks: tasks}, opts) do
-      {:ok, result} -> {:ok, encode_result(result)}
-      {:error, reason} -> {:error, reason}
+    with :ok <- reject_duplicate_goals(tasks),
+         {:ok, result} <-
+           BeamAgent.execute_decomposition(context.session_id, %{tasks: tasks}, opts) do
+      {:ok, encode_result(result)}
     end
   end
 
-  def execute(_arguments, _context), do: {:error, :expected_one_to_eight_tasks}
+  def execute(_arguments, _context), do: {:error, :expected_one_to_four_tasks}
+
+  defp reject_duplicate_goals(tasks) do
+    goals = Enum.map(tasks, &(Map.get(&1, "goal", "") |> String.trim() |> String.downcase()))
+    if Enum.uniq(goals) == goals, do: :ok, else: {:error, :duplicate_delegated_goal}
+  end
 
   defp encode_result(result) do
     tasks =

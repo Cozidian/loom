@@ -3,7 +3,7 @@ defmodule BeamAgent.Agent do
   use GenServer
 
   alias BeamAgent.{AgentSpec, CapabilityCatalog, Names, RuntimeCommand}
-  alias BeamAgent.Session.{AttachmentStore, Context, EventLog}
+  alias BeamAgent.Session.{AttachmentStore, Context, EventLog, FileReference}
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :session_id)
@@ -172,7 +172,20 @@ defmodule BeamAgent.Agent do
     ]
 
     with {:ok, attachments} <- AttachmentStore.references(state.session_id, attachment_ids),
+         {:ok, file_references} <-
+           FileReference.resolve(prompt, %{
+             workspace_root: state.workspace_root,
+             project_id: state.project_id,
+             session_id: state.session_id,
+             data_dir: state.data_dir,
+             capability_envelope: state.capability_envelope
+           }),
          true <- prompt != "" or attachments != [],
+         command <-
+           RuntimeCommand.put_payload(command, %{
+             attachment_ids: Enum.map(attachments, & &1.id),
+             file_references: FileReference.public_list(file_references.resolved)
+           }),
          {:ok, command_event} <-
            EventLog.append(
              state.session_id,
@@ -181,12 +194,25 @@ defmodule BeamAgent.Agent do
                "command_id" => command.command_id,
                "name" => command.name,
                "version" => command.version,
-               "attachment_ids" => Enum.map(attachments, & &1.id)
+               "payload_version" => command.payload_version,
+               "attachment_ids" => command.payload.attachment_ids,
+               "file_references" => command.payload.file_references,
+               "rejected_file_references" => FileReference.public_list(file_references.rejected)
              },
              metadata
            ),
+         :ok <- ensure_file_references(state, command, command_event, file_references),
          {:ok, supervisor} <- Names.pid(:resource_supervisor, state.session_id) do
-      start_turn(supervisor, state, from, prompt, attachments, command, command_event)
+      start_turn(
+        supervisor,
+        state,
+        from,
+        prompt,
+        attachments,
+        file_references.resolved,
+        command,
+        command_event
+      )
     else
       false -> {:reply, {:error, :empty_message}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -325,7 +351,16 @@ defmodule BeamAgent.Agent do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:turn_result, _ref, _pid, _result}, state), do: {:noreply, state}
 
-  defp start_turn(supervisor, state, from, prompt, attachments, command, command_event) do
+  defp start_turn(
+         supervisor,
+         state,
+         from,
+         prompt,
+         attachments,
+         file_references,
+         command,
+         command_event
+       ) do
     agent = self()
     turn_ref = make_ref()
     command = Map.put(command, :event_id, event_id(command_event))
@@ -334,6 +369,7 @@ defmodule BeamAgent.Agent do
       state
       |> Map.put(:runtime_command, command)
       |> Map.put(:turn_attachments, attachments)
+      |> Map.put(:turn_file_references, file_references)
 
     task = fn ->
       # The session resource supervisor owns the worker, while this extra link
@@ -372,6 +408,27 @@ defmodule BeamAgent.Agent do
 
         {:reply, {:error, {:turn_start_failed, reason}}, state}
     end
+  end
+
+  defp ensure_file_references(_state, _command, _command_event, %{rejected: []}), do: :ok
+
+  defp ensure_file_references(state, command, command_event, %{rejected: rejected}) do
+    public = FileReference.public_list(rejected)
+
+    _ =
+      EventLog.append(
+        state.session_id,
+        :command_failed,
+        %{
+          "command_id" => command.command_id,
+          "error" => "invalid_file_references",
+          "rejected_file_references" => public
+        },
+        correlation_id: command.correlation_id,
+        causation_id: event_id(command_event)
+      )
+
+    {:error, {:invalid_file_references, public}}
   end
 
   defp event_id(event), do: "#{event["session_id"]}:#{event["seq"]}"

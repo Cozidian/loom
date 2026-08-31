@@ -18,7 +18,7 @@
     },
     {
       "id": "go-test",
-      "command": "go test ./...",
+      "command": "env GOCACHE=$PWD/.beam_agent/tmp/go-build go test ./...",
       "timeout_ms": 120000
     },
     {

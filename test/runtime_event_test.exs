@@ -27,7 +27,13 @@ defmodule BeamAgent.RuntimeEventTest do
           "verification_check_started",
           "verification_check_finished",
           "verification_finished",
-          "verification_cancelled"
+          "verification_cancelled",
+          "verification_recovery_started",
+          "verification_feedback",
+          "implementation_review_started",
+          "implementation_review_finished",
+          "implementation_review_recovery_started",
+          "review_feedback"
         ] do
       assert category(type) == :verification
     end

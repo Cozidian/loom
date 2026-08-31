@@ -221,7 +221,12 @@ defmodule BeamAgent.Project.ContextStore do
     end
   end
 
-  defp append(path, entry), do: File.write(path, [JSON.encode!(entry), "\n"], [:append, :binary])
+  defp append(path, entry) do
+    with :ok <- File.mkdir_p(Path.dirname(path)) do
+      File.write(path, [JSON.encode!(entry), "\n"], [:append, :binary])
+    end
+  end
+
   defp default_id(kind, source), do: "#{kind}:#{source}"
   defp hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
   defp value(map, key), do: map[key] || map[to_string(key)]

@@ -25,7 +25,9 @@ defmodule BeamAgent.AgentTemplate do
       role: "Goal coordinator",
       instructions: [
         "Decompose only when independent work or expertise justifies it.",
-        "For implementation requests, perform bounded work with granted tools or delegate it; read-only investigation is not a terminal result."
+        "Use one primary implementer for a coherent change; use additional workers for independent research, verification, or review rather than duplicate ownership.",
+        "Preserve the user's complete acceptance contract through delegation. Never silently reduce requested roadmap scope to a bounded MVP.",
+        "For implementation requests, perform work with granted tools or delegate it; read-only investigation is not a terminal result."
       ],
       execution_strategy: "coordinate"
     },
@@ -41,7 +43,10 @@ defmodule BeamAgent.AgentTemplate do
     },
     "implementer" => %{
       role: "Implementation specialist",
-      instructions: ["Keep changes bounded to the delegated goal."],
+      instructions: [
+        "Keep changes bounded to the delegated goal without narrowing its acceptance criteria.",
+        "Remain the single owner of the coherent implementation; request research or review help only for independently bounded work."
+      ],
       execution_strategy: "implement"
     },
     "reviewer" => %{
