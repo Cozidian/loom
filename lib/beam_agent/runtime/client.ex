@@ -489,6 +489,8 @@ defmodule BeamAgent.Runtime.Client do
   end
 
   defp connection_snapshot(state) do
+    goal_status = goal_status(state.goal_id)
+
     %{
       session_id: state.session_id,
       project_id: state.project_id,
@@ -501,7 +503,37 @@ defmodule BeamAgent.Runtime.Client do
       attachments: list_draft_attachments(state.session_id),
       pending_approvals:
         state.pending_approvals |> Map.values() |> Enum.sort_by(& &1.approval_id),
-      running?: state.agent_status != :idle
+      goal_phase: goal_status.phase,
+      work_contract: contract_summary(goal_status.current_contract),
+      last_work: last_work_summary(goal_status.last_work),
+      running?: goal_status.phase in [:executing, :cancelling] or state.agent_status != :idle
+    }
+  end
+
+  defp goal_status(goal_id) when is_binary(goal_id) do
+    case BeamAgent.Goal.status(goal_id) do
+      {:ok, status} -> status
+      {:error, _reason} -> %{phase: :unknown, current_contract: nil, last_work: nil}
+    end
+  end
+
+  defp goal_status(_goal_id),
+    do: %{phase: :unknown, current_contract: nil, last_work: nil}
+
+  defp contract_summary(nil), do: nil
+
+  defp contract_summary(contract) do
+    Map.take(contract, [:id, :kind, :worker_kind, :expected_artifact, :verification_required])
+  end
+
+  defp last_work_summary(nil), do: nil
+
+  defp last_work_summary(work) do
+    %{
+      status: work.status,
+      contract: contract_summary(work.contract),
+      artifact: work.artifact,
+      finished_at: DateTime.to_iso8601(work.finished_at)
     }
   end
 

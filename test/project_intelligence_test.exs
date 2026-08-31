@@ -76,8 +76,9 @@ defmodule BeamAgent.ProjectIntelligenceTest do
              })
 
     {:ok, events} = BeamAgent.events(root_id)
-    assert Enum.any?(events, &(&1["type"] == "file_changed"))
-    assert Enum.any?(events, &(&1["type"] == "repository_updated"))
+    update = List.last(Enum.filter(events, &(&1["type"] == "repository_updated")))
+    assert "lib/sample.ex" in update["data"]["changed_paths"]
+    refute Enum.any?(events, &(&1["type"] == "file_changed"))
   end
 
   test "project routing preferences are durable runtime knowledge", context do

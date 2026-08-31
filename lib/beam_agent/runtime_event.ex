@@ -94,6 +94,8 @@ defmodule BeamAgent.RuntimeEvent do
               "agent_started",
               "turn_started",
               "turn_finished",
+              "goal_work_started",
+              "goal_work_finished",
               "subagent_spawned",
               "agent_construction_requested",
               "agent_constructed",

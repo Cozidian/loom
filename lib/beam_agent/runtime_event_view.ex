@@ -26,12 +26,13 @@ defmodule BeamAgent.RuntimeEventView do
     race_id candidate_id candidate_count winner_id discarded_count merged evaluation_fingerprint justification_fingerprint
     generation added_count changed_count removed_count change hash path command_fingerprint
     worktree_id owner_worker_id base_revision worktree_status changed_file_count patch_fingerprint force
+    contract_id artifact_id expected_artifact phase worker_kind
   ))
 
   @safe_container_keys MapSet.new(~w(usage))
   @safe_object_keys MapSet.new(~w(evidence inputs verification))
   @safe_list_keys MapSet.new(
-                    ~w(attachments candidate_endpoint_ids candidates endpoints file_references reasons rejected_fields rejected_file_references requested_scopes)
+                    ~w(attachments candidate_endpoint_ids candidates changed_files endpoints file_references reasons rejected_fields rejected_file_references requested_scopes)
                   )
   @safe_provenance_sources MapSet.new(~w(
     goal_default parent_allocation parent_inheritance parent_proposal

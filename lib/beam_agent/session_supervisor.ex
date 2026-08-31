@@ -10,6 +10,7 @@ defmodule BeamAgent.SessionSupervisor do
     ConversationContext,
     Context,
     EventLog,
+    FileTracker,
     ResourceSupervisor,
     StreamHub,
     SubagentSupervisor,
@@ -359,6 +360,7 @@ defmodule BeamAgent.SessionSupervisor do
       {ResourceSupervisor, opts},
       {Context, opts},
       {ConversationContext, opts},
+      {FileTracker, opts},
       {ToolPolicy, opts},
       {SubagentSupervisor, opts},
       {BeamAgent.Agent, opts}

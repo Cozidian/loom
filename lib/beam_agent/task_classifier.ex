@@ -14,14 +14,29 @@ defmodule BeamAgent.TaskClassifier do
 
   defp task_type(text) do
     cond do
-      String.contains?(text, ["subagent", "delegate", "plan and implement"]) -> :orchestration
-      String.contains?(text, ["architecture", "design decision", "tradeoff"]) -> :architecture
-      String.contains?(text, ["debug", "bug", "failing", "error"]) -> :debugging
-      String.contains?(text, ["test", "verify", "review"]) -> :verification
-      String.contains?(text, ["implement", "change", "edit", "write code"]) -> :implementation
-      arithmetic(text) != nil -> :deterministic
-      String.length(text) < 180 -> :simple
-      true -> :general
+      String.contains?(text, ["subagent", "delegate", "plan and implement"]) ->
+        :orchestration
+
+      String.contains?(text, ["architecture", "design decision", "tradeoff"]) ->
+        :architecture
+
+      Regex.match?(~r/\b(?:implement|change|edit|fix)\b|\bwrite\s+code\b/u, text) ->
+        :implementation
+
+      String.contains?(text, ["debug", "bug", "failing", "error"]) ->
+        :debugging
+
+      String.contains?(text, ["test", "verify", "review"]) ->
+        :verification
+
+      arithmetic(text) != nil ->
+        :deterministic
+
+      String.length(text) < 180 ->
+        :simple
+
+      true ->
+        :general
     end
   end
 

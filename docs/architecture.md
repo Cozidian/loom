@@ -50,7 +50,7 @@ BeamAgent.Supervisor
         ├── OutcomeStore (GenServer, append-only project outcome ledger)
         └── GoalRootSupervisor (DynamicSupervisor)
             └── GoalSupervisor (one per root goal, :rest_for_one)
-                ├── Goal (GenServer, identity and goal-lived state)
+                ├── Goal (GenServer, typed work contracts and goal-lived state)
                 ├── Goal.EventHub (GenServer, goal-wide replay and live fan-out)
                 ├── Goal.ResourceSupervisor (DynamicSupervisor)
                 │   └── MCP.Server (one per local stdio server)
@@ -63,6 +63,7 @@ BeamAgent.Supervisor
                     ├── ResourceSupervisor (DynamicSupervisor)
                     ├── Context (GenServer, instructions and skill snapshot)
                     ├── ConversationContext (GenServer, model projection)
+                    ├── FileTracker (GenServer, observed file generations)
                     ├── ToolPolicy (GenServer, approvals and pending callers)
                     ├── SubagentSupervisor (DynamicSupervisor)
                     │   └── SessionSupervisor (one per child, recursively)
@@ -74,8 +75,13 @@ for the same workspace share one long-lived project runtime. A project state
 process can restart without disturbing its goal supervisor. Stopping the
 project intentionally terminates every ephemeral goal it owns.
 
-A root goal currently wraps the existing durable session subtree: its goal and
-session identifiers are equal during this compatibility phase.
+A root goal wraps the existing durable session subtree: its goal and session
+identifiers are equal during this compatibility phase. `BeamAgent.ask/4` now
+enters the `Goal` process first. Goal classifies the objective into a small
+runtime-owned `WorkContract`, assembles current repository/git/diagnostic
+context, owns the executing/cancelling/completed phase, and records a terminal
+work artifact. The session `Agent` remains the model worker rather than the
+authority that decides the goal lifecycle.
 `BeamAgent.start_session/1` opens or reuses the project and starts a goal, so
 existing clients do not need to change. A goal-state failure rebuilds the
 dependent session from its event log; sibling goals remain isolated. Nested
@@ -308,12 +314,19 @@ its subscription, not the pending decision; a replacement interface receives
 the same approval ID, while explicit turn cancellation or caller death removes
 the request.
 
-File edits use observed-state concurrency rather than blind overwrite:
-`read_file` returns a SHA-256 version and `edit_file` must present it while also
-matching exactly one old-text occurrence. Creates use exclusive file creation.
-Commands use explicit cwd, timeout, output limits, and an enforcing platform
-sandbox. A missing sandbox backend is an error, not an automatic unsandboxed
-fallback.
+File edits use observed-state concurrency rather than blind overwrite.
+`read_file` records the observed hash in the session-owned `FileTracker` and
+returns both raw and numbered content. `edit_file` and `apply_patch` normally
+consult that actor instead of requiring the model to carry a SHA through its
+prompt; legacy direct callers may still provide one. Exact edits must still
+match once and creates remain exclusive. Commands use explicit cwd, timeout,
+output limits, and an enforcing platform sandbox. Non-zero exits are successful
+tool transport with `ok: false`, exit status, and output so failing checks become
+repair evidence. A missing sandbox backend remains an error.
+
+When one model response requests multiple independent read-only tools, the tool
+loop runs them in bounded supervised tasks and preserves result order. Writes,
+commands, delegation, and MCP calls remain serialized.
 
 Goal-scoped local stdio MCP servers live below `Goal.ResourceSupervisor`.
 `MCP.Registry` discovers and publishes namespaced tools, while calls pass through
@@ -444,9 +457,12 @@ OpenAI ChatGPT-plan profiles launch the official Codex App Server as an
 OTP-owned temporary port process. App Server owns browser OAuth, persistence,
 refresh, and model access. Each invocation receives an isolated empty working
 directory, no Codex shell/web/apps/plugins/subagents, and only BeamAgent's
-authorized dynamic-tool schemas. A Codex tool request is returned to the normal
-BeamAgent tool loop, where capability, approval, sandbox, event, and durable
-conversation policy remain authoritative.
+authorized dynamic-tool schemas. Native Codex tool requests are executed
+immediately through BeamAgent's normal `ToolRunner` capability, approval,
+sandbox, event, and budget boundary; the real result is returned to the same
+Codex turn so one coding turn can inspect, edit, and finish without an
+acknowledgement race. Persisting the App Server thread across separate
+BeamAgent turns remains future work.
 
 API-key and generic device-flow credentials are resolved by the supervised
 `Auth.CredentialStore`. Configuration and model-endpoint descriptors carry only

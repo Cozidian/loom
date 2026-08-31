@@ -525,6 +525,18 @@ defmodule BeamAgent.CLI.TUI do
        }),
        do: "Goal started · #{short_id(goal_id)}"
 
+  defp info_entry(%{payload: %{type: "goal_work_started", data: data}}) do
+    contract = data["work_contract"] || %{}
+
+    "Goal executing · #{contract["kind"] || "work"} → #{contract["worker_kind"] || "worker"} → #{contract["expected_artifact"] || "result"}"
+  end
+
+  defp info_entry(%{payload: %{type: "goal_work_finished", data: data}}) do
+    changed = data["changed_files"] || []
+
+    "Goal #{data["status"]} · #{data["expected_artifact"]} · #{length(changed)} changed files"
+  end
+
   defp info_entry(%{
          payload: %{type: "agent_started", data: data},
          scope: %{root?: true}

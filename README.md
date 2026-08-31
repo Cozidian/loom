@@ -183,10 +183,12 @@ Every real LLM sees the same model-callable coding tools:
 - `list_files`, `read_file`, and `search_files` run without approval;
 - `list_skills` and `read_skill` discover and lazily activate project workflows;
 - `create_file` refuses to overwrite an existing path;
-- `edit_file` requires the SHA-256 returned by `read_file` and rejects stale or
-  ambiguous edits;
-- `run_command` has bounded time/output and runs with network denied and writes
-  restricted to the workspace and temporary directories;
+- `read_file` records its observed generation in a session actor and returns
+  numbered content; `edit_file` and `apply_patch` reject stale or ambiguous
+  edits without making the model pass hashes;
+- `run_command` has bounded time/output, returns non-zero exits as diagnostic
+  data, and runs with network denied and writes restricted to the workspace and
+  temporary directories;
 - `reload_context` refreshes changed instruction and skill files after approval;
 - `spawn_subagent` dynamically constructs a bounded specialist with attenuated
   authority and reclaims its live worker after recording the result;
@@ -335,7 +337,9 @@ OpenAI profiles can instead use a ChatGPT subscription through browser login.
 This path requires the official `codex` executable with `codex app-server`
 available on `PATH`; Codex owns the OAuth ceremony, durable credential, and
 automatic refresh. BeamAgent keeps ownership of the agent loop and exposes only
-its current dynamic tool schemas to the model process:
+its current dynamic tool schemas to the model process. Tool requests execute
+through BeamAgent policy and their real results return inside the same Codex
+turn:
 
 ```sh
 ./beam_agent provider add openai-chatgpt \

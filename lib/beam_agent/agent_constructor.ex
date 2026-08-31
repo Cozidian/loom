@@ -29,7 +29,7 @@ defmodule BeamAgent.AgentConstructor do
     workspace_root = Keyword.fetch!(opts, :workspace_root)
     goal = Keyword.get(opts, :objective) || "Coordinate work requested through this session"
     classification = TaskClassifier.classify(goal, workspace_root)
-    template = AgentTemplate.resolve("coordinator", classification)
+    template = AgentTemplate.resolve("goal-worker", classification)
     role = Keyword.get(opts, :role) || template.role
     maximum_delegation_depth = maximum_delegation_depth(opts)
 
@@ -115,7 +115,8 @@ defmodule BeamAgent.AgentConstructor do
                template,
                depth,
                maximum_delegation_depth
-             ) do
+             ),
+           :ok <- validate_worker_coherence(role, template, authority, parent.goal_id) do
         AgentSpec.new(%{
           goal: goal,
           role: role,
@@ -378,6 +379,30 @@ defmodule BeamAgent.AgentConstructor do
        do: {:error, :recursive_implementation_delegation}
 
   defp validate_delegation_shape(_parent_spec, _execution_strategy), do: :ok
+
+  defp validate_worker_coherence(role, template, authority, goal_id) do
+    implementation_role? =
+      is_binary(role) and Regex.match?(~r/\bimplement(?:ation|er)?\b/iu, role)
+
+    cond do
+      implementation_role? and template.execution_strategy.id != "implement" ->
+        {:error, :contradictory_worker_contract}
+
+      template.execution_strategy.id == "implement" and
+          not Enum.any?(effective_tool_names(authority.effective, goal_id), &write_tool?/1) ->
+        {:error, :implementation_worker_without_write_authority}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp write_tool?(name) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} -> function_exported?(module, :access, 0) and module.access() == :write
+      {:error, _reason} -> false
+    end
+  end
 
   defp constrain_delegation_authority(authority, parent, template, depth, maximum) do
     strategy = template.execution_strategy.id

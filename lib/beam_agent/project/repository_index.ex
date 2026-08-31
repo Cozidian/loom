@@ -2,11 +2,22 @@ defmodule BeamAgent.Project.RepositoryIndex do
   @moduledoc "Project-level reactive repository snapshot with generation-safe incremental analysis."
   use GenServer
 
-  alias BeamAgent.{Goal, Names}
+  alias BeamAgent.Names
   alias BeamAgent.Project.ContextStore
   alias BeamAgent.Session.EventLog
 
-  @ignored MapSet.new([".git", "_build", "deps", ".elixir_ls", "node_modules"])
+  @ignored MapSet.new([
+             ".git",
+             ".beam_agent",
+             ".agents",
+             ".codex",
+             "_build",
+             "deps",
+             ".elixir_ls",
+             "node_modules",
+             "coverage",
+             "tmp"
+           ])
 
   def start_link(opts) do
     project_id = Keyword.fetch!(opts, :project_id)
@@ -27,7 +38,9 @@ defmodule BeamAgent.Project.RepositoryIndex do
       files: %{},
       git: %{},
       last_refreshed_at: nil,
-      scan_interval_ms: Keyword.get(opts, :repository_scan_interval_ms, 2_000)
+      scan_interval_ms: Keyword.get(opts, :repository_scan_interval_ms, 5_000),
+      refresh_debounce_ms: Keyword.get(opts, :repository_refresh_debounce_ms, 100),
+      refresh_timer: nil
     }
 
     send(self(), :refresh)
@@ -51,8 +64,12 @@ defmodule BeamAgent.Project.RepositoryIndex do
 
   @impl true
   def handle_cast(:refresh, state) do
-    {_reply, state} = do_refresh(state)
-    {:noreply, state}
+    if state.refresh_timer do
+      {:noreply, state}
+    else
+      timer = Process.send_after(self(), :debounced_refresh, state.refresh_debounce_ms)
+      {:noreply, %{state | refresh_timer: timer}}
+    end
   end
 
   @impl true
@@ -62,23 +79,37 @@ defmodule BeamAgent.Project.RepositoryIndex do
     {:noreply, state}
   end
 
+  def handle_info(:debounced_refresh, state) do
+    {_reply, state} = do_refresh(%{state | refresh_timer: nil})
+    {:noreply, state}
+  end
+
   defp do_refresh(state) do
     generation = state.generation + 1
 
     case scan(state.workspace_root, generation) do
       {:ok, files, git} ->
         changes = diff(state.files, files)
+        changed? = changes != %{added: [], changed: [], removed: []} or git != state.git
 
-        state = %{
-          state
-          | generation: generation,
-            files: files,
-            git: git,
-            last_refreshed_at: DateTime.utc_now() |> DateTime.to_iso8601()
-        }
+        state =
+          if changed? do
+            %{
+              state
+              | generation: generation,
+                files: files,
+                git: git,
+                last_refreshed_at: DateTime.utc_now() |> DateTime.to_iso8601()
+            }
+          else
+            %{state | last_refreshed_at: DateTime.utc_now() |> DateTime.to_iso8601()}
+          end
 
-        persist_context(state)
-        publish_changes(state, changes)
+        if changed? do
+          persist_context(state)
+          publish_changes(state, changes)
+        end
+
         {{:ok, public_snapshot(state)}, state}
 
       {:error, reason} ->
@@ -93,7 +124,7 @@ defmodule BeamAgent.Project.RepositoryIndex do
   defp scan(root, generation) do
     files =
       root
-      |> walk("")
+      |> repository_paths()
       |> Enum.sort()
       |> Map.new(fn relative ->
         absolute = Path.join(root, relative)
@@ -148,6 +179,34 @@ defmodule BeamAgent.Project.RepositoryIndex do
     end
   end
 
+  defp repository_paths(root) do
+    if File.exists?(Path.join(root, ".git")) do
+      case System.cmd(
+             "git",
+             ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+             cd: root,
+             stderr_to_stdout: true
+           ) do
+        {output, 0} ->
+          output
+          |> String.split(<<0>>, trim: true)
+          |> Enum.reject(&ignored_path?/1)
+          |> Enum.filter(&File.regular?(Path.join(root, &1)))
+
+        _failed ->
+          walk(root, "")
+      end
+    else
+      walk(root, "")
+    end
+  end
+
+  defp ignored_path?(path) do
+    path
+    |> Path.split()
+    |> Enum.any?(&MapSet.member?(@ignored, &1))
+  end
+
   defp diff(previous, current) do
     added = Map.keys(current) -- Map.keys(previous)
     removed = Map.keys(previous) -- Map.keys(current)
@@ -197,26 +256,14 @@ defmodule BeamAgent.Project.RepositoryIndex do
   defp publish_changes(_state, %{added: [], changed: [], removed: []}), do: :ok
 
   defp publish_changes(state, changes) do
-    Enum.each(changes.added, &publish_file(state, &1, "added"))
-    Enum.each(changes.changed, &publish_file(state, &1, "changed"))
-    Enum.each(changes.removed, &publish_file(state, &1, "removed"))
-
     publish(state.project_id, :repository_updated, %{
       "generation" => state.generation,
       "added_count" => length(changes.added),
       "changed_count" => length(changes.changed),
-      "removed_count" => length(changes.removed)
-    })
-  end
-
-  defp publish_file(state, path, change) do
-    file = state.files[path]
-
-    publish(state.project_id, :file_changed, %{
-      "path" => path,
-      "change" => change,
-      "generation" => state.generation,
-      "hash" => file && file.hash
+      "removed_count" => length(changes.removed),
+      "added_paths" => Enum.take(changes.added, 100),
+      "changed_paths" => Enum.take(changes.changed, 100),
+      "removed_paths" => Enum.take(changes.removed, 100)
     })
   end
 
@@ -226,27 +273,15 @@ defmodule BeamAgent.Project.RepositoryIndex do
         supervisor
         |> DynamicSupervisor.which_children()
         |> Enum.each(fn {_, pid, _, _} ->
-          case goal_for_supervisor(pid, project_id) do
-            {:ok, goal} -> _ = EventLog.append(goal.session_id, type, data)
-            _other -> :ok
-          end
+          Registry.select(BeamAgent.Registry, [
+            {{{:goal_supervisor, :"$1"}, pid, :"$2"}, [], [:"$1"]}
+          ])
+          |> Enum.each(fn goal_id -> _ = EventLog.append(goal_id, type, data) end)
         end)
 
       _other ->
         :ok
     end
-  end
-
-  defp goal_for_supervisor(supervisor_pid, project_id) do
-    Registry.select(BeamAgent.Registry, [
-      {{{:goal_supervisor, :"$1"}, supervisor_pid, :"$2"}, [], [:"$1"]}
-    ])
-    |> Enum.find_value({:error, :not_found}, fn goal_id ->
-      case Goal.snapshot(goal_id) do
-        {:ok, %{project_id: ^project_id} = goal} -> {:ok, goal}
-        _other -> nil
-      end
-    end)
   end
 
   defp git_snapshot(root) do

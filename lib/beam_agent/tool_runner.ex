@@ -189,7 +189,8 @@ defmodule BeamAgent.ToolRunner do
 
   defp command_evidence({:ok, encoded}) do
     case JSON.decode(encoded) do
-      {:ok, data} -> {"passed", data["status"], data["truncated"]}
+      {:ok, %{"status" => 0} = data} -> {"passed", 0, data["truncated"]}
+      {:ok, data} -> {"failed", data["status"], data["truncated"]}
       _other -> {"unknown", nil, false}
     end
   end

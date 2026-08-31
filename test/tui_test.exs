@@ -68,8 +68,10 @@ defmodule BeamAgent.CLITUITest do
     assert Enum.any?(payload.entries, &(&1.content == "Runtime · Turn finished"))
 
     assert hd(payload.entries).content =~ "Goal started"
-    assert Enum.any?(payload.entries, &(&1.content =~ "Agent constructed · Goal coordinator"))
-    assert Enum.any?(payload.entries, &(&1.content =~ "Agent ready · Goal coordinator"))
+    assert Enum.any?(payload.entries, &(&1.content =~ "Agent constructed · Primary goal worker"))
+    assert Enum.any?(payload.entries, &(&1.content =~ "Agent ready · Primary goal worker"))
+    assert Enum.any?(payload.entries, &(&1.content =~ "Goal executing · general"))
+    assert Enum.any?(payload.entries, &(&1.content =~ "Goal completed · answer"))
     assert Enum.find(payload.entries, &(&1.kind == "assistant")).content == "echo(1): hello"
 
     assert Enum.any?(

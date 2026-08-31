@@ -21,6 +21,13 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  def ask_with_contract(session_id, prompt, attachment_ids, contract, timeout \\ :infinity)
+      when is_list(attachment_ids) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, {:ask, prompt, attachment_ids, contract}, timeout)
+    end
+  end
+
   def status(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :status)
@@ -153,71 +160,20 @@ defmodule BeamAgent.Agent do
   @impl true
   def handle_call({:ask, prompt, attachment_ids}, from, %{current_turn: nil} = state)
       when is_binary(prompt) and is_list(attachment_ids) do
-    command =
-      RuntimeCommand.new(
-        :submit_prompt,
-        %{
-          project_id: state.project_id,
-          goal_id: state.goal_id,
-          session_id: state.session_id,
-          worker_id: state.session_id
-        },
-        correlation_id: state.inherited_correlation_id,
-        causation_id: state.inherited_causation_id
-      )
-
-    metadata = [
-      correlation_id: command.correlation_id,
-      causation_id: command.causation_id
-    ]
-
-    with {:ok, attachments} <- AttachmentStore.references(state.session_id, attachment_ids),
-         {:ok, file_references} <-
-           FileReference.resolve(prompt, %{
-             workspace_root: state.workspace_root,
-             project_id: state.project_id,
-             session_id: state.session_id,
-             data_dir: state.data_dir,
-             capability_envelope: state.capability_envelope
-           }),
-         true <- prompt != "" or attachments != [],
-         command <-
-           RuntimeCommand.put_payload(command, %{
-             attachment_ids: Enum.map(attachments, & &1.id),
-             file_references: FileReference.public_list(file_references.resolved)
-           }),
-         {:ok, command_event} <-
-           EventLog.append(
-             state.session_id,
-             :command_received,
-             %{
-               "command_id" => command.command_id,
-               "name" => command.name,
-               "version" => command.version,
-               "payload_version" => command.payload_version,
-               "attachment_ids" => command.payload.attachment_ids,
-               "file_references" => command.payload.file_references,
-               "rejected_file_references" => FileReference.public_list(file_references.rejected)
-             },
-             metadata
-           ),
-         :ok <- ensure_file_references(state, command, command_event, file_references),
-         {:ok, supervisor} <- Names.pid(:resource_supervisor, state.session_id) do
-      start_turn(
-        supervisor,
-        state,
-        from,
-        prompt,
-        attachments,
-        file_references.resolved,
-        command,
-        command_event
-      )
-    else
-      false -> {:reply, {:error, :empty_message}, state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
+    accept_turn(prompt, attachment_ids, nil, from, state)
   end
+
+  def handle_call(
+        {:ask, prompt, attachment_ids, %BeamAgent.WorkContract{} = contract},
+        from,
+        %{current_turn: nil} = state
+      )
+      when is_binary(prompt) and is_list(attachment_ids) do
+    accept_turn(prompt, attachment_ids, contract, from, state)
+  end
+
+  def handle_call({:ask, _prompt, _attachment_ids, _contract}, _from, state),
+    do: {:reply, {:error, :agent_busy}, state}
 
   def handle_call({:ask, _prompt, _attachment_ids}, _from, %{current_turn: current} = state)
       when not is_nil(current),
@@ -351,6 +307,76 @@ defmodule BeamAgent.Agent do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info({:turn_result, _ref, _pid, _result}, state), do: {:noreply, state}
 
+  defp accept_turn(prompt, attachment_ids, contract, from, state) do
+    command =
+      RuntimeCommand.new(
+        :submit_prompt,
+        %{
+          project_id: state.project_id,
+          goal_id: state.goal_id,
+          session_id: state.session_id,
+          worker_id: state.session_id
+        },
+        correlation_id: state.inherited_correlation_id,
+        causation_id: state.inherited_causation_id
+      )
+
+    metadata = [
+      correlation_id: command.correlation_id,
+      causation_id: command.causation_id
+    ]
+
+    with {:ok, attachments} <- AttachmentStore.references(state.session_id, attachment_ids),
+         {:ok, file_references} <-
+           FileReference.resolve(prompt, %{
+             workspace_root: state.workspace_root,
+             project_id: state.project_id,
+             session_id: state.session_id,
+             data_dir: state.data_dir,
+             capability_envelope: state.capability_envelope
+           }),
+         true <- prompt != "" or attachments != [],
+         command <-
+           RuntimeCommand.put_payload(command, %{
+             attachment_ids: Enum.map(attachments, & &1.id),
+             file_references: FileReference.public_list(file_references.resolved),
+             work_contract: contract && BeamAgent.WorkContract.to_map(contract)
+           }),
+         {:ok, command_event} <-
+           EventLog.append(
+             state.session_id,
+             :command_received,
+             %{
+               "command_id" => command.command_id,
+               "name" => command.name,
+               "version" => command.version,
+               "payload_version" => command.payload_version,
+               "attachment_ids" => command.payload.attachment_ids,
+               "file_references" => command.payload.file_references,
+               "work_contract_id" => contract && contract.id,
+               "rejected_file_references" => FileReference.public_list(file_references.rejected)
+             },
+             metadata
+           ),
+         :ok <- ensure_file_references(state, command, command_event, file_references),
+         {:ok, supervisor} <- Names.pid(:resource_supervisor, state.session_id) do
+      start_turn(
+        supervisor,
+        state,
+        from,
+        prompt,
+        attachments,
+        file_references.resolved,
+        command,
+        command_event,
+        contract
+      )
+    else
+      false -> {:reply, {:error, :empty_message}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   defp start_turn(
          supervisor,
          state,
@@ -359,7 +385,8 @@ defmodule BeamAgent.Agent do
          attachments,
          file_references,
          command,
-         command_event
+         command_event,
+         contract
        ) do
     agent = self()
     turn_ref = make_ref()
@@ -370,6 +397,7 @@ defmodule BeamAgent.Agent do
       |> Map.put(:runtime_command, command)
       |> Map.put(:turn_attachments, attachments)
       |> Map.put(:turn_file_references, file_references)
+      |> Map.put(:work_contract, contract)
 
     task = fn ->
       # The session resource supervisor owns the worker, while this extra link

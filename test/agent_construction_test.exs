@@ -50,7 +50,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert {:ok, spec} = BeamAgent.agent_spec(session_id)
     assert spec.version == 1
     assert spec.goal == "Coordinate a repository investigation"
-    assert spec.role == "Goal coordinator"
+    assert spec.role == "Primary goal worker"
     assert spec.lifecycle.depth == 0
     assert spec.lifecycle.maximum_delegation_depth == 2
     assert spec.lifecycle.restart == :temporary
@@ -60,18 +60,17 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.provenance.effective_capabilities == "runtime_policy"
 
     assert {:ok, context_snapshot} = BeamAgent.context_snapshot(session_id)
-    assert context_snapshot.system_prompt =~ "Role: Goal coordinator"
+    assert context_snapshot.system_prompt =~ "Role: Primary goal worker"
     assert context_snapshot.system_prompt =~ "Goal: Coordinate a repository investigation"
 
-    assert context_snapshot.system_prompt =~
-             "perform work with granted tools or delegate it"
+    assert context_snapshot.system_prompt =~ "Execute the runtime work contract directly"
 
     {:ok, events} = BeamAgent.events(session_id)
     constructed = Enum.find(events, &(&1["type"] == "agent_constructed"))
     applied = Enum.find(events, &(&1["type"] == "agent_spec_applied"))
     assert constructed["data"]["spec_id"] == spec.spec_id
     assert constructed["data"]["goal_fingerprint"]
-    assert applied["data"]["role"] == "Goal coordinator"
+    assert applied["data"]["role"] == "Primary goal worker"
   end
 
   test "child construction dynamically populates soft fields and runtime-owned authority",
@@ -335,6 +334,73 @@ defmodule BeamAgent.AgentConstructionTest do
                goal: "Implement the remaining image paste changes",
                template: "implementer"
              })
+  end
+
+  test "execution-strategy aliases cannot silently change worker authority", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Implement the requested change after a prior failure",
+                 template: "implement"
+               }
+             )
+
+    assert {:ok, spec} = BeamAgent.agent_spec(child_id)
+    assert spec.template == "implementer"
+    assert spec.template_source == :builtin
+    assert spec.execution_strategy.id == "implement"
+    assert "apply_patch" in spec.effective_capabilities.scopes.tools
+    assert "create_file" in spec.effective_capabilities.scopes.tools
+  end
+
+  test "contradictory implementation identities fail before a worker starts", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:error, :contradictory_worker_contract} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Investigate the current behavior",
+                 role: "Implementation specialist",
+                 template: "researcher"
+               }
+             )
+  end
+
+  test "implementation workers fail closed without a write path", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               capabilities: %{
+                 tools: ["read_file"],
+                 paths: :all,
+                 commands: [],
+                 hosts: [],
+                 mcp_servers: [],
+                 model_classes: :all
+               }
+             )
+
+    assert {:error, :implementation_worker_without_write_authority} =
+             BeamAgent.spawn_subagent(parent_id,
+               agent_proposal: %{
+                 goal: "Implement the requested change",
+                 template: "implementer"
+               }
+             )
   end
 
   test "investigation workers cannot inherit write, execute, or delegation tools", context do

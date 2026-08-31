@@ -73,7 +73,7 @@ defmodule BeamAgent.ProvidersTest do
       send(state.test_pid, {:codex_turn_started, params})
 
       case state.mode do
-        :tool ->
+        mode when mode in [:tool, :native_tool] ->
           send(
             state.owner,
             {:codex_app_server, client,
@@ -141,6 +141,11 @@ defmodule BeamAgent.ProvidersTest do
     def respond(client, 41, result) do
       state = Agent.get(client, & &1)
       send(state.test_pid, {:codex_tool_response, result})
+
+      if state.mode == :native_tool do
+        emit_agent_text(client, state.owner, "The host result was 5.")
+      end
+
       complete_turn(client, state.owner)
       :ok
     end
@@ -350,6 +355,32 @@ defmodule BeamAgent.ProvidersTest do
     assert_receive {:codex_tool_response, response}
     assert response["success"] == true
     assert_receive {:codex_turn_started, %{"sandboxPolicy" => %{"type" => "readOnly"}}}
+  end
+
+  test "OpenAI ChatGPT-plan transport executes a host tool inside the same Codex turn" do
+    executor = fn call ->
+      send(self(), {:native_codex_call, call})
+      {:ok, %{content: "5", is_error: false, error: nil}}
+    end
+
+    assert {:ok, %{content: "The host result was 5.", tool_calls: []}} =
+             OpenAI.complete([%{role: :user, content: "calculate"}], @tools,
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               dynamic_tool_executor: executor,
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :native_tool]
+             )
+
+    assert_receive {:native_codex_call,
+                    %{id: "codex-call", name: "add", arguments: %{"a" => 2, "b" => 3}}}
+
+    assert_receive {:codex_tool_response, response}
+
+    assert response == %{
+             "contentItems" => [%{"type" => "inputText", "text" => "5"}],
+             "success" => true
+           }
   end
 
   test "OpenAI ChatGPT-plan transport returns final text without HTTP credentials" do

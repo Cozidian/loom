@@ -148,6 +148,34 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o755
   end
 
+  test "the session actor owns file versions so the model does not pass hashes", context do
+    path = Path.join(context.workspace, "runtime-versioned.txt")
+    File.write!(path, "before\n")
+
+    assert {:ok, session_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    tool_context = %{workspace_root: context.workspace, session_id: session_id}
+    assert {:ok, encoded} = ReadFile.execute(%{"path" => "runtime-versioned.txt"}, tool_context)
+    assert JSON.decode!(encoded)["numbered_content"] == "1: before\n2: "
+
+    assert {:ok, _result} =
+             EditFile.execute(
+               %{
+                 "path" => "runtime-versioned.txt",
+                 "old_text" => "before",
+                 "new_text" => "after"
+               },
+               tool_context
+             )
+
+    assert File.read!(path) == "after\n"
+  end
+
   test "create and search tools stay within the workspace", context do
     tool_context = %{workspace_root: context.workspace}
 
@@ -474,23 +502,27 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
       if System.get_env("BEAM_AGENT_SANDBOX") != "1" do
         outside = Path.join(context.root, "outside-command.txt")
 
-        assert {:error, {:command_failed, denied_data}} =
+        assert {:ok, denied_result} =
                  RunCommand.execute(
                    %{"command" => "printf outside > #{outside}", "timeout_ms" => 5_000},
                    tool_context
                  )
 
-        assert denied_data.status != 0
+        denied_data = JSON.decode!(denied_result)
+        assert denied_data["ok"] == false
+        assert denied_data["status"] != 0
         refute File.exists?(outside)
       end
 
-      assert {:error, {:command_failed, piped_data}} =
+      assert {:ok, piped_result} =
                RunCommand.execute(
                  %{"command" => "false | cat", "timeout_ms" => 5_000},
                  tool_context
                )
 
-      assert piped_data.status != 0
+      piped_data = JSON.decode!(piped_result)
+      assert piped_data["ok"] == false
+      assert piped_data["status"] != 0
 
       assert {:ok, mix_result} =
                RunCommand.execute(

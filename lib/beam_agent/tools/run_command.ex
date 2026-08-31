@@ -11,7 +11,7 @@ defmodule BeamAgent.Tools.RunCommand do
   @impl true
   def description,
     do:
-      "Run a shell command with bounded output/time inside a workspace-write, external-network-denied sandbox. Non-zero exits are tool errors."
+      "Run a shell command with bounded output/time inside a workspace-write, external-network-denied sandbox. Exit status and output are always returned as diagnostic data."
 
   @impl true
   def input_schema do
@@ -47,6 +47,7 @@ defmodule BeamAgent.Tools.RunCommand do
              on_output: output_handler(context)
            ) do
       command_result = %{
+        ok: result.status == 0,
         status: result.status,
         output: result.output,
         truncated: result.truncated,
@@ -54,11 +55,7 @@ defmodule BeamAgent.Tools.RunCommand do
         network: "loopback-only"
       }
 
-      if result.status == 0 do
-        {:ok, JSON.encode!(command_result)}
-      else
-        {:error, {:command_failed, command_result}}
-      end
+      {:ok, JSON.encode!(command_result)}
     else
       false -> {:error, :invalid_command_timeout}
       {:ok, %File.Stat{type: type}} -> {:error, {:not_directory, type}}

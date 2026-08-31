@@ -2,6 +2,7 @@ defmodule BeamAgent.Tools.CreateFile do
   @moduledoc false
   @behaviour BeamAgent.Tool
 
+  alias BeamAgent.Session.FileTracker
   alias BeamAgent.Tools.FileSupport
 
   @impl true
@@ -32,9 +33,16 @@ defmodule BeamAgent.Tools.CreateFile do
     with {:ok, resolved} <- FileSupport.resolve(context, path),
          false <- File.exists?(resolved),
          :ok <- File.mkdir_p(Path.dirname(resolved)),
-         :ok <- write_exclusively(resolved, content) do
+         :ok <- write_exclusively(resolved, content),
+         sha256 <- FileSupport.sha256(content),
+         :ok <- FileTracker.observe(context, path, sha256) do
       {:ok,
-       JSON.encode!(%{path: path, bytes: byte_size(content), sha256: FileSupport.sha256(content)})}
+       JSON.encode!(%{
+         path: path,
+         bytes: byte_size(content),
+         sha256: sha256,
+         generation_owner: "runtime"
+       })}
     else
       true -> {:error, {:file_exists, path}}
       {:error, reason} -> {:error, reason}

@@ -331,6 +331,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
       |> Keyword.put(:session_id, context.session_id)
       |> Keyword.put(:parent_session_id, context.parent_session_id)
       |> Keyword.put(:system_prompt, system_prompt)
+      |> Keyword.put(
+        :dynamic_tool_executor,
+        &execute_native_tool(context, turn, step, &1)
+      )
 
     with :ok <-
            BudgetManager.check(context.goal_id, context.session_id, %{
@@ -724,11 +728,16 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp action_tool?(_name, _context), do: false
 
   defp action_required?(context) do
+    contract = Map.get(context, :work_contract)
     prompt = latest_user_prompt(context.session_id)
     classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
     text = String.downcase(prompt)
 
-    classification.task_type == :implementation or
+    match?(
+      %BeamAgent.WorkContract{kind: kind} when kind in [:implementation, :debugging],
+      contract
+    ) or
+      classification.task_type == :implementation or
       Regex.match?(~r/\b(implement|fix|modify|refactor)\b/u, text) or
       String.contains?(text, ["add support", "make a plan and then", "do that, make"])
   end
@@ -757,35 +766,93 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp completion_reason_text(reason), do: to_string(reason)
 
   defp execute_tools(context, turn, step, calls) do
-    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, outcomes} ->
-      with :ok <- validate_call(call),
-           {:ok, tool_event} <-
-             EventLog.append(context.session_id, :tool_called, %{
-               "turn" => turn,
-               "step" => step,
-               "tool_call_id" => call.id,
-               "name" => call.name,
-               "arguments" => call.arguments
-             }),
-           result <- execute_tool(call, context, event_id(tool_event)),
-           {content, error} <- format_result(result),
-           {:ok, _} <-
-             EventLog.append(context.session_id, :tool_result, %{
-               "turn" => turn,
-               "step" => step,
-               "tool_call_id" => call.id,
-               "name" => call.name,
-               "content" => content,
-               "is_error" => match?({:error, _}, result),
-               "error" => error
-             }) do
-        outcome = %{content: content, error: error, is_error: match?({:error, _}, result)}
-        {:cont, {:ok, outcomes ++ [outcome]}}
-      else
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+    if parallel_read_batch?(calls) do
+      calls
+      |> Task.async_stream(&execute_one_tool(context, turn, step, &1),
+        ordered: true,
+        max_concurrency: min(length(calls), 8),
+        timeout: :infinity
+      )
+      |> Enum.reduce_while({:ok, []}, fn
+        {:ok, {:ok, outcome}}, {:ok, outcomes} ->
+          {:cont, {:ok, outcomes ++ [outcome]}}
+
+        {:ok, {:error, reason}}, _acc ->
+          {:halt, {:error, reason}}
+
+        {:exit, reason}, _acc ->
+          {:halt, {:error, {:parallel_tool_exit, reason}}}
+      end)
+    else
+      Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, outcomes} ->
+        case execute_one_tool(context, turn, step, call) do
+          {:ok, outcome} -> {:cont, {:ok, outcomes ++ [outcome]}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+    end
   end
+
+  defp execute_one_tool(context, turn, step, call) do
+    with :ok <- validate_call(call),
+         {:ok, tool_event} <-
+           EventLog.append(context.session_id, :tool_called, %{
+             "turn" => turn,
+             "step" => step,
+             "tool_call_id" => call.id,
+             "name" => call.name,
+             "arguments" => call.arguments
+           }),
+         result <- execute_tool(call, context, event_id(tool_event)),
+         {content, error} <- format_result(result),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :tool_result, %{
+             "turn" => turn,
+             "step" => step,
+             "tool_call_id" => call.id,
+             "name" => call.name,
+             "content" => content,
+             "is_error" => match?({:error, _}, result),
+             "error" => error
+           }) do
+      {:ok, %{content: content, error: error, is_error: match?({:error, _}, result)}}
+    end
+  end
+
+  defp execute_native_tool(context, turn, step, call) do
+    with :ok <- validate_call(call),
+         {:ok, _} <-
+           EventLog.append(context.session_id, :assistant_message, %{
+             "content" => nil,
+             "tool_calls" => [call]
+           }) do
+      execute_one_tool(context, turn, step, call)
+    end
+    |> case do
+      {:ok, outcome} ->
+        {:ok, outcome}
+
+      {:error, reason} ->
+        {content, error} = format_result({:error, reason})
+        {:ok, %{content: content, error: error, is_error: true}}
+    end
+  end
+
+  defp parallel_read_batch?([_, _ | _] = calls), do: Enum.all?(calls, &read_only_call?/1)
+  defp parallel_read_batch?(_calls), do: false
+
+  defp read_only_call?(%{name: name}) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} ->
+        access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
+        access in [:read, :trusted]
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp read_only_call?(_call), do: false
 
   defp reject_disabled_tool_calls(context, turn, step, calls) do
     Enum.reduce_while(calls, :ok, fn call, :ok ->
@@ -836,6 +903,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp call_summary(call), do: %{"name" => call.name, "arguments" => call.arguments}
 
   defp turn_execution_prompt(system_prompt, context, tool_schemas) do
+    system_prompt =
+      case Map.get(context, :work_contract) do
+        %BeamAgent.WorkContract{} = contract ->
+          append_prompt(system_prompt, BeamAgent.WorkContract.prompt(contract))
+
+        _other ->
+          system_prompt
+      end
+
     if action_required?(context) do
       action_tools = implementation_tool_names(context, tool_schemas)
       direct_worker? = direct_implementation_worker?(context)
@@ -926,6 +1002,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp direct_implementation_worker?(%{
          agent_spec: %{execution_strategy: %{id: "implement"}}
+       }),
+       do: true
+
+  defp direct_implementation_worker?(%{
+         work_contract: %BeamAgent.WorkContract{worker_kind: :implementer}
        }),
        do: true
 
@@ -1022,7 +1103,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
            }) do
       case completion_verification(context, turn) do
         {:ok, verification} ->
-          case completion_review(context, turn) do
+          case completion_review(context, turn, verification) do
             :skip ->
               finalize_verified_turn(context, turn, answer, verification)
 
@@ -1123,12 +1204,14 @@ defmodule BeamAgent.Strategies.ToolLoop do
           verification_recovery(context, turn, result)
 
         {:error, reason} ->
-          verification_recovery(context, turn, %{
-            status: :failed,
-            source: "automatic",
-            summary: "Verification could not run: #{verification_error(reason)}",
-            checks: []
-          })
+          {:error,
+           %{
+             status: :failed,
+             source: "automatic",
+             failure_kind: :infrastructure,
+             summary: "Verification could not run: #{verification_error(reason)}",
+             checks: []
+           }}
       end
     else
       {:ok, nil}
@@ -1188,7 +1271,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp completion_review(context, turn) do
+  defp completion_review(context, turn, verification) do
     prompt = latest_user_prompt(context.session_id)
     classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
     requirements = context.agent_spec.verification_requirements
@@ -1213,21 +1296,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
       true ->
         case BeamAgent.GitDiff.summary(context.workspace_root) do
           {:ok, %{changed_file_count: 0}} -> :skip
-          {:ok, _summary} -> run_review_worker(context, turn, prompt)
-          {:error, _not_git} -> run_review_worker(context, turn, prompt)
+          {:ok, _summary} -> run_review_worker(context, turn, prompt, verification)
+          {:error, _not_git} -> run_review_worker(context, turn, prompt, verification)
         end
     end
   end
 
-  defp run_review_worker(context, turn, prompt) do
+  defp run_review_worker(context, turn, prompt, verification) do
     with {:ok, goal} <- BeamAgent.Goal.snapshot(context.goal_id) do
       review_prompt = """
       Review the current uncommitted workspace changes against this authoritative request:
 
       #{prompt}
 
+      Deterministic verification evidence supplied by the runtime:
+      #{JSON.encode!(verification || %{status: :unverified, checks: []})}
+
       Inspect the Git diff and relevant source/tests using read-only tools. If Git evidence is
       unavailable, inspect the changed workspace files and recorded tool evidence directly.
+      Do not report tests as missing or failed when the runtime evidence says they passed.
       Prioritize correctness, security, missing acceptance criteria, and verification gaps. The first line of the final
       response must be exactly REVIEW_PASS when there are no actionable findings, or REVIEW_FAIL
       when fixes are required. After REVIEW_FAIL, provide concrete file-and-line findings.
@@ -1371,7 +1458,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp review_status(review), do: to_string(review.status)
 
   defp fail_verified_turn(context, turn, verification) do
-    reason = {:verification_failed, Map.get(verification, :summary, "required checks failed")}
+    failure_code =
+      if Map.get(verification, :failure_kind) == :infrastructure,
+        do: :verification_infrastructure_failed,
+        else: :verification_failed
+
+    reason = {failure_code, Map.get(verification, :summary, "required checks failed")}
 
     with {:ok, _} <-
            EventLog.append(context.session_id, :turn_finished, %{

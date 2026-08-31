@@ -339,6 +339,21 @@ defmodule BeamAgentTest do
     assert Enum.count(events, &(&1["type"] == "turn_finished")) == 1
     assert File.read!(Path.join(root, "completion-guard.txt")) == "implemented"
 
+    assert {:ok, goal_status} = BeamAgent.Goal.status(id)
+    assert goal_status.last_work.artifact.kind == :workspace_patch
+    assert goal_status.last_work.artifact.changed_files == ["completion-guard.txt"]
+    assert goal_status.last_work.artifact.verification.status == :passed
+
+    {:ok, goal} = BeamAgent.goal(id)
+
+    assert {:ok, stored_artifact} =
+             BeamAgent.Project.ContextStore.fetch(
+               goal.project_id,
+               goal_status.last_work.artifact.id
+             )
+
+    assert stored_artifact.kind == "work_artifact"
+
     assert Enum.any?(events, fn event ->
              event["type"] == "step_finished" and
                event["data"]["reason"] == "non_final_response"

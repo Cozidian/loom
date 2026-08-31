@@ -54,6 +54,7 @@ defmodule BeamAgent.RacePolicyTest do
     assert {:race, plan} = RacePolicy.consider(@race_joke, %{parent_session_id: nil})
     assert length(plan.candidates) == 3
     assert Enum.map(plan.candidates, & &1.id) == ["candidate-1", "candidate-2", "candidate-3"]
+
     assert Enum.map(plan.candidates, & &1.role) == [
              "Race candidate (clean)",
              "Race candidate (punny)",

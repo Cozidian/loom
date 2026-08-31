@@ -2,6 +2,7 @@ defmodule BeamAgent.Tools.ReadFile do
   @moduledoc false
   @behaviour BeamAgent.Tool
 
+  alias BeamAgent.Session.FileTracker
   alias BeamAgent.Tools.FileSupport
 
   @impl true
@@ -40,14 +41,24 @@ defmodule BeamAgent.Tools.ReadFile do
       lines = String.split(content, "\n")
       selected = Enum.slice(lines, start_line - 1, line_count)
 
+      sha256 = FileSupport.sha256(content)
+      :ok = FileTracker.observe(context, path, sha256)
+
+      numbered =
+        selected
+        |> Enum.with_index(start_line)
+        |> Enum.map_join("\n", fn {line, number} -> "#{number}: #{line}" end)
+
       {:ok,
        JSON.encode!(%{
          path: path,
          content: Enum.join(selected, "\n"),
+         numbered_content: numbered,
          start_line: start_line,
          end_line: start_line + max(length(selected) - 1, 0),
          total_lines: length(lines),
-         sha256: FileSupport.sha256(content)
+         generation_owner: "runtime",
+         sha256: sha256
        })}
     else
       false -> {:error, :invalid_read_window}

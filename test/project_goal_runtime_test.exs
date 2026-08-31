@@ -114,6 +114,31 @@ defmodule BeamAgent.ProjectGoalRuntimeTest do
     assert {:ok, "echo(1): resumed"} = BeamAgent.ask(session_id, "resumed")
   end
 
+  test "the Goal process owns a typed work contract and terminal phase", context do
+    assert {:ok, goal_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, "echo(1): summarize image paste behavior"} =
+             BeamAgent.ask(goal_id, "summarize image paste behavior")
+
+    assert {:ok, status} = BeamAgent.Goal.status(goal_id)
+    assert status.phase == :completed
+    assert status.current_contract == nil
+    assert status.last_work.contract.kind == :general
+    assert status.last_work.contract.worker_kind == :generalist
+    assert status.last_work.contract.expected_artifact == :answer
+
+    assert {:ok, events} = BeamAgent.events(goal_id)
+    started = Enum.find(events, &(&1["type"] == "goal_work_started"))
+    finished = Enum.find(events, &(&1["type"] == "goal_work_finished"))
+    assert get_in(started, ["data", "work_contract", "kind"]) == "general"
+    assert finished["data"]["status"] == "completed"
+  end
+
   test "goal failure and shutdown remain isolated from sibling goals", context do
     assert {:ok, project_id} = BeamAgent.start_project(workspace_root: context.workspace)
 

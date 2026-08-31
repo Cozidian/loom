@@ -472,6 +472,8 @@ defmodule BeamAgent.CLI.TUI.Controller do
           "routing   #{state.config["model_strategy"] || "manual"}",
           "project   #{state.project_id}",
           "goal      #{state.goal_id}",
+          "phase     #{status.goal_phase}",
+          "work      #{format_work_contract(status.work_contract)}",
           "snapshot  #{String.slice(status.context.fingerprint, 0, 12)}",
           "context   #{status.context_stats.estimated_tokens}/#{status.context_stats.window_tokens} est. tokens (#{status.context_stats.utilization_percent}%)",
           "compacted #{status.context_stats.compaction_count} times",
@@ -1230,6 +1232,12 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp strategy_id(%{id: id}), do: id
   defp strategy_id(id), do: id
+
+  defp format_work_contract(nil), do: "idle"
+
+  defp format_work_contract(contract) do
+    "#{contract.kind} → #{contract.worker_kind} → #{contract.expected_artifact}"
+  end
 
   defp short_id(id) do
     id = to_string(id)

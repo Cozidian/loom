@@ -243,17 +243,27 @@ defmodule BeamAgent do
 
   def secret_handles(goal_id), do: BeamAgent.Goal.SecretBroker.handles(goal_id)
 
-  def ask(session_id, prompt), do: Agent.ask(session_id, prompt)
+  def ask(session_id, prompt), do: ask(session_id, prompt, [], :infinity)
 
   def ask(session_id, prompt, attachment_ids) when is_list(attachment_ids),
-    do: Agent.ask(session_id, prompt, attachment_ids, :infinity)
+    do: ask(session_id, prompt, attachment_ids, :infinity)
 
-  def ask(session_id, prompt, timeout), do: Agent.ask(session_id, prompt, timeout)
+  def ask(session_id, prompt, timeout), do: ask(session_id, prompt, [], timeout)
 
-  def ask(session_id, prompt, attachment_ids, timeout),
-    do: Agent.ask(session_id, prompt, attachment_ids, timeout)
+  def ask(session_id, prompt, attachment_ids, timeout) do
+    case Names.pid(:goal, session_id) do
+      {:ok, _pid} -> Goal.submit(session_id, prompt, attachment_ids, timeout)
+      {:error, :not_found} -> Agent.ask(session_id, prompt, attachment_ids, timeout)
+    end
+  end
 
-  def cancel(session_id), do: Agent.cancel(session_id)
+  def cancel(session_id) do
+    case Names.pid(:goal, session_id) do
+      {:ok, _pid} -> Goal.cancel(session_id)
+      {:error, :not_found} -> Agent.cancel(session_id)
+    end
+  end
+
   def subscribe(session_id, subscriber \\ self()), do: StreamHub.subscribe(session_id, subscriber)
 
   def unsubscribe(session_id, subscriber \\ self()),

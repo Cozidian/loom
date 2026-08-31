@@ -59,7 +59,7 @@ defmodule BeamAgent.CodexAppServer do
            :ok <- require_chatgpt(account),
            {:ok, thread} <- start_thread(client, client_module, tools, options),
            {:ok, _turn} <- start_turn(client, client_module, thread, messages, options) do
-        await_turn(client, client_module, thread, emit, empty_invocation(tools))
+        await_turn(client, client_module, thread, emit, empty_invocation(tools, options))
       end
     end)
   end
@@ -153,18 +153,9 @@ defmodule BeamAgent.CodexAppServer do
 
       {:codex_app_server, ^client,
        {:request, %{"id" => id, "method" => "item/tool/call", "params" => params}}} ->
-        with {:ok, state} <- capture_tool_call(state, params, emit),
-             :ok <-
-               client_module.respond(client, id, %{
-                 "contentItems" => [
-                   %{
-                     "type" => "inputText",
-                     "text" =>
-                       "BeamAgent accepted this tool request for host execution. Stop this turn now."
-                   }
-                 ],
-                 "success" => true
-               }) do
+        with {:ok, state, call} <- capture_tool_call(state, params, emit),
+             {:ok, outcome, state} <- maybe_execute_tool(call, state),
+             :ok <- client_module.respond(client, id, tool_response(outcome)) do
           await_turn(client, client_module, thread, emit, state)
         end
 
@@ -186,15 +177,17 @@ defmodule BeamAgent.CodexAppServer do
     end
   end
 
-  defp empty_invocation(tools) do
+  defp empty_invocation(tools, options) do
     %{
       allowed_tools: MapSet.new(tools, & &1.name),
       calls: [],
+      call_count: 0,
       content: nil,
       deltas: [],
       pending_text: "",
       text_emitted?: false,
-      text_mode: :pending
+      text_mode: :pending,
+      tool_executor: options[:dynamic_tool_executor]
     }
   end
 
@@ -267,24 +260,57 @@ defmodule BeamAgent.CodexAppServer do
 
   defp capture_completed_item(state, _item), do: state
 
-  defp capture_tool_call(%{calls: calls}, _params, _emit) when length(calls) >= @max_tool_calls,
+  defp capture_tool_call(%{call_count: count}, _params, _emit) when count >= @max_tool_calls,
     do: {:error, :too_many_codex_tool_calls}
 
   defp capture_tool_call(state, params, emit) do
     with name when is_binary(name) and name != "" <- params["tool"],
          true <- MapSet.member?(state.allowed_tools, name),
          arguments when is_map(arguments) <- params["arguments"] do
-      index = length(state.calls)
+      index = state.call_count
       id = params["callId"] || BeamAgent.Providers.Support.call_id()
       call = %{id: id, name: name, arguments: arguments}
 
       emit_tool_call(call, index, emit)
 
-      {:ok, %{state | calls: state.calls ++ [call]}}
+      {:ok, %{state | calls: state.calls ++ [call], call_count: state.call_count + 1}, call}
     else
       false -> {:error, {:codex_tool_not_allowed, params["tool"]}}
       other -> {:error, {:invalid_codex_tool_call, other}}
     end
+  end
+
+  defp maybe_execute_tool(call, %{tool_executor: executor} = state)
+       when is_function(executor, 1) do
+    case executor.(call) do
+      {:ok, %{content: content, is_error: is_error} = outcome}
+      when is_binary(content) and is_boolean(is_error) ->
+        {:ok, outcome, %{state | calls: []}}
+
+      {:error, reason} ->
+        {:error, {:codex_dynamic_tool_failed, reason}}
+
+      other ->
+        {:error, {:invalid_codex_dynamic_tool_result, other}}
+    end
+  rescue
+    error -> {:error, {:codex_dynamic_tool_exception, Exception.message(error)}}
+  end
+
+  defp maybe_execute_tool(_call, state) do
+    outcome = %{
+      content: "BeamAgent accepted this tool request for host execution. Stop this turn now.",
+      is_error: false
+    }
+
+    {:ok, outcome, state}
+  end
+
+  defp tool_response(outcome) do
+    %{
+      "contentItems" => [%{"type" => "inputText", "text" => outcome.content}],
+      "success" => not outcome.is_error
+    }
   end
 
   defp finish_turn(%{"status" => "completed"}, %{calls: [_ | _]} = state, _emit) do
@@ -508,9 +534,10 @@ defmodule BeamAgent.CodexAppServer do
 
     Invoke dynamic tools through the native protocol with exact arguments. Never print or
     imitate a serialized tool request, JSON tool_calls envelope, ASSISTANT marker, or
-    transcript structure. When a tool result says BeamAgent accepted the request, stop
-    immediately without calling more tools or answering the original question. Otherwise
-    provide the final assistant answer directly.
+    transcript structure. BeamAgent returns the real host result to this same turn; use it
+    to continue the task, request another tool when needed, and provide the final answer.
+    If a legacy result explicitly says the request was merely accepted for later host
+    execution, stop that turn immediately.
     """
   end
 

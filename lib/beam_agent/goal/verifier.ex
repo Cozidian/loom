@@ -125,7 +125,8 @@ defmodule BeamAgent.Goal.Verifier do
            ) do
         {:ok, encoded} ->
           data = JSON.decode!(encoded)
-          {:passed, data["status"], data["output"], data["truncated"]}
+          status = if data["status"] == 0, do: :passed, else: :failed
+          {status, data["status"], data["output"], data["truncated"]}
 
         {:error, {:command_failed, data}} ->
           {:failed, data.status, data.output, data.truncated}

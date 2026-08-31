@@ -21,6 +21,15 @@ defmodule BeamAgent.AgentTemplate do
   defstruct @enforce_keys
 
   @templates %{
+    "goal-worker" => %{
+      role: "Primary goal worker",
+      instructions: [
+        "Execute the runtime work contract directly with the granted tools.",
+        "Treat investigation and delegation as intermediate evidence, not completion of implementation work.",
+        "Return a completed artifact or a concrete blocker that requires user input."
+      ],
+      execution_strategy: "focused"
+    },
     "coordinator" => %{
       role: "Goal coordinator",
       instructions: [
@@ -66,6 +75,8 @@ defmodule BeamAgent.AgentTemplate do
   def resolve(nil, classification), do: resolve(default_id(classification), classification)
 
   def resolve(id, classification) when is_binary(id) do
+    id = canonical_id(id)
+
     case Map.fetch(@templates, id) do
       {:ok, attributes} -> build(id, 1, :builtin, attributes)
       :error -> generated(id, classification)
@@ -73,6 +84,13 @@ defmodule BeamAgent.AgentTemplate do
   end
 
   def resolve(_id, classification), do: resolve(nil, classification)
+
+  def canonical_id("implement"), do: "implementer"
+  def canonical_id("investigate"), do: "researcher"
+  def canonical_id("verify"), do: "verifier"
+  def canonical_id("review"), do: "reviewer"
+  def canonical_id("coordinate"), do: "coordinator"
+  def canonical_id(id), do: id
 
   defp generated(id, classification) do
     role = inferred_role(classification)
