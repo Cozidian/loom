@@ -96,6 +96,8 @@ defmodule BeamAgent.RuntimeEvent do
               "turn_finished",
               "goal_work_started",
               "goal_work_finished",
+              "worker_candidate_finished",
+              "goal_steered",
               "subagent_spawned",
               "agent_construction_requested",
               "agent_constructed",
@@ -211,7 +213,8 @@ defmodule BeamAgent.RuntimeEvent do
               "approval_policy_changed",
               "permission_granted",
               "permission_revoked",
-              "capability_denied"
+              "capability_denied",
+              "path_lease_denied"
             ],
        do: :policy
 
@@ -226,7 +229,7 @@ defmodule BeamAgent.RuntimeEvent do
             ],
        do: :mcp
 
-  defp category("model_route_selected"), do: :routing
+  defp category(type) when type in ["model_route_selected", "model_route_reused"], do: :routing
 
   defp category(type)
        when type in [

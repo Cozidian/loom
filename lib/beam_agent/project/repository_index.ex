@@ -40,7 +40,8 @@ defmodule BeamAgent.Project.RepositoryIndex do
       last_refreshed_at: nil,
       scan_interval_ms: Keyword.get(opts, :repository_scan_interval_ms, 5_000),
       refresh_debounce_ms: Keyword.get(opts, :repository_refresh_debounce_ms, 100),
-      refresh_timer: nil
+      refresh_timer: nil,
+      scan: nil
     }
 
     send(self(), :refresh)
@@ -74,20 +75,56 @@ defmodule BeamAgent.Project.RepositoryIndex do
 
   @impl true
   def handle_info(:refresh, state) do
-    {_reply, state} = do_refresh(state)
+    state = start_background_refresh(state)
     Process.send_after(self(), :refresh, state.scan_interval_ms)
     {:noreply, state}
   end
 
   def handle_info(:debounced_refresh, state) do
-    {_reply, state} = do_refresh(%{state | refresh_timer: nil})
+    {:noreply, start_background_refresh(%{state | refresh_timer: nil})}
+  end
+
+  def handle_info(
+        {:repository_scan_result, ref, generation, result},
+        %{scan: %{ref: ref}} = state
+      ) do
+    Process.demonitor(state.scan.monitor, [:flush])
+
+    state =
+      if generation > state.generation do
+        apply_scan_result(%{state | scan: nil}, generation, result)
+      else
+        %{state | scan: nil}
+      end
+
     {:noreply, state}
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, reason}, %{scan: %{monitor: monitor}} = state) do
+    publish(state.project_id, :repository_refresh_failed, %{
+      "failure_code" => reason_code({:repository_scan_exit, reason})
+    })
+
+    {:noreply, %{state | scan: nil}}
   end
 
   defp do_refresh(state) do
     generation = state.generation + 1
 
-    case scan(state.workspace_root, generation) do
+    result = scan(state.workspace_root, generation, state.files)
+    state = apply_scan_result(state, generation, result)
+
+    reply =
+      case result do
+        {:ok, _files, _git} -> {:ok, public_snapshot(state)}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {reply, state}
+  end
+
+  defp apply_scan_result(state, generation, result) do
+    case result do
       {:ok, files, git} ->
         changes = diff(state.files, files)
         changed? = changes != %{added: [], changed: [], removed: []} or git != state.git
@@ -110,18 +147,54 @@ defmodule BeamAgent.Project.RepositoryIndex do
           publish_changes(state, changes)
         end
 
-        {{:ok, public_snapshot(state)}, state}
+        state
 
       {:error, reason} ->
         publish(state.project_id, :repository_refresh_failed, %{
           "failure_code" => reason_code(reason)
         })
 
-        {{:error, reason}, state}
+        state
     end
   end
 
-  defp scan(root, generation) do
+  defp start_background_refresh(%{scan: nil} = state) do
+    owner = self()
+    ref = make_ref()
+    generation = state.generation + 1
+
+    case Names.pid(:repository_scan_supervisor, state.project_id) do
+      {:ok, supervisor} ->
+        case Task.Supervisor.start_child(supervisor, fn ->
+               send(
+                 owner,
+                 {:repository_scan_result, ref, generation,
+                  scan(state.workspace_root, generation, state.files)}
+               )
+             end) do
+          {:ok, pid} ->
+            %{state | scan: %{ref: ref, pid: pid, monitor: Process.monitor(pid)}}
+
+          {:error, reason} ->
+            publish(state.project_id, :repository_refresh_failed, %{
+              "failure_code" => reason_code(reason)
+            })
+
+            state
+        end
+
+      {:error, reason} ->
+        publish(state.project_id, :repository_refresh_failed, %{
+          "failure_code" => reason_code(reason)
+        })
+
+        state
+    end
+  end
+
+  defp start_background_refresh(state), do: state
+
+  defp scan(root, generation, previous) do
     files =
       root
       |> repository_paths()
@@ -129,21 +202,34 @@ defmodule BeamAgent.Project.RepositoryIndex do
       |> Map.new(fn relative ->
         absolute = Path.join(root, relative)
         stat = File.stat!(absolute, time: :posix)
+        previous_file = previous[relative]
         content = if stat.size <= 1_000_000, do: File.read!(absolute), else: ""
+        content_hash = hash(content)
 
-        {relative,
-         %{
-           path: relative,
-           size: stat.size,
-           modified_at: stat.mtime,
-           hash: hash(content),
-           generation: generation,
-           language: language(relative),
-           symbols: symbols(relative, content),
-           dependencies: dependencies(relative, content),
-           diagnostics: BeamAgent.Tools.FileDiagnostics.diagnostics(relative, content),
-           test_relationships: []
-         }}
+        file =
+          if unchanged?(previous_file, stat, content_hash) do
+            %{
+              previous_file
+              | generation: generation,
+                modified_at: stat.mtime,
+                size: stat.size
+            }
+          else
+            %{
+              path: relative,
+              size: stat.size,
+              modified_at: stat.mtime,
+              hash: content_hash,
+              generation: generation,
+              language: language(relative),
+              symbols: symbols(relative, content),
+              dependencies: dependencies(relative, content),
+              diagnostics: BeamAgent.Tools.FileDiagnostics.diagnostics(relative, content),
+              test_relationships: []
+            }
+          end
+
+        {relative, file}
       end)
 
     paths = files |> Map.keys() |> MapSet.new()
@@ -157,6 +243,11 @@ defmodule BeamAgent.Project.RepositoryIndex do
   rescue
     error -> {:error, {:repository_scan_failed, Exception.message(error)}}
   end
+
+  defp unchanged?(nil, _stat, _hash), do: false
+
+  defp unchanged?(file, stat, hash),
+    do: file.size == stat.size and file.hash == hash
 
   defp walk(root, relative) do
     directory = Path.join(root, relative)

@@ -8,6 +8,7 @@ defmodule BeamAgent.ProjectSupervisor do
   alias BeamAgent.Project.{
     ContextStore,
     ExecutionNodeRegistry,
+    PathLeaseManager,
     RepositoryIndex,
     ResourceScheduler,
     WorktreeManager
@@ -61,6 +62,9 @@ defmodule BeamAgent.ProjectSupervisor do
       {ContextStore, opts},
       {ModelRouter, opts},
       {OutcomeStore, opts},
+      {PathLeaseManager, opts},
+      {Task.Supervisor,
+       name: Names.via(:repository_scan_supervisor, Keyword.fetch!(opts, :project_id))},
       {RepositoryIndex, opts},
       {ResourceScheduler, opts},
       {WorktreeManager, opts},

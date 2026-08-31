@@ -52,6 +52,7 @@ defmodule BeamAgent.Runtime do
     do: Client.delete_attachment(client, attachment_id)
 
   def cancel(client), do: Client.cancel(client)
+  def steer(client, message), do: Client.steer(client, message)
 
   def respond_approval(client, approval_id, decision),
     do: Client.respond_approval(client, approval_id, decision)
@@ -72,6 +73,7 @@ defmodule BeamAgent.Runtime do
   def repository(client), do: Client.repository(client)
   def project_context(client, request \\ %{}), do: Client.project_context(client, request)
   def resource_pools(client), do: Client.resource_pools(client)
+  def path_leases(client), do: Client.path_leases(client)
   def delegations(client), do: Client.delegations(client)
   def organizations(client), do: Client.organizations(client)
   def capability_leases(client), do: Client.capability_leases(client)

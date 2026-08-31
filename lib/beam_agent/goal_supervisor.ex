@@ -9,6 +9,7 @@ defmodule BeamAgent.GoalSupervisor do
     CapabilityManager,
     DelegationManager,
     EventHub,
+    ModelLease,
     OrganizationManager,
     ResourceSupervisor,
     SecretBroker
@@ -49,6 +50,7 @@ defmodule BeamAgent.GoalSupervisor do
         {DelegationManager, opts},
         {OrganizationManager, opts},
         {SecretBroker, opts},
+        {ModelLease, opts},
         {ResourceSupervisor, opts},
         {Task.Supervisor, name: Names.via(:goal_verification_supervisor, goal_id)},
         {Registry, opts},

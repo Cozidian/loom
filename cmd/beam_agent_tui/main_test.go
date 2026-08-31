@@ -215,6 +215,25 @@ func TestEventSlashCommandForwardsFiltersToElixir(t *testing.T) {
 	}
 }
 
+func TestSteerSlashCommandForwardsMessageToRuntime(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+
+	_, cmd := m.runSlash("/steer focus on the failing test")
+	if cmd == nil {
+		t.Fatal("expected bridge command")
+	}
+	cmd()
+
+	action, err := newProtocol(&wire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Type != "command" || action.Command != "steer" || action.Query != "focus on the failing test" {
+		t.Fatalf("unexpected steering action: %#v", action)
+	}
+}
+
 func TestModelsSlashCommandForwardsHealthRefresh(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)

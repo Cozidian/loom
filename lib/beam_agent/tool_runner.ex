@@ -3,6 +3,9 @@ defmodule BeamAgent.ToolRunner do
 
   alias BeamAgent.{CapabilityEnvelope, Session.ToolPolicy}
   alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
+  alias BeamAgent.Project.PathLeaseManager
+
+  @write_tools ~w(apply_patch create_file edit_file)
 
   def execute(module, arguments, context) do
     access = if function_exported?(module, :access, 0), do: module.access(), else: :execute
@@ -12,7 +15,8 @@ defmodule BeamAgent.ToolRunner do
     with :ok <- authorize_capability(context, resource),
          :ok <-
            ToolPolicy.authorize(context.session_id, module.name(), arguments, access, resource),
-         :ok <- consume_budget(context, module.name(), arguments) do
+         :ok <- consume_budget(context, module.name(), arguments),
+         :ok <- authorize_path_lease(context, module.name(), arguments) do
       result =
         schedule(context, tool_pool(module.name(), arguments), fn ->
           invoke(module, arguments, context)
@@ -55,6 +59,30 @@ defmodule BeamAgent.ToolRunner do
         end
     end
   end
+
+  defp authorize_path_lease(context, tool, %{"path" => path})
+       when tool in @write_tools and is_binary(path) do
+    case PathLeaseManager.acquire(
+           context.project_id,
+           context.workspace_root,
+           path,
+           context.session_id
+         ) do
+      {:ok, _lease} ->
+        :ok
+
+      {:error, reason} = error ->
+        _ =
+          BeamAgent.Session.EventLog.append(context.session_id, :path_lease_denied, %{
+            "path" => path,
+            "reason" => inspect(reason)
+          })
+
+        error
+    end
+  end
+
+  defp authorize_path_lease(_context, _tool, _arguments), do: :ok
 
   defp resource(tool, arguments) do
     %{

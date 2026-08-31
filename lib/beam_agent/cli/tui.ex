@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect auto status new sessions models skills reload compact verify events tree budget repository resources organizations worktrees files resume)a
+  @commands ~w(connect auto status new sessions models skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
 
   def available?(override \\ nil)
 
@@ -132,6 +132,9 @@ defmodule BeamAgent.CLI.TUI do
     do: %{type: "turn_started", prompt: prompt}
 
   def notification_payload(:turn_cancelling), do: %{type: "turn_cancelling"}
+
+  def notification_payload({:turn_steered, message}),
+    do: %{type: "notice", tone: "success", message: "Steering queued · #{message}"}
 
   def notification_payload({:turn_finished, {:ok, _answer}}),
     do: %{type: "turn_finished", ok: true}
@@ -345,6 +348,15 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp dispatch_action(
+         %{"type" => "command", "command" => "steer", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:steer, query})
+    :ok
+  end
+
+  defp dispatch_action(
          %{"type" => "command", "command" => "models", "query" => query},
          controller
        )
@@ -537,6 +549,9 @@ defmodule BeamAgent.CLI.TUI do
     "Goal #{data["status"]} · #{data["expected_artifact"]} · #{length(changed)} changed files"
   end
 
+  defp info_entry(%{payload: %{type: "goal_steered"}}),
+    do: "Live steering queued for active worker"
+
   defp info_entry(%{
          payload: %{type: "agent_started", data: data},
          scope: %{root?: true}
@@ -607,6 +622,12 @@ defmodule BeamAgent.CLI.TUI do
     selected = data["selected_endpoint_id"] || "deterministic"
     "Model routed · #{selected} · #{data["reason"]}#{routing_evidence_suffix(data)}"
   end
+
+  defp info_entry(%{payload: %{type: "model_route_reused", data: data}}),
+    do: "Model lease reused · #{data["selected_endpoint_id"] || "deterministic"}"
+
+  defp info_entry(%{payload: %{type: "path_lease_denied", data: data}}),
+    do: "Write lease conflict · #{data["path"]}"
 
   defp info_entry(%{payload: %{type: "task_outcome_recorded", data: data}}),
     do: outcome_label("Task outcome", data)

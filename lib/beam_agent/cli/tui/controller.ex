@@ -208,6 +208,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   def handle_info(
+        {:beam_agent_runtime, runtime, {:turn_steered, message}},
+        %{runtime: runtime} = state
+      ) do
+    notify(state, {:turn_steered, message})
+    {:noreply, state}
+  end
+
+  def handle_info(
         {:beam_agent_runtime, runtime, {:approval_resolved, approval_id, decision}},
         %{runtime: runtime} = state
       ) do
@@ -532,6 +540,27 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
+  defp run_command({:steer, ""}, state) do
+    notify(state, {:notice, :warning, "Usage: /steer MESSAGE"})
+    state
+  end
+
+  defp run_command({:steer, message}, %{current: :running} = state) do
+    case Runtime.steer(state.runtime, message) do
+      :ok ->
+        state
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command({:steer, _message}, state) do
+    notify(state, {:notice, :warning, "Nothing is running to steer"})
+    state
+  end
+
   defp run_command(:skills, state) do
     case BeamAgent.skills(state.session_id) do
       {:ok, []} ->
@@ -663,18 +692,29 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   defp run_command(:resources, state) do
-    case Runtime.resource_pools(state.runtime) do
-      {:ok, pools} ->
-        lines =
+    case {Runtime.resource_pools(state.runtime), Runtime.path_leases(state.runtime)} do
+      {{:ok, pools}, {:ok, leases}} ->
+        pool_lines =
           pools
           |> Enum.sort_by(fn {name, _pool} -> name end)
           |> Enum.map(fn {name, pool} ->
             "#{name} · #{pool.active}/#{pool.limit} active · #{pool.queued} queued"
           end)
 
+        lease_lines =
+          Enum.map(leases, fn lease ->
+            "write lease · #{short_id(lease.owner)} · #{lease.path}"
+          end)
+
+        lines =
+          pool_lines ++ if(lease_lines == [], do: ["write leases · none"], else: lease_lines)
+
         notify(state, {:panel, "Resource scheduler", lines})
 
-      {:error, reason} ->
+      {{:error, reason}, _leases} ->
+        notify(state, {:notice, :error, format_error(reason)})
+
+      {_pools, {:error, reason}} ->
         notify(state, {:notice, :error, format_error(reason)})
     end
 

@@ -48,11 +48,16 @@ BeamAgent.Supervisor
         ├── ModelRegistry (GenServer, configured endpoints and health)
         ├── ModelRouter (GenServer, per-request deterministic selection)
         ├── OutcomeStore (GenServer, append-only project outcome ledger)
+        ├── PathLeaseManager (GenServer, project-wide actor write ownership)
+        ├── RepositoryScanSupervisor (Task.Supervisor)
+        ├── RepositoryIndex (GenServer, non-blocking project snapshot)
         └── GoalRootSupervisor (DynamicSupervisor)
             └── GoalSupervisor (one per root goal, :rest_for_one)
                 ├── Goal (GenServer, typed work contracts and goal-lived state)
                 ├── Goal.EventHub (GenServer, goal-wide replay and live fan-out)
+                ├── Goal.ModelLease (GenServer, stable route per work contract)
                 ├── Goal.ResourceSupervisor (DynamicSupervisor)
+                │   ├── Goal stage tasks (execute, repair, review)
                 │   └── MCP.Server (one per local stdio server)
                 ├── GoalVerificationSupervisor (Task.Supervisor)
                 │   └── Goal.Verifier task (temporary, on demand)
@@ -67,7 +72,8 @@ BeamAgent.Supervisor
                     ├── ToolPolicy (GenServer, approvals and pending callers)
                     ├── SubagentSupervisor (DynamicSupervisor)
                     │   └── SessionSupervisor (one per child, recursively)
-                    └── Agent (GenServer)
+                    ├── Agent (GenServer)
+                    └── CodexAppServer.Conversation (ChatGPT profiles only)
 ```
 
 The canonical workspace determines a stable project identity, so separate goals
@@ -79,9 +85,12 @@ A root goal wraps the existing durable session subtree: its goal and session
 identifiers are equal during this compatibility phase. `BeamAgent.ask/4` now
 enters the `Goal` process first. Goal classifies the objective into a small
 runtime-owned `WorkContract`, assembles current repository/git/diagnostic
-context, owns the executing/cancelling/completed phase, and records a terminal
-work artifact. The session `Agent` remains the model worker rather than the
-authority that decides the goal lifecycle.
+context, and runs an explicit candidate → verification → repair/restart →
+independent review → completion state machine. Failed deterministic checks or
+review findings become bounded repair work; the Goal restarts the model worker
+while retaining the contract, evidence, route lease, and caller. Repeated
+failure fingerprints stop the loop. The session `Agent` remains the model
+worker rather than the authority that decides the goal lifecycle.
 `BeamAgent.start_session/1` opens or reuses the project and starts a goal, so
 existing clients do not need to change. A goal-state failure rebuilds the
 dependent session from its event log; sibling goals remain isolated. Nested
@@ -319,7 +328,11 @@ File edits use observed-state concurrency rather than blind overwrite.
 returns both raw and numbered content. `edit_file` and `apply_patch` normally
 consult that actor instead of requiring the model to carry a SHA through its
 prompt; legacy direct callers may still provide one. Exact edits must still
-match once and creates remain exclusive. Commands use explicit cwd, timeout,
+match once and creates remain exclusive. Before a write, the project-owned
+`PathLeaseManager` grants the path to one actor. A competing worker receives a
+structured conflict, while actor death or Goal completion releases its leases.
+This protection spans sibling goals sharing a canonical workspace; isolated
+worktrees remain separate lease namespaces. Commands use explicit cwd, timeout,
 output limits, and an enforcing platform sandbox. Non-zero exits are successful
 tool transport with `ok: false`, exit status, and output so failing checks become
 repair evidence. A missing sandbox backend remains an error.
@@ -412,7 +425,9 @@ longer implements a second subscription, approval, timeout, and turn-task loop.
 
 Deterministic completion checks are represented by `VerificationPlan`. A
 project may define `.beam_agent/verification.json`; otherwise the runtime
-discovers conservative Mix, Go, and Git checks. `/verify` starts a disposable
+discovers conservative Mix, Go, and Git checks. Implementation work that
+actually changed files is verified automatically by Goal before the caller can
+observe completion. `/verify` also starts a disposable
 task beneath the goal's verification supervisor. Every plan/check lifecycle is
 recorded durably, command pipelines use `pipefail`, non-zero exits are errors,
 and successful or failed evidence updates the latest task outcome. Until such
@@ -454,15 +469,24 @@ Ollama and Anthropic use native adapters because their tool-history formats are
 materially different. OpenAI API-key profiles and xAI share the Chat
 Completions wire adapter but keep separate provider modules and defaults.
 OpenAI ChatGPT-plan profiles launch the official Codex App Server as an
-OTP-owned temporary port process. App Server owns browser OAuth, persistence,
+OTP-owned, session-supervised conversation process. App Server owns browser OAuth, persistence,
 refresh, and model access. Each invocation receives an isolated empty working
 directory, no Codex shell/web/apps/plugins/subagents, and only BeamAgent's
-authorized dynamic-tool schemas. Native Codex tool requests are executed
+authorized dynamic-tool schemas. The client and native thread survive across
+BeamAgent user turns. A provider transport failure restarts only that
+conversation actor; restarting the session worker deliberately rebuilds it.
+Native Codex tool requests are executed
 immediately through BeamAgent's normal `ToolRunner` capability, approval,
 sandbox, event, and budget boundary; the real result is returned to the same
 Codex turn so one coding turn can inspect, edit, and finish without an
-acknowledgement race. Persisting the App Server thread across separate
-BeamAgent turns remains future work.
+acknowledgement race.
+
+Model routing is selected once per `WorkContract` and retained by
+`Goal.ModelLease` through tool steps, verification, and repair attempts. Child
+work contracts may still select a different endpoint. A user can send
+`BeamAgent.steer/2`, the runtime `steer` command, or `/steer MESSAGE`; Goal puts
+the message into the active worker mailbox and the tool loop applies it before
+the next model decision without cancelling or rebuilding the work.
 
 API-key and generic device-flow credentials are resolved by the supervised
 `Auth.CredentialStore`. Configuration and model-endpoint descriptors carry only

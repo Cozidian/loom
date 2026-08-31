@@ -186,6 +186,62 @@ defmodule BeamAgent.ProvidersTest do
     end
   end
 
+  defmodule PersistentCodexClientStub do
+    def start_link(opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, :persistent_codex_client_started)
+
+      Agent.start_link(fn ->
+        %{owner: Keyword.fetch!(opts, :owner), test_pid: test_pid, turns: 0}
+      end)
+    end
+
+    def request(_client, "initialize", _params), do: {:ok, %{}}
+
+    def request(_client, "account/read", _params),
+      do: {:ok, %{"account" => %{"type" => "chatgpt", "planType" => "plus"}}}
+
+    def request(client, "thread/start", params) do
+      send(Agent.get(client, & &1.test_pid), {:persistent_thread_started, params})
+      {:ok, %{"thread" => %{"id" => "persistent-thread"}}}
+    end
+
+    def request(client, "turn/start", params) do
+      state =
+        Agent.get_and_update(client, fn state -> {state, %{state | turns: state.turns + 1}} end)
+
+      turn = state.turns + 1
+      send(state.test_pid, {:persistent_turn_started, turn, params})
+
+      send(
+        state.owner,
+        {:codex_app_server, client,
+         {:notification,
+          %{
+            "method" => "item/completed",
+            "params" => %{
+              "item" => %{"type" => "agentMessage", "text" => "reply-#{turn}"}
+            }
+          }}}
+      )
+
+      send(
+        state.owner,
+        {:codex_app_server, client,
+         {:notification,
+          %{
+            "method" => "turn/completed",
+            "params" => %{"turn" => %{"status" => "completed"}}
+          }}}
+      )
+
+      {:ok, %{"turn" => %{"id" => "turn-#{turn}"}}}
+    end
+
+    def notify(_client, "initialized", %{}), do: :ok
+    def stop(client), do: Agent.stop(client)
+  end
+
   @tools [
     %{
       name: "add",
@@ -204,6 +260,95 @@ defmodule BeamAgent.ProvidersTest do
     data: "iVBORw0KGgo=",
     path: "/tmp/beam-agent-test-image.png"
   }
+
+  test "session conversation retains one Codex client and native thread across user turns" do
+    session_id = "persistent-codex-#{System.unique_integer([:positive])}"
+
+    options = [
+      model: "gpt-test",
+      codex_client: PersistentCodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    {:ok, conversation} =
+      BeamAgent.CodexAppServer.Conversation.start_link(
+        session_id: session_id,
+        provider_options: options
+      )
+
+    assert {:ok, %{content: "reply-1"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "first request"}],
+               [],
+               Keyword.put(options, :beam_turn, 1),
+               fn _event -> :ok end
+             )
+
+    assert {:ok, %{content: "reply-2"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [
+                 %{role: :user, content: "first request"},
+                 %{role: :assistant, content: "reply-1", tool_calls: []},
+                 %{role: :user, content: "second request"}
+               ],
+               [],
+               Keyword.put(options, :beam_turn, 2),
+               fn _event -> :ok end
+             )
+
+    assert_receive :persistent_codex_client_started
+    assert_receive {:persistent_thread_started, _params}
+    refute_receive {:persistent_thread_started, _params}
+    assert_receive {:persistent_turn_started, 1, first}
+    assert_receive {:persistent_turn_started, 2, second}
+    assert hd(first["input"])["text"] =~ "first request"
+    assert hd(second["input"])["text"] =~ "second request"
+    refute hd(second["input"])["text"] =~ "first request"
+  end
+
+  test "ChatGPT session supervision reuses the native thread through BeamAgent.ask" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "beam-agent-codex-session-#{System.unique_integer([:positive])}"
+      )
+
+    workspace = Path.join(root, "workspace")
+    data_dir = Path.join(root, "sessions")
+    File.mkdir_p!(workspace)
+
+    assert {:ok, session_id} =
+             BeamAgent.start_session(
+               workspace_root: workspace,
+               data_dir: data_dir,
+               provider: :openai,
+               provider_options: [
+                 model: "gpt-test",
+                 auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+                 codex_client: PersistentCodexClientStub,
+                 codex_client_options: [test_pid: self()]
+               ]
+             )
+
+    on_exit(fn ->
+      _ = BeamAgent.stop_session(session_id)
+      File.rm_rf(root)
+    end)
+
+    assert {:ok, "reply-1"} = BeamAgent.ask(session_id, "first request")
+    assert {:ok, "reply-2"} = BeamAgent.ask(session_id, "second request")
+
+    assert_receive :persistent_codex_client_started
+    assert_receive {:persistent_thread_started, _params}
+    refute_receive {:persistent_thread_started, _params}
+    assert_receive {:persistent_turn_started, 1, first}
+    assert_receive {:persistent_turn_started, 2, second}
+    assert hd(first["input"])["text"] =~ "first request"
+    assert hd(second["input"])["text"] =~ "second request"
+    refute hd(second["input"])["text"] =~ "first request"
+  end
 
   test "OpenAI serializes Chat Completions history and parses function calls" do
     response = %{

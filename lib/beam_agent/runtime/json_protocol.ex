@@ -39,6 +39,7 @@ defmodule BeamAgent.Runtime.JSONProtocol do
   defp execute(client, "models", _arguments), do: BeamAgent.Runtime.models(client)
   defp execute(client, "repository", _arguments), do: BeamAgent.Runtime.repository(client)
   defp execute(client, "resource_pools", _arguments), do: BeamAgent.Runtime.resource_pools(client)
+  defp execute(client, "path_leases", _arguments), do: BeamAgent.Runtime.path_leases(client)
   defp execute(client, "delegations", _arguments), do: BeamAgent.Runtime.delegations(client)
   defp execute(client, "organizations", _arguments), do: BeamAgent.Runtime.organizations(client)
 
@@ -68,6 +69,17 @@ defmodule BeamAgent.Runtime.JSONProtocol do
   end
 
   defp execute(client, "cancel", _arguments), do: BeamAgent.Runtime.cancel(client)
+
+  defp execute(client, "steer", arguments) do
+    case value(arguments, :message) do
+      message when is_binary(message) and message != "" ->
+        BeamAgent.Runtime.steer(client, message)
+
+      _other ->
+        {:error, :invalid_steering_message}
+    end
+  end
+
   defp execute(client, "verify", _arguments), do: BeamAgent.Runtime.verify(client)
 
   defp execute(client, "approval", arguments) do

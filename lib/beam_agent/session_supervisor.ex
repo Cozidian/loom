@@ -353,22 +353,42 @@ defmodule BeamAgent.SessionSupervisor do
 
   @impl true
   def init(opts) do
-    children = [
-      {EventLog, opts},
-      {AttachmentStore, opts},
-      {StreamHub, opts},
-      {ResourceSupervisor, opts},
-      {Context, opts},
-      {ConversationContext, opts},
-      {FileTracker, opts},
-      {ToolPolicy, opts},
-      {SubagentSupervisor, opts},
-      {BeamAgent.Agent, opts}
-    ]
+    children =
+      [
+        {EventLog, opts},
+        {AttachmentStore, opts},
+        {StreamHub, opts},
+        {ResourceSupervisor, opts},
+        {Context, opts},
+        {ConversationContext, opts},
+        {FileTracker, opts},
+        {ToolPolicy, opts},
+        {SubagentSupervisor, opts},
+        {BeamAgent.Agent, opts}
+      ] ++ provider_conversation_children(opts)
 
     # The event log is the first dependency. If it fails, every downstream
     # session process is rebuilt. A stream hub failure keeps the log alive while
     # rebuilding all request-owning processes below it.
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  defp provider_conversation_children(opts) do
+    provider = Keyword.get(opts, :provider, Application.fetch_env!(:beam_agent, :provider))
+    provider_options = Keyword.get(opts, :provider_options, [])
+
+    if provider == :openai and chatgpt?(provider_options) do
+      [{BeamAgent.CodexAppServer.Conversation, opts}]
+    else
+      []
+    end
+  end
+
+  defp chatgpt?(options) do
+    case options[:auth] do
+      %{"type" => "chatgpt"} -> true
+      %{type: :chatgpt} -> true
+      _other -> false
+    end
   end
 end

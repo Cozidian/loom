@@ -64,6 +64,86 @@ defmodule BeamAgent.CodexAppServer do
     end)
   end
 
+  @doc false
+  def open_conversation(options) do
+    client_module = Keyword.get(options, :codex_client, Client)
+
+    client_options =
+      options
+      |> Keyword.get(:codex_client_options, [])
+      |> Keyword.put_new(:owner, self())
+      |> Keyword.put_new(:arguments, arguments())
+
+    case client_module.start_link(client_options) do
+      {:ok, client} ->
+        case open_authenticated_conversation(client, client_module) do
+          {:ok, conversation} ->
+            {:ok, conversation}
+
+          {:error, _reason} = error ->
+            client_module.stop(client)
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp open_authenticated_conversation(client, client_module) do
+    with :ok <- initialize(client, client_module),
+         {:ok, account} <-
+           client_module.request(client, "account/read", %{"refreshToken" => true}),
+         :ok <- require_chatgpt(account) do
+      {:ok,
+       %{
+         client: client,
+         client_module: client_module,
+         thread: nil,
+         model: nil,
+         tools_fingerprint: nil,
+         beam_turn: nil,
+         message_count: 0
+       }}
+    end
+  end
+
+  @doc false
+  def close_conversation(%{client: client, client_module: client_module}) do
+    client_module.stop(client)
+  end
+
+  def close_conversation(_conversation), do: :ok
+
+  @doc false
+  def invoke_conversation(conversation, messages, tools, options, emit) do
+    with {:ok, conversation, fresh?} <- ensure_conversation_thread(conversation, tools, options),
+         selected <- conversation_messages(conversation, messages, options, fresh?),
+         {:ok, _turn} <-
+           start_turn(
+             conversation.client,
+             conversation.client_module,
+             conversation.thread,
+             selected,
+             options
+           ),
+         {:ok, response} <-
+           await_turn(
+             conversation.client,
+             conversation.client_module,
+             conversation.thread,
+             emit,
+             empty_invocation(tools, options)
+           ) do
+      {:ok, response,
+       %{
+         conversation
+         | beam_turn: options[:beam_turn],
+           message_count: length(messages)
+       }}
+    end
+  end
+
   defp with_client(options, fun) do
     client_module = Keyword.get(options, :codex_client, Client)
 
@@ -80,6 +160,73 @@ defmodule BeamAgent.CodexAppServer do
         client_module.stop(client)
       end
     end
+  end
+
+  defp ensure_conversation_thread(conversation, tools, options) do
+    model = options[:model]
+    fingerprint = tools_fingerprint(tools)
+
+    if is_binary(conversation.thread) and conversation.model == model and
+         conversation.tools_fingerprint == fingerprint do
+      {:ok, conversation, false}
+    else
+      with {:ok, thread} <-
+             start_thread(conversation.client, conversation.client_module, tools, options) do
+        {:ok,
+         %{
+           conversation
+           | thread: thread,
+             model: model,
+             tools_fingerprint: fingerprint,
+             beam_turn: nil,
+             message_count: 0
+         }, true}
+      end
+    end
+  end
+
+  defp conversation_messages(_conversation, messages, _options, true), do: messages
+
+  defp conversation_messages(%{beam_turn: turn} = conversation, messages, options, false) do
+    if turn == options[:beam_turn] do
+      delta = Enum.drop(messages, min(conversation.message_count, length(messages)))
+
+      delta
+      |> Enum.filter(&(Map.get(&1, :role) in [:tool, :user]))
+      |> case do
+        [] -> latest_tool_or_user(messages)
+        selected -> selected
+      end
+    else
+      latest_user(messages)
+    end
+  end
+
+  defp latest_user(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find(&(Map.get(&1, :role) == :user))
+    |> case do
+      nil -> [List.last(messages)]
+      message -> [message]
+    end
+  end
+
+  defp latest_tool_or_user(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.find(&(Map.get(&1, :role) in [:tool, :user]))
+    |> case do
+      nil -> [List.last(messages)]
+      message -> [message]
+    end
+  end
+
+  defp tools_fingerprint(tools) do
+    tools
+    |> Enum.map(&dynamic_tool/1)
+    |> JSON.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
   end
 
   defp arguments do

@@ -27,7 +27,7 @@ defmodule BeamAgent.Providers.OpenAI do
   @impl true
   def complete(messages, tools, options) do
     if chatgpt?(options) do
-      CodexAppServer.invoke(messages, tools, options)
+      invoke_chatgpt(messages, tools, options, fn _event -> :ok end)
     else
       options
       |> provider_options()
@@ -38,7 +38,7 @@ defmodule BeamAgent.Providers.OpenAI do
   @impl true
   def stream(messages, tools, options, emit) do
     if chatgpt?(options) do
-      CodexAppServer.invoke(messages, tools, options, emit)
+      invoke_chatgpt(messages, tools, options, emit)
     else
       options
       |> provider_options()
@@ -74,6 +74,16 @@ defmodule BeamAgent.Providers.OpenAI do
     options
     |> Keyword.put_new(:base_url, configuration().default_base_url)
     |> Keyword.put_new(:default_api_key_env, configuration().default_api_key_env)
+  end
+
+  defp invoke_chatgpt(messages, tools, options, emit) do
+    case options[:provider_conversation] do
+      pid when is_pid(pid) ->
+        BeamAgent.CodexAppServer.Conversation.invoke(pid, messages, tools, options, emit)
+
+      _other ->
+        CodexAppServer.invoke(messages, tools, options, emit)
+    end
   end
 
   defp chatgpt?(options) do

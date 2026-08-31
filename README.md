@@ -104,7 +104,7 @@ idle). Approval dialogs default to deny and offer explicit once or durable
 scoped-always choices.
 
 The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`,
-`/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/events`, `/tree`, `/clear`,
+`/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/steer MESSAGE`, `/events`, `/tree`, `/clear`,
 and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservative
 checks discovered from Mix, Go, and Git project files. Ollama, OpenAI, xAI/Grok,
 and Anthropic responses render as they arrive; deterministic or custom
@@ -336,7 +336,8 @@ export XAI_API_KEY="..."
 OpenAI profiles can instead use a ChatGPT subscription through browser login.
 This path requires the official `codex` executable with `codex app-server`
 available on `PATH`; Codex owns the OAuth ceremony, durable credential, and
-automatic refresh. BeamAgent keeps ownership of the agent loop and exposes only
+automatic refresh. A session-supervised Codex client and native thread persist
+across user turns, while BeamAgent keeps ownership of the agent loop and exposes only
 its current dynamic tool schemas to the model process. Tool requests execute
 through BeamAgent policy and their real results return inside the same Codex
 turn:

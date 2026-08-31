@@ -15,7 +15,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     ToolRunner
   }
 
-  alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
+  alias BeamAgent.Goal.{BudgetManager, CapabilityManager, ModelLease}
 
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
@@ -167,6 +167,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp runtime_command_field(_context, _field), do: nil
 
   defp step(context, turn, step_number, previous_signature, repetition_count, tools_enabled?) do
+    apply_steering(context, turn)
+
     with {:ok, _} <-
            EventLog.append(context.session_id, :step_started, %{
              "turn" => turn,
@@ -234,6 +236,21 @@ defmodule BeamAgent.Strategies.ToolLoop do
       end
     else
       {:error, reason} -> fail_turn(context, turn, reason)
+    end
+  end
+
+  defp apply_steering(context, turn) do
+    receive do
+      {:beam_agent_steer, message} ->
+        _ =
+          EventLog.append(context.session_id, :user_message, %{
+            "content" => "Live user steering for turn #{turn}:\n\n#{message}",
+            "steering" => true
+          })
+
+        apply_steering(context, turn)
+    after
+      0 -> :ok
     end
   end
 
@@ -331,6 +348,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
       |> Keyword.put(:session_id, context.session_id)
       |> Keyword.put(:parent_session_id, context.parent_session_id)
       |> Keyword.put(:system_prompt, system_prompt)
+      |> Keyword.put(:beam_turn, turn)
+      |> maybe_put_provider_conversation(context.session_id)
       |> Keyword.put(
         :dynamic_tool_executor,
         &execute_native_tool(context, turn, step, &1)
@@ -431,6 +450,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
     if route.inputs.reasoning == :high, do: :expensive_model, else: :model
   end
 
+  defp maybe_put_provider_conversation(options, session_id) do
+    case BeamAgent.CodexAppServer.Conversation.pid(session_id) do
+      {:ok, pid} -> Keyword.put(options, :provider_conversation, pid)
+      {:error, :not_found} -> options
+    end
+  end
+
   defp resource_priority(context), do: if(context.parent_session_id, do: 0, else: 10)
 
   defp record_model_outcome(
@@ -495,6 +521,16 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp route_model(context, tool_schemas, turn, step) do
+    case leased_route(context) do
+      {:ok, route} ->
+        append_reused_route(context, route, turn, step)
+
+      :not_found ->
+        select_and_lease_route(context, tool_schemas, turn, step)
+    end
+  end
+
+  defp select_and_lease_route(context, tool_schemas, turn, step) do
     prompt = latest_user_prompt(context.session_id)
     requirements = context.agent_spec.model_requirements
 
@@ -518,6 +554,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       |> Map.put(:modalities_required, required_modalities(context.session_id))
 
     with {:ok, route} <- ModelRouter.route(context.project_id, input),
+         {:ok, route} <- lease_route(context, route),
          {:ok, _} <-
            EventLog.append(context.session_id, :model_route_selected, %{
              "decision_id" => route.decision_id,
@@ -530,6 +567,29 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "inputs" => route.inputs,
              "reason" => route.reason,
              "evidence" => Map.get(route, :evidence)
+           }) do
+      {:ok, route}
+    end
+  end
+
+  defp leased_route(%{work_contract: %{id: work_id}, goal_id: goal_id}),
+    do: ModelLease.fetch(goal_id, work_id)
+
+  defp leased_route(_context), do: :not_found
+
+  defp lease_route(%{work_contract: %{id: work_id}, goal_id: goal_id}, route),
+    do: ModelLease.put_new(goal_id, work_id, route)
+
+  defp lease_route(_context, route), do: {:ok, route}
+
+  defp append_reused_route(context, route, turn, step) do
+    with {:ok, _event} <-
+           EventLog.append(context.session_id, :model_route_reused, %{
+             "decision_id" => route.decision_id,
+             "turn" => turn,
+             "step" => step,
+             "selected_endpoint_id" => route.selected_endpoint_id,
+             "reason" => "work_contract_model_lease"
            }) do
       {:ok, route}
     end
@@ -1177,6 +1237,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
     OutcomeStore.attach_verification(context.project_id, outcome.id, verification)
   end
 
+  defp completion_verification(%{work_contract: %BeamAgent.WorkContract{}}, _turn),
+    do: {:ok, nil}
+
   defp completion_verification(context, turn) do
     requirements = context.agent_spec.verification_requirements
     prompt = latest_user_prompt(context.session_id)
@@ -1256,20 +1319,34 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp finalize_verified_turn(context, turn, answer, verification, review \\ nil) do
-    status = if verification, do: :succeeded, else: :completed
+    if Map.get(context, :work_contract) do
+      with {:ok, _event} <-
+             EventLog.append(context.session_id, :worker_candidate_finished, %{
+               "turn" => turn,
+               "contract_id" => context.work_contract.id,
+               "reason" => "candidate_completed"
+             }) do
+        {:ok, answer}
+      end
+    else
+      status = if verification, do: :succeeded, else: :completed
 
-    with {:ok, _} <-
-           EventLog.append(context.session_id, :turn_finished, %{
-             "turn" => turn,
-             "reason" => "completed",
-             "verification_status" => verification_status(verification),
-             "review_status" => review_status(review)
-           }),
-         {:ok, _outcome} <- record_task_outcome(context, turn, status, nil, verification),
-         {:ok, _report} <- append_completion_report(context, verification) do
-      {:ok, answer}
+      with {:ok, _} <-
+             EventLog.append(context.session_id, :turn_finished, %{
+               "turn" => turn,
+               "reason" => "completed",
+               "verification_status" => verification_status(verification),
+               "review_status" => review_status(review)
+             }),
+           {:ok, _outcome} <- record_task_outcome(context, turn, status, nil, verification),
+           {:ok, _report} <- append_completion_report(context, verification) do
+        {:ok, answer}
+      end
     end
   end
+
+  defp completion_review(%{work_contract: %BeamAgent.WorkContract{}}, _turn, _verification),
+    do: :skip
 
   defp completion_review(context, turn, verification) do
     prompt = latest_user_prompt(context.session_id)

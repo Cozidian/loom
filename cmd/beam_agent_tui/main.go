@@ -228,6 +228,7 @@ var commands = []commandItem{
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
 	{ID: "verify", Label: "Verify workspace", Hint: "/verify"},
+	{ID: "steer", Label: "Steer active work", Hint: "/steer MESSAGE"},
 	{ID: "events", Label: "Inspect goal events", Hint: "/events [filters]"},
 	{ID: "tree", Label: "Goal worker tree", Hint: "/tree"},
 	{ID: "budget", Label: "Goal budget", Hint: "/budget"},
@@ -1462,6 +1463,16 @@ func runtimeInfoText(eventType string, data map[string]any, sessionID string, ro
 			selected = "deterministic"
 		}
 		return "Model routed · " + selected + " · " + asString(data["reason"]) + routingEvidenceSuffix(data)
+	case "model_route_reused":
+		selected := asString(data["selected_endpoint_id"])
+		if selected == "" {
+			selected = "deterministic"
+		}
+		return "Model lease reused · " + selected
+	case "goal_steered":
+		return "Live steering queued for active worker"
+	case "path_lease_denied":
+		return "Write lease conflict · " + asString(data["path"])
 	case "mcp_server_started":
 		return "MCP ready · " + asString(data["server"]) + " · " + asString(data["tool_count"]) + " tools"
 	case "mcp_server_restarted":

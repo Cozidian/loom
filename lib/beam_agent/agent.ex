@@ -81,6 +81,12 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  def steer(session_id, message) when is_binary(message) do
+    with {:ok, pid} <- Names.pid(:agent, session_id) do
+      GenServer.call(pid, {:steer, String.trim(message)})
+    end
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -248,9 +254,21 @@ defmodule BeamAgent.Agent do
     do: {:reply, {:error, :not_running}, state}
 
   def handle_call(:cancel, _from, state) do
+    _ = BeamAgent.CodexAppServer.Conversation.cancel(state.session_id)
     Process.exit(state.current_turn.pid, :shutdown)
     current = %{state.current_turn | cancel_requested: true}
     {:reply, :ok, %{state | status: :cancelling, current_turn: current}}
+  end
+
+  def handle_call({:steer, ""}, _from, state),
+    do: {:reply, {:error, :empty_steering_message}, state}
+
+  def handle_call({:steer, _message}, _from, %{current_turn: nil} = state),
+    do: {:reply, {:error, :not_running}, state}
+
+  def handle_call({:steer, message}, _from, state) do
+    send(state.current_turn.pid, {:beam_agent_steer, message})
+    {:reply, :ok, state}
   end
 
   @impl true

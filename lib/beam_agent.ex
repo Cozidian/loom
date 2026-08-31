@@ -264,6 +264,15 @@ defmodule BeamAgent do
     end
   end
 
+  def steer(session_id, message) when is_binary(message) do
+    case Names.pid(:goal, session_id) do
+      {:ok, _pid} -> Goal.steer(session_id, message)
+      {:error, :not_found} -> Agent.steer(session_id, message)
+    end
+  end
+
+  def path_leases(project_id), do: BeamAgent.Project.PathLeaseManager.snapshot(project_id)
+
   def subscribe(session_id, subscriber \\ self()), do: StreamHub.subscribe(session_id, subscriber)
 
   def unsubscribe(session_id, subscriber \\ self()),

@@ -23,6 +23,7 @@ defmodule BeamAgent.Runtime.Client do
     do: GenServer.call(client, {:delete_attachment, attachment_id})
 
   def cancel(client), do: GenServer.call(client, :cancel)
+  def steer(client, message), do: GenServer.call(client, {:steer, message})
 
   def respond_approval(client, approval_id, decision),
     do: GenServer.call(client, {:respond_approval, approval_id, decision})
@@ -45,6 +46,7 @@ defmodule BeamAgent.Runtime.Client do
   def repository(client), do: GenServer.call(client, :repository)
   def project_context(client, request), do: GenServer.call(client, {:project_context, request})
   def resource_pools(client), do: GenServer.call(client, :resource_pools)
+  def path_leases(client), do: GenServer.call(client, :path_leases)
   def delegations(client), do: GenServer.call(client, :delegations)
   def organizations(client), do: GenServer.call(client, :organizations)
   def capability_leases(client), do: GenServer.call(client, :capability_leases)
@@ -181,6 +183,17 @@ defmodule BeamAgent.Runtime.Client do
     end
   end
 
+  def handle_call({:steer, message}, _from, state) when is_binary(message) do
+    case BeamAgent.steer(state.goal_id, message) do
+      :ok ->
+        notify(state, {:turn_steered, message})
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:respond_approval, approval_id, decision}, _from, state)
       when decision in [:allow_once, :allow_always, :deny] do
     state = reconcile_approvals(state, notify_new: true)
@@ -295,6 +308,9 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call(:resource_pools, _from, state),
     do: {:reply, BeamAgent.resource_pools(state.project_id), state}
+
+  def handle_call(:path_leases, _from, state),
+    do: {:reply, BeamAgent.path_leases(state.project_id), state}
 
   def handle_call(:delegations, _from, state),
     do: {:reply, BeamAgent.worker_delegations(state.goal_id), state}
@@ -506,7 +522,9 @@ defmodule BeamAgent.Runtime.Client do
       goal_phase: goal_status.phase,
       work_contract: contract_summary(goal_status.current_contract),
       last_work: last_work_summary(goal_status.last_work),
-      running?: goal_status.phase in [:executing, :cancelling] or state.agent_status != :idle
+      running?:
+        goal_status.phase in [:executing, :verifying, :repairing, :reviewing, :cancelling] or
+          state.agent_status != :idle
     }
   end
 
