@@ -19,6 +19,7 @@ It includes:
 - session-owned auto/ask/deny policy with once/always approvals and revocation;
 - goal-supervised local stdio MCP servers with namespaced tools;
 - goal-scoped provider auctions and stable model leases across configured profiles;
+- runtime-owned direct/advisory/required work planning with bounded multi-provider decomposition;
 - bounded quality tournaments plus first-admissible provider races with early loser cancellation;
 - content-free model/task outcomes with later verification attachment;
 - guarded file discovery, reading, creation, versioned editing, and commands;
@@ -153,7 +154,8 @@ sample count, verified pass rate, call count, and observed latency. Use
 `/models refresh` to run supervised provider health checks, or `/models PROFILE`
 to refresh one endpoint. Its Provider Market section shows the most recent
 content-free auction, every endpoint bid, the awarded leases, confidence,
-latency estimate, and cost tier. During work, the chat reports `providers
+latency estimate, cost tier, and the deterministic score components that explain
+why one bid outranked another. During work, the chat reports `providers
 bidding` and `racing N providers` instead of hiding orchestration behind a
 generic spinner.
 
@@ -184,14 +186,27 @@ its supervised subtree with `cancel_subagent`. Completion does not treat merely
 starting or polling a background worker as delivered implementation; the parent
 must collect a completed result before relying on it. `/tree` groups the
 canonical activity into expandable work blocks and shows runtime-owned
-active/waiting/blocked/stalled totals.
+active/waiting/blocked/stalled totals. The chat also projects live work in one
+compact card, suppressing successful routine tool chatter by default. The
+critical worker and its blocker remain visible, and `c` in the Tree tab cancels
+the focused worker through the runtime without discarding the whole goal.
 For model-aware decomposition, `list_models` exposes only safe endpoint claims
 and `delegate_tasks` accepts soft per-worker model requirements such as a
 preferred endpoint, locality, reasoning, cost, and latency. Each worker receives
 its own stable lease. Independent tasks may overlap; workers that modify
 overlapping paths must be ordered through dependencies so ownership is handed
 off instead of raced. Runtime eligibility and capability policy can reject or
-override every model preference.
+override every model preference. For implementation turns the runtime decides
+whether direct work is sufficient, multi-provider decomposition is advisory, or
+the user's explicit multi-provider request makes decomposition required. The
+coordinating model still proposes task semantics, dependencies, and soft
+endpoint preferences; the runtime validates the plan, constructs workers,
+leases providers, enforces path and capability policy, and verifies workspace
+evidence. While required planning is unresolved, the coordinator initially sees
+only model inventory, structured decomposition, and read-only inspection tools;
+direct writes, commands, and ad-hoc spawning unlock only after a real
+multi-endpoint plan runs. Delegation only counts as implementation when its measured
+before/after workspace delta contains real changes.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
@@ -525,6 +540,14 @@ See [`evals/README.md`](evals/README.md) for the manifest format. Each run keeps
 its isolated fixture workspace, runtime logs, and a JSON report containing
 verified completion, latency, routes, tokens, tool/model calls, interventions,
 repairs, stalls, cancellations, and final workspace evidence.
+
+The multi-provider acceptance suite repeats a feature-sized clipboard-image
+implementation five times and gates verified completion, actual endpoint
+diversity, permission behavior, stalls, and model-call cost:
+
+```sh
+mix beam_agent.eval evals/multi_provider_acceptance.json --profile openai-chatgpt
+```
 
 The deterministic demo provider first calls `add`, then calls
 `spawn_subagent`, then produces a final answer. This makes the complete harness

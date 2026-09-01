@@ -410,8 +410,10 @@ every earlier item must finish before a high-value product or safety slice.
     goal events into per-worker semantic blocks with activity counts, files,
     warnings, duration, and raw event identities. The Tree tab renders compact
     blocks and expands them interactively while retaining `/events` as the raw
-    inspector. Moving this projection into the main chat transcript and adding
-    throttled live refresh remain.
+    inspector. A throttled runtime projection now updates a compact live-work
+    card in the main chat while routine successful tool lines stay collapsed;
+    failures and running operations remain foregrounded. Rich per-block
+    expansion from the chat itself remains.
 
 - [ ] Make active, waiting, blocked, and stalled work visually unmistakable
 
@@ -438,8 +440,10 @@ every earlier item must finish before a high-value product or safety slice.
     tools, delegation, verification, review, repair, approval waits, queueing,
     blocking, terminal work, confirmed repeated-tool stalls, and evidence-based
     suspected stalls. It records recovery when meaningful progress resumes. The
-    Tree tab shows shared active/waiting/blocked/stalled totals; critical-path
-    highlighting and direct per-worker actions remain.
+    Tree tab shows shared active/waiting/blocked/stalled totals, highlights the
+    critical worker and blocker, and offers focused worker cancellation through
+    the runtime. Direct inspect, approve, retry, recover, and steer actions per
+    block remain.
     - Preserve status through replay and reconnect, and verify nested approvals,
       long model calls, hung tools, scheduler backpressure, retries, process
       restarts, disconnected clients, and false-positive stall thresholds with
@@ -615,7 +619,9 @@ every earlier item must finish before a high-value product or safety slice.
      filesystem mutation forces verification even if intent classification was
      imperfect. Free/local bidding remains favored for genuinely simple work
      but no longer outweighs the configured primary endpoint for unverified
-     feature implementation.
+     feature implementation. Bids now retain and expose their individual health,
+     configured-preference, cost, locality, reasoning, latency, and verified-
+     evidence score components instead of presenting an unexplained total.
 
 - [x] Capture model and task outcomes
 
@@ -779,6 +785,18 @@ every earlier item must finish before a high-value product or safety slice.
       Every task receives a separately leased supervised worker. Independent
       tasks retain bounded parallelism, while overlapping implementation phases
       require explicit dependency-ordered ownership handoff.
+    - Delivered next slice: `WorkPlanningPolicy` classifies each turn as direct,
+      advisory decomposition, or required decomposition. Explicit multi-provider
+      implementation intent cannot silently collapse back to one worker when two
+      eligible endpoints exist. The coordinating model proposes task semantics;
+      the runtime remains authoritative for validation, construction, leasing,
+      capabilities, and verification. A shadow observation records whether the
+      model's direct/decomposed choice agreed with policy without changing that
+      policy, and delegated work only proves implementation when a measured
+      workspace delta contains changes. Required planning now gates the initial
+      tool projection to inventory, structured decomposition, and read-only
+      evidence; direct mutation and ad-hoc spawning unlock after a successful
+      multi-endpoint organization instead of being rejected near completion.
 
 16. [x] Support temporary self-forming worker organizations
 

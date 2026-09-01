@@ -13,7 +13,7 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
 
   @maximum_awards 4
   @history_limit 20
-  @bid_public_fields ~w(id auction_id endpoint_id provider model score confidence estimated_latency_ms cost_tier verified_samples reason submitted_at version)a
+  @bid_public_fields ~w(id auction_id endpoint_id provider model score confidence estimated_latency_ms cost_tier verified_samples score_components reason submitted_at version)a
 
   def start_link(opts) do
     goal_id = Keyword.fetch!(opts, :goal_id)

@@ -112,18 +112,36 @@ defmodule BeamAgent.RuntimeWorkBlocks do
        do: phase(block, :repairing, "Repairing candidate")
 
   defp apply_phase(block, "tool_approval_requested", data),
-    do: block |> phase(:awaiting_approval, "Waiting for approval") |> block(data["name"])
+    do:
+      block
+      |> state(:waiting)
+      |> phase(:awaiting_approval, "Waiting for approval")
+      |> block(data["name"] || data["tool"])
+
+  defp apply_phase(block, "tool_approval_granted", _data),
+    do: block |> state(:active) |> phase(:executing, "Work resumed") |> block(nil)
 
   defp apply_phase(block, "resource_queued", data),
-    do: block |> phase(:queued, "Waiting for resources") |> block(data["resource_pool"])
+    do:
+      block
+      |> state(:waiting)
+      |> phase(:queued, "Waiting for resources")
+      |> block(data["resource_pool"])
+
+  defp apply_phase(block, "resource_granted", _data),
+    do: block |> state(:active) |> phase(:executing, "Work resumed") |> block(nil)
+
+  defp apply_phase(block, "budget_exhausted", _data),
+    do: block |> state(:blocked) |> phase(:blocked, "Budget exhausted") |> block("budget")
 
   defp apply_phase(block, "worker_stall_suspected", _data),
     do: phase(block, :suspected_stalled, "Suspected stalled")
 
-  defp apply_phase(block, "tool_loop_stalled", _data), do: phase(block, :stalled, "Stalled")
+  defp apply_phase(block, "tool_loop_stalled", _data),
+    do: block |> state(:stalled) |> phase(:stalled, "Stalled")
 
   defp apply_phase(block, "worker_progress_resumed", _data),
-    do: phase(block, :executing, "Work resumed")
+    do: block |> state(:active) |> phase(:executing, "Work resumed") |> block(nil)
 
   defp apply_phase(block, _type, _data), do: block
 
@@ -246,7 +264,8 @@ defmodule BeamAgent.RuntimeWorkBlocks do
   end
 
   defp phase(block, phase, label), do: %{block | phase: phase, label: label}
-  defp block(block, nil), do: block
+  defp state(block, state), do: %{block | state: state}
+  defp block(block, nil), do: %{block | blocking_reason: nil}
   defp block(block, reason), do: %{block | blocking_reason: to_string(reason)}
 
   defp maybe_increment(block, key, increment?, path \\ [:counts])

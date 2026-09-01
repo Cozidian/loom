@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "metadata": {
+    "suite": "beam-agent-multi-provider-acceptance",
+    "description": "Repeated feature-sized implementation gate for runtime planning, provider specialization, permissions, stalls, and verified completion"
+  },
+  "acceptance": {
+    "minimum_verified_completion_rate": 0.8,
+    "minimum_multi_provider_rate": 0.8,
+    "maximum_permission_denials": 0,
+    "maximum_user_interventions": 0,
+    "maximum_stalls": 0,
+    "maximum_average_model_calls": 40
+  },
+  "scenarios": [
+    {
+      "id": "multi-provider-clipboard-image-paste",
+      "repetitions": 5,
+      "fixture": "fixtures/clipboard_image_paste",
+      "prompt": "Implement the clipboard image paste contract described in README.md and make every test pass without weakening the tests. Use different configured providers for bounded investigation, coherent implementation, and independent test review. Preserve one implementation owner at a time and use explicit dependencies for overlapping paths.",
+      "timeout_ms": 600000,
+      "checks": [
+        {
+          "id": "tests",
+          "command": "mix test",
+          "timeout_ms": 120000
+        },
+        {
+          "id": "compile",
+          "command": "mix compile --warnings-as-errors",
+          "timeout_ms": 120000
+        }
+      ],
+      "expect": {
+        "files": ["lib/clipboard_fixture/editor.ex"],
+        "file_contains": [
+          {
+            "path": "lib/clipboard_fixture/editor.ex",
+            "text": "image/png"
+          },
+          {
+            "path": "lib/clipboard_fixture/editor.ex",
+            "text": "unsupported_clipboard_item"
+          }
+        ]
+      }
+    }
+  ]
+}

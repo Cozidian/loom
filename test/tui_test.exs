@@ -265,6 +265,18 @@ defmodule BeamAgent.CLITUITest do
                }
              ]
            }
+
+    assert TUI.notification_payload(
+             {:work_projection,
+              %{
+                work_blocks: [%{id: "block-1", state: :active}],
+                progress: %{critical_worker_id: context.session_id}
+              }}
+           ) == %{
+             "work_blocks" => [%{"id" => "block-1", "state" => "active"}],
+             "progress" => %{"critical_worker_id" => context.session_id},
+             type: "work_projection"
+           }
   end
 
   test "initial history explains why a non-final model response was continued", context do
@@ -295,7 +307,15 @@ defmodule BeamAgent.CLITUITest do
         codex_app_server: FakeCodexAppServer
       )
 
-    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+    on_exit(fn ->
+      if Process.alive?(controller) do
+        try do
+          GenServer.stop(controller)
+        catch
+          :exit, _reason -> :ok
+        end
+      end
+    end)
 
     assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
     assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
@@ -399,7 +419,7 @@ defmodule BeamAgent.CLITUITest do
         config_path: context.config_path
       )
 
-    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+    on_exit(fn -> stop_if_alive(controller) end)
 
     assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
     assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
@@ -415,6 +435,16 @@ defmodule BeamAgent.CLITUITest do
     assert diff.path == "a.txt"
     assert [%{header: header}] = diff.hunks
     assert header =~ "@@"
+  end
+
+  defp stop_if_alive(pid) do
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid)
+      catch
+        :exit, _reason -> :ok
+      end
+    end
   end
 
   test "resume command reconnects the runtime to a different existing session", context do
@@ -436,7 +466,7 @@ defmodule BeamAgent.CLITUITest do
         config_path: context.config_path
       )
 
-    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+    on_exit(fn -> stop_if_alive(controller) end)
 
     assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
     assert_receive {:beam_agent_tui, {:approval_mode, :ask}}

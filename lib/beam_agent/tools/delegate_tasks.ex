@@ -2,6 +2,8 @@ defmodule BeamAgent.Tools.DelegateTasks do
   @moduledoc false
   @behaviour BeamAgent.Tool
 
+  alias BeamAgent.Goal.WorkspaceSnapshot
+
   @impl true
   def name, do: "delegate_tasks"
 
@@ -68,6 +70,8 @@ defmodule BeamAgent.Tools.DelegateTasks do
   @impl true
   def execute(%{"tasks" => tasks} = arguments, context)
       when is_list(tasks) and length(tasks) in 1..4 do
+    baseline = workspace_snapshot(context)
+
     opts = [
       strategy: arguments["strategy"] || "coordinate",
       worker_options: [
@@ -88,7 +92,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
     with :ok <- reject_duplicate_goals(tasks),
          {:ok, result} <-
            BeamAgent.execute_decomposition(context.session_id, %{tasks: tasks}, opts) do
-      {:ok, encode_result(result)}
+      {:ok, encode_result(result, workspace_delta(context, baseline))}
     end
   end
 
@@ -99,18 +103,61 @@ defmodule BeamAgent.Tools.DelegateTasks do
     if Enum.uniq(goals) == goals, do: :ok, else: {:error, :duplicate_delegated_goal}
   end
 
-  defp encode_result(result) do
+  defp encode_result(result, workspace_delta) do
     tasks =
       Map.new(result.results, fn {id, value} ->
         content = get_in(value, [:result, Access.key(:content)])
-        {id, %{status: result.tasks[id], content: content}}
+
+        {id,
+         %{
+           status: result.tasks[id],
+           content: content,
+           endpoint_id: value[:endpoint_id]
+         }}
       end)
+
+    used_endpoint_ids =
+      tasks
+      |> Map.values()
+      |> Enum.map(& &1.endpoint_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
 
     JSON.encode!(%{
       organization_id: result.organization_id,
       plan_id: result.plan_id,
       status: result.status,
+      changed_files: workspace_delta.changed_files,
+      patch_fingerprint: workspace_delta.patch_fingerprint,
+      used_endpoint_ids: used_endpoint_ids,
       tasks: tasks
     })
   end
+
+  defp workspace_snapshot(%{
+         project_id: project_id,
+         workspace_root: workspace_root,
+         data_dir: data_dir
+       }) do
+    WorkspaceSnapshot.capture(project_id,
+      workspace_root: workspace_root,
+      data_dir: data_dir
+    )
+  end
+
+  defp workspace_snapshot(_context), do: {:error, :project_unavailable}
+
+  defp workspace_delta(%{project_id: project_id}, {:ok, baseline}) do
+    case WorkspaceSnapshot.capture(project_id,
+           workspace_root: baseline.workspace_root,
+           exclude: baseline.excluded_roots,
+           data_dir: baseline.runtime_data_root
+         ) do
+      {:ok, current} -> WorkspaceSnapshot.delta(baseline, current)
+      {:error, _reason} -> WorkspaceSnapshot.empty_delta()
+    end
+  end
+
+  defp workspace_delta(_context, _baseline), do: WorkspaceSnapshot.empty_delta()
 end

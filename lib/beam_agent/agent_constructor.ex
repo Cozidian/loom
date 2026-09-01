@@ -99,7 +99,7 @@ defmodule BeamAgent.AgentConstructor do
          classification <- TaskClassifier.classify(goal, parent.workspace_root),
          {:ok, authority} <-
            AgentConstructionPolicy.evaluate_child(parent.capability_envelope, proposal) do
-      template = AgentTemplate.resolve(value(proposal, :template), classification)
+      template = AgentTemplate.resolve(template_id(proposal), classification)
       role = role(proposal, classification, template)
 
       instructions =
@@ -259,6 +259,36 @@ defmodule BeamAgent.AgentConstructor do
         if value(proposal, :template), do: template.role, else: inferred_role(classification)
     end
   end
+
+  defp template_id(proposal) do
+    case value(proposal, :template) do
+      template when is_binary(template) and template != "" -> template
+      _missing -> role_template(value(proposal, :role))
+    end
+  end
+
+  defp role_template(role) when is_binary(role) do
+    normalized = String.downcase(role)
+
+    cond do
+      Regex.match?(~r/\b(investigat(?:or|ion)|research(?:er)?)\b/u, normalized) ->
+        "researcher"
+
+      Regex.match?(~r/\b(review(?:er)?|audit(?:or)?)\b/u, normalized) ->
+        "reviewer"
+
+      Regex.match?(~r/\b(verif(?:y|ier|ication)|test(?:er|ing)? specialist)\b/u, normalized) ->
+        "verifier"
+
+      Regex.match?(~r/\b(implement(?:ation|er)?|coder|developer)\b/u, normalized) ->
+        "implementer"
+
+      true ->
+        nil
+    end
+  end
+
+  defp role_template(_role), do: nil
 
   defp inferred_role(classification) do
     language =

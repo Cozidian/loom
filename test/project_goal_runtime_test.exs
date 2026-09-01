@@ -1,6 +1,32 @@
 defmodule BeamAgent.ProjectGoalRuntimeTest do
   use ExUnit.Case, async: false
 
+  defmodule StubbornWorker do
+    use GenServer
+
+    def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok)
+
+    def child_spec(opts) do
+      %{
+        id: {__MODULE__, make_ref()},
+        start: {__MODULE__, :start_link, [opts]},
+        shutdown: :infinity
+      }
+    end
+
+    @impl true
+    def init(:ok) do
+      Process.flag(:trap_exit, true)
+      {:ok, :ok}
+    end
+
+    @impl true
+    def terminate(_reason, state) do
+      Process.sleep(:infinity)
+      {:noreply, state}
+    end
+  end
+
   setup do
     root =
       Path.join(
@@ -185,6 +211,29 @@ defmodule BeamAgent.ProjectGoalRuntimeTest do
     assert {:ok, _project_pid} = BeamAgent.project_pid(project_id)
     assert {:ok, ^sibling_agent} = BeamAgent.agent_pid("goal-two")
     assert {:ok, "echo(1): sibling survived"} = BeamAgent.ask("goal-two", "sibling survived")
+  end
+
+  @tag capture_log: true
+  test "a stuck goal child cannot hold explicit goal shutdown indefinitely", context do
+    assert {:ok, project_id} = BeamAgent.start_project(workspace_root: context.workspace)
+
+    assert {:ok, "stuck-goal"} =
+             BeamAgent.start_goal(project_id,
+               goal_id: "stuck-goal",
+               data_dir: context.data_dir,
+               provider: :echo
+             )
+
+    assert {:ok, resources} = BeamAgent.Names.pid(:goal_resource_supervisor, "stuck-goal")
+    assert {:ok, _stubborn} = DynamicSupervisor.start_child(resources, {StubbornWorker, []})
+
+    started = System.monotonic_time(:millisecond)
+    assert :ok = BeamAgent.stop_goal("stuck-goal")
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert elapsed < 4_000
+    wait_until_missing(:goal, "stuck-goal")
+    assert {:error, :not_found} = BeamAgent.goal_pid("stuck-goal")
   end
 
   test "stopping a project terminates all of its active goals", context do

@@ -8,11 +8,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
     MCP.Registry,
     ModelEndpoint,
     ModelInvocation,
+    ModelRegistry,
     ModelRequest,
     OutcomeStore,
     RacePolicy,
     TournamentPolicy,
-    ToolRunner
+    ToolRunner,
+    WorkPlanningPolicy
   }
 
   alias BeamAgent.Goal.{
@@ -66,6 +68,19 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp start_turn(context, prompt, turn) do
+    planning = planning_decision(context, prompt)
+
+    _ =
+      EventLog.append(context.session_id, :work_planning_decided, %{
+        "turn" => turn,
+        "mode" => to_string(planning.mode),
+        "source" => to_string(planning.source),
+        "reason" => planning.reason,
+        "endpoint_count" => planning.endpoint_count,
+        "explicit_multi_provider_intent" => planning.explicit_multi_provider_intent,
+        "suggested_endpoints" => planning.suggested_endpoints
+      })
+
     case maybe_competition(context, prompt) do
       {:answered, content} ->
         with {:ok, _} <-
@@ -727,12 +742,20 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp completion_guard(context, turn, content, tool_schemas) do
+    planning = planning_decision(context)
+    delegation = turn_delegation(context, turn)
+    record_semantic_planning_observation(context, turn, planning, delegation)
+
     cond do
       not is_binary(content) or String.trim(content) == "" ->
         {:non_final, :empty_response}
 
       action_required?(context) and future_intent?(content) ->
         {:non_final, :future_intent}
+
+      planning.mode == :required and tool_available?(tool_schemas, "delegate_tasks") and
+        delegation.endpoint_count < 2 and not turn_action_blocked_by_runtime?(context, turn) ->
+        {:non_final, :decomposition_required}
 
       action_required?(context) and implementation_tool_names(context, tool_schemas) != [] and
         turn_action_count(context, turn) == 0 and
@@ -825,6 +848,58 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end)
   end
 
+  defp turn_delegation(context, turn) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    calls =
+      events
+      |> Enum.filter(fn event ->
+        event["type"] == "tool_called" and event["data"]["turn"] == turn and
+          event["data"]["name"] == "delegate_tasks"
+      end)
+      |> MapSet.new(& &1["data"]["tool_call_id"])
+
+    successful_results =
+      events
+      |> Enum.filter(fn event ->
+        data = event["data"] || %{}
+
+        event["type"] == "tool_result" and data["turn"] == turn and
+          data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"])
+      end)
+
+    worker_endpoint_ids =
+      successful_results
+      |> Enum.flat_map(fn event ->
+        case JSON.decode(event["data"]["content"] || "") do
+          {:ok, %{"used_endpoint_ids" => ids}} when is_list(ids) -> ids
+          _other -> []
+        end
+      end)
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    coordinator_endpoint_ids =
+      if successful_results == [] do
+        []
+      else
+        events
+        |> Enum.filter(fn event ->
+          event["type"] == "model_response_started" and event["data"]["turn"] == turn
+        end)
+        |> Enum.map(& &1["data"]["provider_profile"])
+        |> Enum.filter(&is_binary/1)
+      end
+
+    endpoint_ids = Enum.uniq(worker_endpoint_ids ++ coordinator_endpoint_ids)
+
+    %{
+      delegated?: successful_results != [],
+      endpoint_ids: endpoint_ids,
+      endpoint_count: length(endpoint_ids)
+    }
+  end
+
   defp turn_action_blocked_by_runtime?(context, turn) do
     {:ok, events} = EventLog.events(context.session_id)
 
@@ -866,6 +941,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
+  defp action_tool?("delegate_tasks", result, _context) do
+    case JSON.decode(result["content"] || "") do
+      {:ok, %{"changed_files" => [_ | _]}} -> true
+      _other -> false
+    end
+  end
+
   defp action_tool?("spawn_subagent", result, _context) do
     case JSON.decode(result["content"] || "") do
       {:ok, %{"background" => true}} -> false
@@ -900,20 +982,73 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp action_tool?(_name, _result, _context), do: false
 
-  defp action_required?(context) do
-    contract = Map.get(context, :work_contract)
-    prompt = latest_user_prompt(context.session_id)
-    classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
-    text = String.downcase(prompt)
+  defp planning_decision(context, prompt \\ nil) do
+    endpoints =
+      case ModelRegistry.list(context.project_id) do
+        {:ok, endpoints} -> endpoints
+        {:error, _reason} -> []
+      end
 
-    match?(
-      %BeamAgent.WorkContract{kind: kind} when kind in [:implementation, :debugging],
-      contract
-    ) or
-      classification.task_type == :implementation or
-      classification.change_intent or
-      Regex.match?(~r/\b(implement|fix|modify|refactor)\b/u, text) or
-      String.contains?(text, ["add support", "make a plan and then", "do that, make"])
+    WorkPlanningPolicy.decide(prompt || latest_user_prompt(context.session_id), endpoints,
+      workspace_root: context.workspace_root,
+      model_strategy: context.model_strategy
+    )
+  end
+
+  defp record_semantic_planning_observation(context, turn, planning, delegation) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    recorded? =
+      Enum.any?(events, fn event ->
+        event["type"] == "semantic_planning_observed" and event["data"]["turn"] == turn
+      end)
+
+    if not recorded? do
+      choice = if delegation.delegated?, do: "decomposed", else: "direct"
+      multi_provider? = delegation.endpoint_count >= 2
+
+      _ =
+        EventLog.append(context.session_id, :semantic_planning_observed, %{
+          "turn" => turn,
+          "runtime_mode" => to_string(planning.mode),
+          "model_choice" => choice,
+          "endpoint_count" => delegation.endpoint_count,
+          "multi_provider" => multi_provider?,
+          "classification" => to_string(planning.classification.task_type),
+          "change_intent" => planning.classification.change_intent,
+          "agreed" => semantic_planning_agreement?(planning.mode, delegation)
+        })
+    end
+
+    :ok
+  end
+
+  defp semantic_planning_agreement?(:required, delegation), do: delegation.endpoint_count >= 2
+  defp semantic_planning_agreement?(:direct, delegation), do: not delegation.delegated?
+  defp semantic_planning_agreement?(:advisory, _delegation), do: nil
+
+  defp tool_available?(tool_schemas, name), do: Enum.any?(tool_schemas, &(&1.name == name))
+
+  defp action_required?(context) do
+    cond do
+      direct_evidence_worker?(context) ->
+        false
+
+      true ->
+        contract = Map.get(context, :work_contract)
+        prompt = latest_user_prompt(context.session_id)
+        classification = BeamAgent.TaskClassifier.classify(prompt, context.workspace_root)
+        text = String.downcase(prompt)
+
+        match?(
+          %BeamAgent.WorkContract{kind: kind} when kind in [:implementation, :debugging],
+          contract
+        ) or
+          classification.task_type == :implementation or
+          classification.change_intent or
+          Regex.match?(~r/\b(implement|fix|modify|refactor)\b/u, text) or
+          String.contains?(text, ["add support", "make a plan and then", "do that, make"])
+    end
   end
 
   defp future_intent?(content) do
@@ -933,6 +1068,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp completion_reason_text("action_not_started"),
     do: "implementation requires a successful source write or delegation, but none occurred"
+
+  defp completion_reason_text("decomposition_required"),
+    do: "the required multi-provider decomposition has not been executed"
 
   defp completion_reason_text("future_intent"),
     do: "the response described future work instead of performing the requested work"
@@ -1127,7 +1265,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
       system_prompt
       |> append_prompt(String.trim(contract))
-      |> append_prompt(provider_market_prompt(direct_worker?, tool_schemas))
+      |> append_prompt(provider_market_prompt(direct_worker?, tool_schemas, context))
     else
       system_prompt
     end
@@ -1148,12 +1286,27 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp append_prompt(prompt, nil), do: prompt
   defp append_prompt(prompt, addition), do: prompt <> "\n\n" <> addition
 
-  defp provider_market_prompt(false, tool_schemas) do
+  defp provider_market_prompt(false, tool_schemas, context) do
     names = MapSet.new(tool_schemas, & &1.name)
 
     if MapSet.member?(names, "list_models") and MapSet.member?(names, "delegate_tasks") do
+      planning = planning_decision(context)
+
+      obligation =
+        case planning.mode do
+          :required ->
+            "The runtime requires a validated decomposition because the user explicitly requested multiple models. Call list_models and then delegate_tasks before returning a terminal answer."
+
+          :advisory ->
+            "The runtime marks decomposition as advisory. Use it only when specialization improves the result; otherwise keep one coherent implementation owner."
+
+          :direct ->
+            "The runtime currently prefers direct work, but bounded delegation remains available if new evidence justifies it."
+        end
+
       """
       # Multi-provider coordination
+      Runtime planning mode: #{planning.mode}. #{obligation}
       A feature may use different providers for meaningfully different bounded phases. Inspect
       the safe endpoint inventory with list_models, then propose workers through delegate_tasks
       with explicit model requirements. Cheap or local endpoints may fit deterministic
@@ -1167,7 +1320,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp provider_market_prompt(_direct_worker?, _tool_schemas), do: nil
+  defp provider_market_prompt(_direct_worker?, _tool_schemas, _context), do: nil
 
   defp completion_recovery_prompt(_context, nil, _tool_schemas), do: nil
 
@@ -1184,6 +1337,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
           "implementation. Your next response must invoke one of these tools through " <>
           "the provider's native tool protocol: #{Enum.join(names, ", ")}. " <>
           "Do not perform another read-only round or return another scope or plan."
+
+      {"decomposition_required", _names} ->
+        base <>
+          "\nThe user explicitly requested multiple providers. Call list_models, then invoke " <>
+          "delegate_tasks with a validated dependency plan and per-task model requirements."
 
       {_reason, _names} ->
         base
@@ -1231,6 +1389,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp direct_implementation_worker?(_context), do: false
 
+  defp direct_evidence_worker?(%{
+         parent_session_id: parent_session_id,
+         agent_spec: %{execution_strategy: %{id: id}}
+       })
+       when is_binary(parent_session_id) and id in ["investigate", "review", "verify"],
+       do: true
+
+  defp direct_evidence_worker?(_context), do: false
+
   defp available_tool_schemas(context) do
     (CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id))
     |> Enum.filter(fn schema ->
@@ -1239,6 +1406,31 @@ defmodule BeamAgent.Strategies.ToolLoop do
       CapabilityEnvelope.authorize(context.capability_envelope, resource) == :ok or
         CapabilityManager.permits?(context.goal_id, context.session_id, resource)
     end)
+    |> enforce_planning_gate(context)
+  end
+
+  defp enforce_planning_gate(tool_schemas, context) do
+    planning = planning_decision(context)
+    turn = count_events(context.session_id, "turn_started")
+
+    if planning.mode == :required and turn_delegation(context, turn).endpoint_count < 2 do
+      Enum.filter(tool_schemas, &planning_tool?/1)
+    else
+      tool_schemas
+    end
+  end
+
+  defp planning_tool?(%{name: name}) when name in ["list_models", "delegate_tasks"], do: true
+
+  defp planning_tool?(%{name: name}) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} ->
+        access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
+        access == :read
+
+      {:error, _reason} ->
+        false
+    end
   end
 
   defp validate_call(%{id: id, name: name, arguments: arguments})

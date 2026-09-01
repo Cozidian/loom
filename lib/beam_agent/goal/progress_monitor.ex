@@ -233,10 +233,13 @@ defmodule BeamAgent.Goal.ProgressMonitor do
       |> Enum.map(&Map.drop(&1, [:last_signal_monotonic, :last_progress_monotonic]))
 
     counts = Enum.frequencies_by(workers, & &1.state)
+    critical = critical_worker(workers)
 
     %{
       goal_id: state.goal_id,
       workers: workers,
+      critical_worker_id: critical && critical.worker_id,
+      critical_reason: critical && critical_reason(critical),
       summary: %{
         active: Map.get(counts, :active, 0),
         waiting: Map.get(counts, :waiting, 0),
@@ -245,6 +248,27 @@ defmodule BeamAgent.Goal.ProgressMonitor do
       }
     }
   end
+
+  defp critical_worker(workers) do
+    workers
+    |> Enum.reject(&(&1.state in [:idle, :completed, :failed, :cancelled]))
+    |> Enum.sort_by(fn worker ->
+      priority =
+        cond do
+          worker.state == :stalled or worker.suspected_stalled -> 0
+          worker.state == :blocked -> 1
+          worker.state == :waiting -> 2
+          true -> 3
+        end
+
+      {priority, worker.started_at || "", worker.worker_id}
+    end)
+    |> List.first()
+  end
+
+  defp critical_reason(%{suspected_stalled: true}), do: "suspected stalled"
+  defp critical_reason(%{blocking_reason: reason}) when not is_nil(reason), do: to_string(reason)
+  defp critical_reason(worker), do: worker.phase |> to_string() |> String.replace("_", " ")
 
   defp event_type(%{payload: %{type: type}}), do: to_string(type)
   defp event_type(%{"payload" => %{"type" => type}}), do: to_string(type)

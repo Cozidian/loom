@@ -37,8 +37,10 @@ defmodule BeamAgent.Evaluation do
 
     maximum = max(1, Keyword.get(opts, :max_concurrency, 1))
 
+    runs = expand_repetitions(scenarios)
+
     results =
-      scenarios
+      runs
       |> Task.async_stream(&run_scenario(&1, output_dir, opts),
         ordered: true,
         max_concurrency: maximum,
@@ -49,6 +51,9 @@ defmodule BeamAgent.Evaluation do
         {:exit, reason} -> failed_result("unknown", {:scenario_runner_exit, reason})
       end)
 
+    summary = summarize(results)
+    acceptance = evaluate_acceptance(summary, Map.get(manifest, :acceptance, %{}))
+
     report = %{
       version: @version,
       run_id: run_id,
@@ -56,7 +61,7 @@ defmodule BeamAgent.Evaluation do
       started_at: started_at,
       finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       scenarios: results,
-      summary: summarize(results),
+      summary: Map.put(summary, :acceptance, acceptance),
       metadata: Map.get(manifest, :metadata, %{})
     }
 
@@ -73,7 +78,7 @@ defmodule BeamAgent.Evaluation do
   def run(_manifest, _opts), do: {:error, :invalid_evaluation_manifest}
 
   defp run_scenario(scenario, output_dir, opts) do
-    scenario_dir = Path.join(output_dir, safe_id(scenario.id))
+    scenario_dir = Path.join(output_dir, safe_id(scenario.run_id))
     workspace = Path.join(scenario_dir, "workspace")
     data_dir = Path.join(scenario_dir, "runtime")
     started = System.monotonic_time(:millisecond)
@@ -105,6 +110,8 @@ defmodule BeamAgent.Evaluation do
 
       result = %{
         id: scenario.id,
+        run_id: scenario.run_id,
+        repetition: scenario.repetition,
         status: if(passed, do: :passed, else: :failed),
         session_id: session_id,
         project_id: goal.project_id,
@@ -249,6 +256,20 @@ defmodule BeamAgent.Evaluation do
       duration_ms: duration_ms,
       model_calls: Enum.count(types, &(&1 == "model_response_started")),
       routes: routes,
+      distinct_endpoint_count:
+        routes |> Enum.map(& &1.endpoint_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> length(),
+      multi_provider?:
+        routes |> Enum.map(& &1.endpoint_id) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> length() >=
+          2,
+      planning_required:
+        Enum.count(events, fn event ->
+          event_type(event) == "work_planning_decided" and event_data(event)["mode"] == "required"
+        end),
+      semantic_decomposition_choices:
+        Enum.count(events, fn event ->
+          event_type(event) == "semantic_planning_observed" and
+            event_data(event)["multi_provider"] == true
+        end),
       total_tokens: total_tokens,
       tool_calls: Enum.count(types, &(&1 == "tool_called")),
       delegated_workers: Enum.count(types, &(&1 == "delegation_started")),
@@ -291,8 +312,15 @@ defmodule BeamAgent.Evaluation do
 
   defp validate_manifest(%{"version" => @version, "scenarios" => scenarios} = manifest, base)
        when is_list(scenarios) and scenarios != [] do
-    with {:ok, scenarios} <- normalize_scenarios(scenarios, base) do
-      {:ok, %{version: @version, scenarios: scenarios, metadata: manifest["metadata"] || %{}}}
+    with {:ok, scenarios} <- normalize_scenarios(scenarios, base),
+         {:ok, acceptance} <- normalize_acceptance(manifest["acceptance"] || %{}) do
+      {:ok,
+       %{
+         version: @version,
+         scenarios: scenarios,
+         acceptance: acceptance,
+         metadata: manifest["metadata"] || %{}
+       }}
     end
   end
 
@@ -313,11 +341,13 @@ defmodule BeamAgent.Evaluation do
        when is_binary(id) and id != "" and is_binary(prompt) and prompt != "" do
     fixture = scenario["fixture"]
     timeout_ms = scenario["timeout_ms"] || 300_000
+    repetitions = scenario["repetitions"] || 1
     checks = scenario["checks"] || []
     expect = scenario["expect"] || %{}
 
     with true <-
            valid_id?(id) and is_integer(timeout_ms) and timeout_ms in 100..1_800_000 and
+             is_integer(repetitions) and repetitions in 1..20 and
              is_list(checks) and is_map(expect),
          {:ok, checks} <- normalize_verification_checks(checks),
          {:ok, expect} <- normalize_expectations(expect) do
@@ -325,6 +355,7 @@ defmodule BeamAgent.Evaluation do
        %{
          id: id,
          prompt: prompt,
+         repetitions: repetitions,
          fixture: fixture && Path.expand(fixture, base),
          timeout_ms: timeout_ms,
          checks: checks,
@@ -338,6 +369,16 @@ defmodule BeamAgent.Evaluation do
 
   defp normalize_scenario(_scenario, _base, index),
     do: {:error, {:invalid_evaluation_scenario, index}}
+
+  defp expand_repetitions(scenarios) do
+    Enum.flat_map(scenarios, fn scenario ->
+      Enum.map(1..scenario.repetitions, fn repetition ->
+        scenario
+        |> Map.put(:repetition, repetition)
+        |> Map.put(:run_id, "#{scenario.id}-#{repetition}")
+      end)
+    end)
+  end
 
   defp normalize_verification_checks([]), do: {:ok, []}
 
@@ -379,11 +420,36 @@ defmodule BeamAgent.Evaluation do
     end
   end
 
+  defp normalize_acceptance(acceptance) when is_map(acceptance) do
+    normalized = %{
+      minimum_verified_completion_rate: acceptance["minimum_verified_completion_rate"],
+      minimum_multi_provider_rate: acceptance["minimum_multi_provider_rate"],
+      maximum_permission_denials: acceptance["maximum_permission_denials"],
+      maximum_user_interventions: acceptance["maximum_user_interventions"],
+      maximum_stalls: acceptance["maximum_stalls"],
+      maximum_suspected_stalls: acceptance["maximum_suspected_stalls"],
+      maximum_average_model_calls: acceptance["maximum_average_model_calls"]
+    }
+
+    valid? =
+      rate_or_nil?(normalized.minimum_verified_completion_rate) and
+        rate_or_nil?(normalized.minimum_multi_provider_rate) and
+        non_negative_or_nil?(normalized.maximum_permission_denials) and
+        non_negative_or_nil?(normalized.maximum_user_interventions) and
+        non_negative_or_nil?(normalized.maximum_stalls) and
+        non_negative_or_nil?(normalized.maximum_suspected_stalls) and
+        positive_number_or_nil?(normalized.maximum_average_model_calls)
+
+    if valid?, do: {:ok, reject_nil_values(normalized)}, else: {:error, :invalid_acceptance_gate}
+  end
+
+  defp normalize_acceptance(_acceptance), do: {:error, :invalid_acceptance_gate}
+
   defp summarize(results) do
     passed = Enum.count(results, &(&1.status == :passed))
     total = length(results)
 
-    %{
+    summary = %{
       total: total,
       passed: passed,
       failed: total - passed,
@@ -394,13 +460,134 @@ defmodule BeamAgent.Evaluation do
       total_tool_calls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :tool_calls]))),
       total_user_interventions:
         Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :approval_requests]))),
-      total_stalls:
-        Enum.sum(
-          Enum.map(results, fn result ->
-            result.metrics.suspected_stalls + result.metrics.confirmed_stalls
-          end)
-        )
+      total_permission_denials:
+        Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :permission_denials]))),
+      total_stalls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :confirmed_stalls]))),
+      total_suspected_stalls:
+        Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :suspected_stalls]))),
+      multi_provider_runs: Enum.count(results, &get_in(&1, [:metrics, :multi_provider?])),
+      multi_provider_rate:
+        if(total == 0,
+          do: 0.0,
+          else: Enum.count(results, &get_in(&1, [:metrics, :multi_provider?])) / total
+        ),
+      average_model_calls:
+        if(total == 0,
+          do: 0.0,
+          else: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :model_calls]))) / total
+        ),
+      route_teams: route_team_calibration(results)
     }
+
+    summary
+  end
+
+  defp evaluate_acceptance(summary, gates) do
+    checks =
+      gates
+      |> Enum.map(fn
+        {:minimum_verified_completion_rate, expected} ->
+          acceptance_check(
+            :minimum_verified_completion_rate,
+            summary.verified_completion_rate,
+            expected,
+            :minimum
+          )
+
+        {:minimum_multi_provider_rate, expected} ->
+          acceptance_check(
+            :minimum_multi_provider_rate,
+            summary.multi_provider_rate,
+            expected,
+            :minimum
+          )
+
+        {:maximum_permission_denials, expected} ->
+          acceptance_check(
+            :maximum_permission_denials,
+            summary.total_permission_denials,
+            expected,
+            :maximum
+          )
+
+        {:maximum_user_interventions, expected} ->
+          acceptance_check(
+            :maximum_user_interventions,
+            summary.total_user_interventions,
+            expected,
+            :maximum
+          )
+
+        {:maximum_stalls, expected} ->
+          acceptance_check(:maximum_stalls, summary.total_stalls, expected, :maximum)
+
+        {:maximum_suspected_stalls, expected} ->
+          acceptance_check(
+            :maximum_suspected_stalls,
+            summary.total_suspected_stalls,
+            expected,
+            :maximum
+          )
+
+        {:maximum_average_model_calls, expected} ->
+          acceptance_check(
+            :maximum_average_model_calls,
+            summary.average_model_calls,
+            expected,
+            :maximum
+          )
+      end)
+      |> Enum.sort_by(& &1.name)
+
+    %{configured: map_size(gates) > 0, passed: Enum.all?(checks, & &1.passed), checks: checks}
+  end
+
+  defp acceptance_check(name, actual, expected, :minimum),
+    do: %{
+      name: name,
+      actual: actual,
+      expected: expected,
+      comparison: :minimum,
+      passed: actual >= expected
+    }
+
+  defp acceptance_check(name, actual, expected, :maximum),
+    do: %{
+      name: name,
+      actual: actual,
+      expected: expected,
+      comparison: :maximum,
+      passed: actual <= expected
+    }
+
+  defp route_team_calibration(results) do
+    results
+    |> Enum.group_by(fn result ->
+      result.metrics.routes
+      |> Enum.map(& &1.endpoint_id)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.join("+")
+      |> case do
+        "" -> "deterministic"
+        team -> team
+      end
+    end)
+    |> Map.new(fn {team, team_results} ->
+      runs = length(team_results)
+      passed = Enum.count(team_results, &(&1.status == :passed))
+
+      {team,
+       %{
+         runs: runs,
+         passed: passed,
+         verified_completion_rate: passed / runs,
+         average_duration_ms: Enum.sum(Enum.map(team_results, & &1.metrics.duration_ms)) / runs,
+         average_model_calls: Enum.sum(Enum.map(team_results, & &1.metrics.model_calls)) / runs,
+         average_tool_calls: Enum.sum(Enum.map(team_results, & &1.metrics.tool_calls)) / runs
+       }}
+    end)
   end
 
   defp failed_result(id, reason) do
@@ -415,6 +602,10 @@ defmodule BeamAgent.Evaluation do
         duration_ms: 0,
         model_calls: 0,
         routes: [],
+        distinct_endpoint_count: 0,
+        multi_provider?: false,
+        planning_required: 0,
+        semantic_decomposition_choices: 0,
         total_tokens: 0,
         tool_calls: 0,
         delegated_workers: 0,
@@ -466,10 +657,20 @@ defmodule BeamAgent.Evaluation do
   defp list(value) when is_list(value), do: value
   defp list(_value), do: []
 
+  defp rate_or_nil?(nil), do: true
+  defp rate_or_nil?(value), do: is_number(value) and value >= 0 and value <= 1
+  defp non_negative_or_nil?(nil), do: true
+  defp non_negative_or_nil?(value), do: is_integer(value) and value >= 0
+  defp positive_number_or_nil?(nil), do: true
+  defp positive_number_or_nil?(value), do: is_number(value) and value > 0
+
+  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
+
   defp stringify(map) when is_map(map),
     do: Map.new(map, fn {key, value} -> {to_string(key), stringify(value)} end)
 
   defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
+  defp stringify(value) when is_boolean(value) or is_nil(value), do: value
   defp stringify(value) when is_atom(value), do: to_string(value)
   defp stringify(value), do: value
 end

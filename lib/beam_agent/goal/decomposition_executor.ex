@@ -125,7 +125,12 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
                          verification_status: :unverified
                        }
                      ) do
-                {:ok, %{worker: handle, result: result}}
+                {:ok,
+                 %{
+                   worker: handle,
+                   result: result,
+                   endpoint_id: worker_endpoint_id(handle.worker_id)
+                 }}
               end
 
             {:error, reason} ->
@@ -180,4 +185,14 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
 
   defp fingerprint(value),
     do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+  defp worker_endpoint_id(worker_id) do
+    with {:ok, events} <- BeamAgent.events(worker_id),
+         event when not is_nil(event) <-
+           Enum.find(Enum.reverse(events), &(&1["type"] == "model_route_selected")) do
+      event["data"]["selected_endpoint_id"]
+    else
+      _missing -> nil
+    end
+  end
 end

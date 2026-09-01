@@ -1257,6 +1257,49 @@ func TestSessionsTabRendersListAndStatus(t *testing.T) {
 	}
 }
 
+func TestWorkProjectionReplacesRoutineToolsWithLiveSemanticBlocks(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.entries = append(m.entries, entry{Kind: "tool", Name: "read_file", Status: "done"})
+	m.applyBackend(packet{
+		Type: "work_projection",
+		WorkBlocks: []workBlock{{
+			ID: "block-1", WorkerID: "worker-1", State: "active", Phase: "implementing",
+			Label: "Implementing", Summary: "4 reads · 1 write",
+		}},
+		Progress: &progressSnapshot{
+			Summary: progressSummary{Active: 1}, CriticalWorkerID: "worker-1",
+		},
+	})
+
+	content := m.viewport.View()
+	if !strings.Contains(content, "LIVE WORK") || !strings.Contains(content, "4 reads · 1 write") {
+		t.Fatalf("expected a live semantic work block in chat, got:\n%s", content)
+	}
+	if strings.Contains(content, "read_file") {
+		t.Fatalf("routine completed tool should stay collapsed, got:\n%s", content)
+	}
+}
+
+func TestTreeCanCancelTheSelectedWorker(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+	m.treeData = &treeSnapshot{Root: &goalNode{SessionID: "worker-1", WorkerID: "worker-1", Role: "root"}}
+
+	_, cmd := m.updateTreeTab("c")
+	if cmd == nil {
+		t.Fatal("expected cancel worker command")
+	}
+	cmd()
+
+	action, err := newProtocol(&wire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Command != "cancel_worker" || action.Query != "worker-1" {
+		t.Fatalf("unexpected worker action: %#v", action)
+	}
+}
+
 func TestSessionsTabEnterRequestsDetailForSelectedSession(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)

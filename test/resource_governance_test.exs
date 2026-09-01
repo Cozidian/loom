@@ -260,6 +260,44 @@ defmodule BeamAgent.ResourceGovernanceTest do
     end
   end
 
+  test "absolute in-workspace tool paths are canonicalized before capability checks", context do
+    File.write!(Path.join(context.workspace, "README.md"), "canonical workspace\n")
+
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               approval_policy: :auto,
+               capabilities: %{tools: ["read_file"], paths: ["."]}
+             )
+
+    assert {:ok, tool_context} = BeamAgent.Agent.construction_context(root_id)
+
+    assert {:ok, encoded} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.ReadFile,
+               %{"path" => Path.join(context.workspace, "README.md")},
+               tool_context
+             )
+
+    assert JSON.decode!(encoded)["content"] == "canonical workspace\n"
+
+    outside = Path.join(Path.dirname(context.workspace), "outside.txt")
+    File.write!(outside, "outside\n")
+
+    assert {:error, {:capability_denied, :paths, ^outside}} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.ReadFile,
+               %{"path" => outside},
+               tool_context
+             )
+
+    assert {:ok, events} = BeamAgent.events(root_id)
+
+    assert Enum.count(events, &(&1["type"] == "capability_denied")) == 1
+  end
+
   test "resource hierarchies deny confused-deputy authority expansion", context do
     capabilities = %{
       tools: ["spawn_subagent", "request_capability", "git_inspect"],

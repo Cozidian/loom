@@ -63,6 +63,9 @@ func (m model) renderModelsTab() string {
 				"%s%s · score %d · %.0f%% confidence · %s · %s",
 				marker, bid.EndpointID, bid.Score, bid.Confidence*100, latency, bid.CostTier,
 			)))
+			if awarded[bid.EndpointID] && len(bid.ScoreComponents) > 0 {
+				fmt.Fprintf(&b, "%s\n", styleFaint.Render("    "+bidScoreExplanation(bid.ScoreComponents)))
+			}
 		}
 	}
 
@@ -75,6 +78,17 @@ func (m model) renderModelsTab() string {
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · esc back to chat"))
 
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+}
+
+func bidScoreExplanation(components map[string]int) string {
+	order := []string{"configured_preference", "verified_evidence", "reasoning", "locality", "health", "latency", "cost"}
+	parts := make([]string, 0, len(order))
+	for _, name := range order {
+		if value := components[name]; value != 0 {
+			parts = append(parts, fmt.Sprintf("%s %+d", strings.ReplaceAll(name, "_", " "), value))
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 func providerMarketSummary(market *providerMarket) string {

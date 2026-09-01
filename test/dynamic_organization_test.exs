@@ -288,6 +288,8 @@ defmodule BeamAgent.DynamicOrganizationTest do
 
     assert result.results["scaffold"].result.content == "local scaffold analysis"
     assert result.results["middleware"].result.content == "remote middleware analysis"
+    assert result.results["scaffold"].endpoint_id == "local"
+    assert result.results["middleware"].endpoint_id == "remote"
 
     scaffold_worker = result.results["scaffold"].worker.worker_id
     middleware_worker = result.results["middleware"].worker.worker_id

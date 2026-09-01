@@ -45,7 +45,8 @@ defmodule BeamAgent.CLI.TUI.Controller do
       verification: nil,
       compacting?: false,
       auth_session: nil,
-      auth_target_profile: nil
+      auth_target_profile: nil,
+      work_projection_timer: nil
     }
 
     with {:ok, runtime} <-
@@ -161,6 +162,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   @impl true
   def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
     notify(state, {:stream, event})
+    state = schedule_work_projection(state, event)
 
     cursor =
       case event do
@@ -172,6 +174,16 @@ defmodule BeamAgent.CLI.TUI.Controller do
       end
 
     {:noreply, %{state | cursor: cursor}}
+  end
+
+  def handle_info(:refresh_work_projection, state) do
+    payload = %{
+      work_blocks: soft_fetch(fn -> Runtime.work_blocks(state.runtime) end) || [],
+      progress: soft_fetch(fn -> Runtime.progress(state.runtime) end)
+    }
+
+    notify(state, {:work_projection, payload})
+    {:noreply, %{state | work_projection_timer: nil}}
   end
 
   def handle_info(
@@ -730,6 +742,19 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
       notify(state, {:tree, payload})
     else
+      {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
+    end
+
+    state
+  end
+
+  defp run_command({:cancel_worker, worker_id}, state) do
+    with {:ok, identity} <- BeamAgent.Agent.runtime_identity(worker_id),
+         true <- identity.goal_id == state.goal_id,
+         :ok <- BeamAgent.cancel(worker_id) do
+      notify(state, {:notice, :success, "Cancelling worker #{short_id(worker_id)}"})
+    else
+      false -> notify(state, {:notice, :error, "Worker is outside the active goal"})
       {:error, reason} -> notify(state, {:notice, :error, format_error(reason)})
     end
 
@@ -1366,6 +1391,16 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp format_work_contract(contract) do
     "#{contract.kind} → #{contract.worker_kind} → #{contract.expected_artifact}"
   end
+
+  defp schedule_work_projection(%{work_projection_timer: nil} = state, event) do
+    if Map.get(event, :durability) == :durable or Map.get(event, "durability") == "durable" do
+      %{state | work_projection_timer: Process.send_after(self(), :refresh_work_projection, 120)}
+    else
+      state
+    end
+  end
+
+  defp schedule_work_projection(state, _event), do: state
 
   defp short_id(id) do
     id = to_string(id)

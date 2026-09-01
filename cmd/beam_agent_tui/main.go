@@ -286,6 +286,8 @@ type model struct {
 	pendingFailure           bool
 	workspaceFiles           []string
 	fileSuggestions          fileSuggestionState
+	workBlocks               []workBlock
+	progress                 *progressSnapshot
 
 	tab         tab
 	unseen      [tabCount]int
@@ -342,6 +344,8 @@ func newModel(initial packet, bridge *protocol) model {
 		approvalMode:   initial.ApprovalMode,
 		attachments:    initial.Attachments,
 		workspaceFiles: append([]string(nil), initial.WorkspaceFiles...),
+		workBlocks:     append([]workBlock(nil), initial.WorkBlocks...),
+		progress:       initial.Progress,
 	}
 	for _, event := range append(initial.RaceEvents, initial.CompetitionEvents...) {
 		m.applyRaceProjection(event, true)
@@ -1261,6 +1265,16 @@ func (m *model) applyBackend(message packet) {
 		if m.tab != tabTree {
 			m.unseen[tabTree]++
 		}
+		m.workBlocks = append([]workBlock(nil), message.WorkBlocks...)
+		m.progress = message.Progress
+	case "work_projection":
+		m.workBlocks = append([]workBlock(nil), message.WorkBlocks...)
+		m.progress = message.Progress
+		if m.treeData != nil {
+			m.treeData.WorkBlocks = append([]workBlock(nil), message.WorkBlocks...)
+			m.treeData.Progress = message.Progress
+		}
+		m.refreshTranscript(false)
 	case "events":
 		m.eventsData = &eventsSnapshot{
 			Matched:             message.Matched,
@@ -1525,6 +1539,10 @@ func runtimeInfoText(eventType string, data map[string]any, sessionID string, ro
 		return "Agent ready · " + asString(data["role"]) + " · " + shortSession(sessionID)
 	case "agent_construction_failed":
 		return "Agent construction failed · " + asString(data["failure_code"])
+	case "work_planning_decided":
+		return "Work plan · " + asString(data["mode"]) + " · " + asString(data["reason"])
+	case "semantic_planning_observed":
+		return "Model plan · " + asString(data["model_choice"]) + " · runtime " + asString(data["runtime_mode"])
 	case "turn_finished":
 		if !root {
 			return "Subagent " + asString(data["reason"]) + " · " + shortSession(sessionID)
@@ -1695,6 +1713,9 @@ func (m *model) refreshTranscript(bottom bool) {
 			}
 			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, bodyStyle.Render(item.Content+cursor)))
 		case "tool":
+			if !m.toolsExpanded && item.Status == "done" {
+				continue
+			}
 			marker := "·"
 			if item.Status == "done" {
 				marker = "✓"
@@ -1717,6 +1738,9 @@ func (m *model) refreshTranscript(bottom bool) {
 			}
 		}
 	}
+	if live := m.renderLiveWorkProjection(); live != "" {
+		fmt.Fprintf(&b, "\n%s\n", live)
+	}
 	if m.notice != "" {
 		style := mutedStyle
 		if m.noticeTone == "error" {
@@ -1737,6 +1761,43 @@ func (m *model) refreshTranscript(bottom bool) {
 	} else {
 		m.viewport.SetYOffset(previousOffset)
 	}
+}
+
+func (m model) renderLiveWorkProjection() string {
+	active := make([]workBlock, 0, 3)
+	for i := len(m.workBlocks) - 1; i >= 0 && len(active) < 3; i-- {
+		block := m.workBlocks[i]
+		if block.State != "completed" && block.State != "failed" && block.State != "cancelled" {
+			active = append(active, block)
+		}
+	}
+	if len(active) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(active)+1)
+	if m.progress != nil {
+		s := m.progress.Summary
+		lines = append(lines, styleFaint.Render(fmt.Sprintf(
+			"LIVE WORK  %d active · %d waiting · %d blocked · %d stalled",
+			s.Active, s.Waiting, s.Blocked, s.Stalled,
+		)))
+	}
+	for _, block := range active {
+		glyph, style := workBlockGlyph(block)
+		critical := ""
+		if m.progress != nil && block.WorkerID == m.progress.CriticalWorkerID {
+			critical = "  " + styleRose.Render("critical")
+		}
+		line := fmt.Sprintf("%s  %s · %s%s", style.Render(glyph), block.Label, block.Summary, critical)
+		if block.BlockingReason != "" {
+			line += " · " + styleRose.Render(block.BlockingReason)
+		}
+		lines = append(lines, line)
+	}
+
+	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(colPanel).
+		Padding(0, 1).Width(max(20, m.width-4)).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) renderPalette() string {

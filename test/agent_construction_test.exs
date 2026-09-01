@@ -427,6 +427,45 @@ defmodule BeamAgent.AgentConstructionTest do
              )
   end
 
+  test "an explicit investigator role outranks implementation words during template inference",
+       context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, spec} =
+             AgentConstructor.child(parent_id, %{
+               goal: "Inspect the implementation contract. Do not edit files.",
+               role: "investigator"
+             })
+
+    assert spec.template == "researcher"
+    assert spec.execution_strategy.id == "investigate"
+    refute "apply_patch" in spec.effective_capabilities.scopes.tools
+  end
+
+  test "an explicit test-reviewer role selects the review contract", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    assert {:ok, spec} =
+             AgentConstructor.child(parent_id, %{
+               goal: "Assess whether the implementation satisfies its tests without edits",
+               role: "test-reviewer"
+             })
+
+    assert spec.template == "reviewer"
+    assert spec.execution_strategy.id == "review"
+    refute "edit_file" in spec.effective_capabilities.scopes.tools
+  end
+
   test "implementation workers fail closed without a write path", context do
     assert {:ok, parent_id} =
              BeamAgent.start_session(

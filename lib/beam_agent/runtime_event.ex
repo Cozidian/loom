@@ -112,7 +112,9 @@ defmodule BeamAgent.RuntimeEvent do
               "organization_formed",
               "organization_task_transitioned",
               "organization_finished",
-              "organization_cancelled"
+              "organization_cancelled",
+              "work_planning_decided",
+              "semantic_planning_observed"
             ],
        do: :lifecycle
 

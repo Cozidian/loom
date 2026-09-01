@@ -473,14 +473,41 @@ defmodule BeamAgent do
 
   def stop_goal(goal_id) do
     with {:ok, pid} <- Names.pid(:goal_supervisor, goal_id) do
-      stop_supervisor(pid)
+      case goal_root_parent(pid) do
+        {:ok, parent} -> DynamicSupervisor.terminate_child(parent, pid)
+        :not_found -> stop_supervisor(pid)
+      end
     end
   end
 
   defp stop_supervisor(pid) do
-    Supervisor.stop(pid, :normal)
+    Supervisor.stop(pid, :normal, 2_500)
   catch
-    :exit, {:noproc, _call} -> :ok
+    :exit, {:noproc, _call} ->
+      :ok
+
+    :exit, {:timeout, _call} ->
+      Process.exit(pid, :kill)
+      :ok
+  end
+
+  defp goal_root_parent(goal_supervisor) do
+    BeamAgent.Registry
+    |> Elixir.Registry.select([
+      {{{:goal_root_supervisor, :"$1"}, :"$2", :"$3"}, [], [:"$2"]}
+    ])
+    |> Enum.find_value(:not_found, fn parent ->
+      try do
+        if Enum.any?(DynamicSupervisor.which_children(parent), fn
+             {_id, ^goal_supervisor, _type, _modules} -> true
+             _child -> false
+           end),
+           do: {:ok, parent},
+           else: nil
+      catch
+        :exit, _reason -> nil
+      end
+    end)
   end
 
   def stop_project(project_id) do

@@ -79,4 +79,48 @@ defmodule BeamAgent.EvaluationTest do
     assert File.regular?(Path.join(scenario.fixture, "test/editor_test.exs"))
     assert Enum.map(scenario.checks, & &1.id) == ["tests", "compile"]
   end
+
+  test "repeated runs are held to an explicit acceptance gate", context do
+    manifest_path = Path.join(context.root, "acceptance.json")
+
+    File.write!(
+      manifest_path,
+      JSON.encode!(%{
+        version: 1,
+        acceptance: %{
+          minimum_verified_completion_rate: 1.0,
+          maximum_permission_denials: 0,
+          maximum_user_interventions: 0,
+          maximum_stalls: 0,
+          maximum_average_model_calls: 2
+        },
+        scenarios: [
+          %{
+            id: "repeatable-answer",
+            repetitions: 3,
+            fixture: context.fixture,
+            prompt: "Explain whether the fixture is ready",
+            expect: %{answer_contains: ["Evaluation done"]}
+          }
+        ]
+      })
+    )
+
+    assert {:ok, report} =
+             BeamAgent.Evaluation.run_file(manifest_path,
+               runs_root: Path.join(context.root, "acceptance-runs"),
+               session_options: [provider: :evaluation_test]
+             )
+
+    assert report.summary.total == 3
+    assert report.summary.acceptance.configured
+    assert report.summary.acceptance.passed
+    assert Enum.map(report.scenarios, & &1.repetition) == [1, 2, 3]
+    assert Enum.uniq(Enum.map(report.scenarios, & &1.run_id)) |> length() == 3
+
+    decoded = report.report_path |> File.read!() |> JSON.decode!()
+    assert decoded["summary"]["acceptance"]["configured"] == true
+    assert decoded["summary"]["acceptance"]["passed"] == true
+    assert hd(decoded["scenarios"])["metrics"]["multi_provider?"] == false
+  end
 end

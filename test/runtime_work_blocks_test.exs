@@ -46,6 +46,22 @@ defmodule BeamAgent.RuntimeWorkBlocksTest do
     assert block.summary =~ "2 warnings"
   end
 
+  test "waiting and blocked states remain interface-neutral projection data" do
+    waiting = [
+      event(1, "turn_started", %{"turn" => 1}),
+      event(2, "tool_approval_requested", %{"tool" => "run_command"})
+    ]
+
+    assert [%{state: :waiting, phase: :awaiting_approval, blocking_reason: "run_command"}] =
+             RuntimeWorkBlocks.project(waiting)
+
+    blocked =
+      waiting ++ [event(3, "tool_approval_granted", %{}), event(4, "budget_exhausted", %{})]
+
+    assert [%{state: :blocked, phase: :blocked, blocking_reason: "budget"}] =
+             RuntimeWorkBlocks.project(blocked)
+  end
+
   defp event(seq, type, data) do
     %{
       durability: :durable,

@@ -94,6 +94,8 @@ defmodule BeamAgent.CLI.TUI do
       workspace_files: repository_files(bootstrap.project_id),
       entries: history(bootstrap.events),
       competition_events: bootstrap.events |> competition_history() |> json_safe(),
+      work_blocks: safe_work_blocks(bootstrap.goal_id),
+      progress: safe_progress(bootstrap.goal_id),
       context_stats: context_stats(session_id)
     }
   end
@@ -114,6 +116,20 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp sorted_file_paths(files), do: files |> Map.keys() |> Enum.sort()
+
+  defp safe_work_blocks(goal_id) do
+    case BeamAgent.work_blocks(goal_id) do
+      {:ok, blocks} -> json_safe(blocks)
+      _other -> []
+    end
+  end
+
+  defp safe_progress(goal_id) do
+    case BeamAgent.progress(goal_id) do
+      {:ok, progress} -> json_safe(progress)
+      _other -> nil
+    end
+  end
 
   defp goal_pending_approvals(goal_id) do
     case BeamAgent.goal_sessions(goal_id) do
@@ -194,6 +210,9 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:tree, payload}),
     do: Map.put(json_safe(payload), :type, "tree")
+
+  def notification_payload({:work_projection, payload}),
+    do: Map.put(json_safe(payload), :type, "work_projection")
 
   def notification_payload({:events, payload}),
     do: Map.put(json_safe(payload), :type, "events")
@@ -391,6 +410,15 @@ defmodule BeamAgent.CLI.TUI do
          controller
        ) do
     Controller.command(controller, :tree)
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "cancel_worker", "query" => worker_id},
+         controller
+       )
+       when is_binary(worker_id) and worker_id != "" do
+    Controller.command(controller, {:cancel_worker, worker_id})
     :ok
   end
 
@@ -676,6 +704,12 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: "agent_construction_failed", data: data}}),
     do: "Agent construction failed · #{data["failure_code"]}"
 
+  defp info_entry(%{payload: %{type: "work_planning_decided", data: data}}),
+    do: "Work plan · #{data["mode"]} · #{data["reason"]}"
+
+  defp info_entry(%{payload: %{type: "semantic_planning_observed", data: data}}),
+    do: "Model plan · #{data["model_choice"]} · runtime #{data["runtime_mode"]}"
+
   defp info_entry(%{
          payload: %{type: "agent_started", data: data},
          scope: %{root?: false, session_id: session_id}
@@ -934,6 +968,10 @@ defmodule BeamAgent.CLI.TUI do
   defp completion_reason("empty_response"), do: "empty model response"
   defp completion_reason("future_intent"), do: "work was only announced"
   defp completion_reason("action_not_started"), do: "no successful repository action was taken"
+
+  defp completion_reason("decomposition_required"),
+    do: "required provider decomposition was not run"
+
   defp completion_reason(reason), do: reason || "non-final response"
 
   defp routing_evidence_suffix(%{"evidence" => %{"state" => "ready"} = evidence}),

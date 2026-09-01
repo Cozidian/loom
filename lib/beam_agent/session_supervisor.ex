@@ -2,6 +2,8 @@ defmodule BeamAgent.SessionSupervisor do
   @moduledoc "One supervision subtree for one durable session."
   use Supervisor
 
+  @shutdown_timeout_ms 2_000
+
   alias BeamAgent.{Agent, AgentConstructor, AgentSpec, Names, WorkerHandle}
   alias BeamAgent.Goal.{BudgetManager, DelegationManager}
 
@@ -29,6 +31,7 @@ defmodule BeamAgent.SessionSupervisor do
       id: {__MODULE__, id},
       start: {__MODULE__, :start_link, [opts]},
       restart: :temporary,
+      shutdown: @shutdown_timeout_ms,
       type: :supervisor
     }
   end

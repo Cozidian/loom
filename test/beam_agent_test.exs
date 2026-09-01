@@ -144,9 +144,11 @@ defmodule BeamAgentTest do
     def id, do: :claims_work_without_tools_test
 
     @impl true
-    def complete(_messages, _tools, options) do
-      if pid = options[:test_pid],
-        do: send(pid, {:claims_system_prompt, options[:system_prompt]})
+    def complete(_messages, tools, options) do
+      if pid = options[:test_pid] || Process.whereis(:beam_agent_claims_tool_surface_test) do
+        send(pid, {:claims_system_prompt, options[:system_prompt]})
+        send(pid, {:claims_tools, Enum.map(tools, & &1.name)})
+      end
 
       {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
     end
@@ -390,7 +392,7 @@ defmodule BeamAgentTest do
   end
 
   test "implementation claims without a successful action tool cannot complete" do
-    :ok = BeamAgent.CapabilityCatalog.register_provider(ClaimsWorkWithoutToolsProvider)
+    :ok = register_provider_once(ClaimsWorkWithoutToolsProvider)
 
     {:ok, id} =
       BeamAgent.start_session(
@@ -421,6 +423,55 @@ defmodule BeamAgentTest do
            end)
   end
 
+  test "explicit multi-provider implementation cannot silently fall back to one direct worker" do
+    :ok = register_provider_once(ClaimsWorkWithoutToolsProvider)
+    Process.register(self(), :beam_agent_claims_tool_surface_test)
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :claims_work_without_tools_test,
+        provider_profile: "primary",
+        provider_options: [test_pid: self()],
+        model_strategy: :auto,
+        model_endpoints: [
+          %{
+            id: "primary",
+            provider: :claims_work_without_tools_test,
+            provider_module: ClaimsWorkWithoutToolsProvider
+          },
+          %{
+            id: "secondary",
+            provider: :claims_work_without_tools_test,
+            provider_module: ClaimsWorkWithoutToolsProvider
+          }
+        ]
+      )
+
+    assert {:error, {:non_final_model_response, :decomposition_required, 2}} =
+             BeamAgent.ask(id, "Implement this using different providers for coding and tests")
+
+    assert_receive {:claims_tools, initial_tools}
+    assert "list_models" in initial_tools
+    assert "delegate_tasks" in initial_tools
+    assert "read_file" in initial_tools
+    refute "apply_patch" in initial_tools
+    refute "run_command" in initial_tools
+    refute "spawn_subagent" in initial_tools
+
+    assert {:ok, events} = BeamAgent.events(id)
+    decision = Enum.find(events, &(&1["type"] == "work_planning_decided"))
+    observation = Enum.find(events, &(&1["type"] == "semantic_planning_observed"))
+    assert decision["data"]["mode"] == "required"
+    assert observation["data"]["model_choice"] == "direct"
+    refute observation["data"]["agreed"]
+
+    assert Enum.count(events, fn event ->
+             event["type"] == "model_completion_deferred" and
+               event["data"]["completion_reason"] == "decomposition_required"
+           end) == 2
+  end
+
   test "implementation workers receive a direct-work completion contract" do
     :ok = BeamAgent.CapabilityCatalog.register_provider(DirectWorkerClaimsProvider)
 
@@ -449,6 +500,40 @@ defmodule BeamAgentTest do
     assert direct_prompt =~ "source-write tool"
     refute direct_prompt =~ "spawn_subagent"
     refute direct_prompt =~ "delegate_tasks"
+  end
+
+  test "constructed evidence workers can report on implementation without being forced to write" do
+    {:ok, root_id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :echo
+      )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(root_id,
+               agent_proposal: %{
+                 goal: "Review the implementation without changing the workspace",
+                 template: "researcher"
+               }
+             )
+
+    assert {:ok, content} =
+             BeamAgent.ask(
+               child_id,
+               "Inspect the implementation contract and report the evidence. Do not edit files."
+             )
+
+    assert content =~ "Inspect the implementation contract"
+
+    assert {:ok, events} = BeamAgent.events(child_id)
+    refute Enum.any?(events, &(&1["type"] == "model_completion_deferred"))
+  end
+
+  defp register_provider_once(module) do
+    case BeamAgent.CapabilityCatalog.register_provider(module) do
+      :ok -> :ok
+      {:error, :duplicate_provider} -> :ok
+    end
   end
 
   test "read-only workers can report an honest implementation blocker" do

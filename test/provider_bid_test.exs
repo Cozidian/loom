@@ -29,11 +29,14 @@ defmodule BeamAgent.ProviderBidTest do
     remote_implementation = ProviderBid.quote("implementation", remote, %{}, implementation)
 
     assert remote_implementation.score > local_implementation.score
+    assert remote_implementation.score_components.configured_preference == 15
+    assert local_implementation.score_components.cost == 5
 
     simple = Map.put(base, :classification, %{task_type: :simple})
     local_simple = ProviderBid.quote("simple", local, %{}, simple)
     remote_simple = ProviderBid.quote("simple", remote, %{}, simple)
 
     assert local_simple.score > remote_simple.score
+    assert local_simple.score_components.locality == 35
   end
 end

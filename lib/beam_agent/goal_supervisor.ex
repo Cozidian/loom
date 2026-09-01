@@ -2,6 +2,8 @@ defmodule BeamAgent.GoalSupervisor do
   @moduledoc "One ephemeral goal boundary backed initially by a durable root session."
   use Supervisor
 
+  @shutdown_timeout_ms 2_000
+
   alias BeamAgent.{Goal, Names, SessionSupervisor}
 
   alias BeamAgent.Goal.{
@@ -31,6 +33,7 @@ defmodule BeamAgent.GoalSupervisor do
       id: {__MODULE__, goal_id},
       start: {__MODULE__, :start_link, [opts]},
       restart: :transient,
+      shutdown: @shutdown_timeout_ms,
       type: :supervisor
     }
   end

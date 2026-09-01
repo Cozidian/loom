@@ -97,6 +97,11 @@ existing clients do not need to change. A goal-state failure rebuilds the
 dependent session from its event log; sibling goals remain isolated. Nested
 subagent sessions remain inside the root session for now and inherit the
 project and goal identity from their parent process.
+Explicit goal/session shutdown is bounded. Supervisors get a short graceful
+termination window; a child that traps shutdown or a provider call that never
+returns is then killed by its owning dynamic supervisor. This keeps evaluation
+timeouts, cancellation, and project teardown finite without placing a deadline
+on productive model work itself.
 
 Each contract captures a filesystem-authoritative starting snapshot. Its final
 `WorkArtifact` compares actual repository state rather than trusting named edit
@@ -117,8 +122,11 @@ the shared worker-state vocabulary. It distinguishes active work, provider
 inference, tools, delegation, verification, review, repair, approval waits,
 queueing, blocking, confirmed no-progress loops, and suspected silence. A later
 meaningful event records recovery rather than leaving an interface timer to
-guess. `RuntimeWorkBlocks` is a pure replayable projection of those facts for
-all clients; the Go TUI only renders and expands it.
+guess. It also identifies the critical worker and concrete blocker.
+`RuntimeWorkBlocks` is a pure replayable projection of those facts for all
+clients; the Go TUI throttles projection refreshes, renders a compact live-work
+card, expands the Tree representation, and submits worker actions without
+becoming authoritative.
 
 Every root and delegated worker receives a validated `AgentSpec` before its
 `Agent` process starts. The value keeps soft configuration—goal, role,
@@ -130,6 +138,11 @@ specialists from parent state and project context. Capability requests may only
 inherit or attenuate the parent's immutable envelope; prompt fields named like
 hard configuration are ignored. Restricted workers receive only authorized
 tool schemas, not merely execution-time denial.
+At the tool boundary, absolute `path` and `cwd` arguments that canonically resolve
+inside the immutable workspace are converted back to workspace-relative
+resources before capability and path-lease evaluation. This accommodates model
+output and macOS `/var` to `/private/var` aliasing without widening authority;
+canonical paths outside the workspace remain absolute and are denied.
 
 Construction request, success, applied-spec, failure, and spawn events contain
 safe fingerprints, identifiers, role, authority disposition, and field
@@ -174,7 +187,8 @@ Each goal supervises a `ProviderBidCoordinator` and a bidder `Task.Supervisor`.
 Before a route becomes a lease, the coordinator asks every policy-eligible
 endpoint actor for a content-free quote. A bid contains endpoint/provider/model
 identity, a deterministic fit score, confidence, verified sample count, cost
-tier, and estimated latency. It contains neither prompt text nor credentials.
+tier, estimated latency, and the individual score components used to calculate
+the total. It contains neither prompt text nor credentials.
 Manual routing remains a hard selection constraint; Auto uses the normal router
 policy and evidence, while additional tournament or race awards follow ranked eligible bids.
 The deterministic classifier is deliberately conservative about workspace
@@ -185,6 +199,24 @@ classification or disable verification. Observed filesystem mutations force
 the Goal verification boundary even when initial classification was imperfect.
 Free/local cost is a tie-breaker rather than a substitute for verified
 implementation quality.
+`WorkPlanningPolicy` separately decides whether a turn should remain direct,
+invite bounded specialization, or require it because the user explicitly asked
+for multiple providers. It does not invent authority: the model proposes task
+semantics and dependencies, while `DecompositionPlan`, `AgentConstructor`,
+provider auctions, stable leases, capabilities, and verification stay runtime
+owned. `semantic_planning_observed` is a shadow comparison between policy and
+the coordinator's actual direct/decomposed choice; it adds no extra classifier
+model call and cannot alter routing. `delegate_tasks` captures a before/after
+workspace snapshot so read-only delegation cannot masquerade as delivered
+implementation. Constructed evidence workers (`investigate`, `review`, and
+`verify`) are allowed to return reports even when their prompts discuss edits or
+implementation; their runtime role outranks ambiguous change-language heuristics.
+For a required turn, tool-schema projection is also a planning gate: the root
+receives model inventory, `delegate_tasks`, and read-only evidence tools first.
+Write, command, MCP, and ad-hoc delegation tools are projected only after the
+current turn records a successful organization using at least two endpoint
+leases. This prevents a direct implementation followed by a redundant plan at
+completion time.
 The coordinator owns recent market state and the session event log records
 `provider_auction_started`, `provider_bid_submitted`,
 `provider_auction_awarded`, and `provider_auction_settled` facts.

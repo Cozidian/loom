@@ -30,6 +30,7 @@ defmodule BeamAgent.ProviderBid do
     :estimated_latency_ms,
     :cost_tier,
     :verified_samples,
+    :score_components,
     :reason,
     :submitted_at,
     version: 1
@@ -44,6 +45,7 @@ defmodule BeamAgent.ProviderBid do
     verified_samples = integer(endpoint_evidence, :verified_samples, 0)
     latency = measured_latency(endpoint, endpoint_evidence)
     cost_tier = endpoint.claims.cost_hint || :unknown
+    score_components = score_components(endpoint, endpoint_evidence, input, latency)
 
     %__MODULE__{
       id: bid_id(auction_id, endpoint.id),
@@ -51,11 +53,12 @@ defmodule BeamAgent.ProviderBid do
       endpoint_id: endpoint.id,
       provider: endpoint.provider,
       model: endpoint.model,
-      score: score(endpoint, endpoint_evidence, input, latency),
+      score: score_components |> Map.values() |> Enum.sum(),
       confidence: Float.round(confidence * 1.0, 3),
       estimated_latency_ms: latency,
       cost_tier: cost_tier,
       verified_samples: verified_samples,
+      score_components: score_components,
       reason: reason(endpoint, endpoint_evidence, input),
       submitted_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
@@ -68,7 +71,7 @@ defmodule BeamAgent.ProviderBid do
     |> Map.update!(:cost_tier, &to_string/1)
   end
 
-  defp score(endpoint, evidence, input, latency) do
+  defp score_components(endpoint, evidence, input, latency) do
     health = if endpoint.health.status == :available, do: 15, else: 5
     preferred = if endpoint.id == input[:preferred_endpoint_id], do: 15, else: 0
     # Cost is a tie-breaker after task and configured-provider fit. It must not
@@ -79,7 +82,15 @@ defmodule BeamAgent.ProviderBid do
     latency_score = if is_number(latency), do: max(0, 20 - trunc(latency / 250)), else: 0
     evidence_score = evidence_score(evidence, input)
 
-    health + preferred + cost + locality + reasoning + latency_score + evidence_score
+    %{
+      health: health,
+      configured_preference: preferred,
+      cost: cost,
+      locality: locality,
+      reasoning: reasoning,
+      latency: latency_score,
+      verified_evidence: evidence_score
+    }
   end
 
   defp evidence_score(evidence, input) do

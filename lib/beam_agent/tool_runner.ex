@@ -1,13 +1,14 @@
 defmodule BeamAgent.ToolRunner do
   @moduledoc "Guarded execution boundary shared by every model-callable tool."
 
-  alias BeamAgent.{CapabilityEnvelope, Session.ToolPolicy}
+  alias BeamAgent.{CapabilityEnvelope, Session.ToolPolicy, Workspace}
   alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
   alias BeamAgent.Project.PathLeaseManager
 
   @write_tools ~w(apply_patch create_file edit_file)
 
   def execute(module, arguments, context) do
+    arguments = normalize_workspace_arguments(arguments, context)
     access = if function_exported?(module, :access, 0), do: module.access(), else: :execute
 
     resource = resource(module.name(), arguments)
@@ -106,6 +107,42 @@ defmodule BeamAgent.ToolRunner do
   defp browser_scope(tool) when tool in ["browser", "browser_control"], do: "interactive"
   defp browser_scope(_tool), do: nil
   defp stringify(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+  defp normalize_workspace_arguments(arguments, %{workspace_root: workspace_root})
+       when is_map(arguments) and is_binary(workspace_root) do
+    Enum.reduce(["path", "cwd"], arguments, fn key, normalized ->
+      case normalized[key] do
+        path when is_binary(path) and path != "" ->
+          Map.put(normalized, key, workspace_argument(path, workspace_root))
+
+        _missing ->
+          normalized
+      end
+    end)
+  end
+
+  defp normalize_workspace_arguments(arguments, _context), do: arguments
+
+  defp workspace_argument(path, workspace_root) do
+    candidate =
+      if Path.type(path) == :absolute,
+        do: path,
+        else: Path.expand(path, workspace_root)
+
+    with {:ok, root} <- Workspace.canonical_root(workspace_root),
+         {:ok, resolved} <- Workspace.canonical_path(candidate),
+         relative <- Path.relative_to(resolved, root),
+         true <- workspace_relative?(relative) do
+      if relative == "", do: ".", else: relative
+    else
+      _outside_or_invalid -> path
+    end
+  end
+
+  defp workspace_relative?(relative) do
+    relative != ".." and not String.starts_with?(relative, "../") and
+      not String.starts_with?(relative, "..\\") and Path.type(relative) != :absolute
+  end
 
   defp consume_budget(context, tool, arguments) do
     consumption = budget_consumption(tool, arguments)

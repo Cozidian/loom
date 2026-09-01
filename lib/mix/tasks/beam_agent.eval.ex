@@ -83,7 +83,21 @@ defmodule Mix.Tasks.BeamAgent.Eval do
 
       Mix.shell().info("report: #{report.report_path}")
 
-      if summary.failed > 0, do: Mix.raise("#{summary.failed} evaluation scenario(s) failed")
+      if summary.acceptance.configured do
+        status = if summary.acceptance.passed, do: "passed", else: "failed"
+        Mix.shell().info("acceptance gate: #{status}")
+      end
+
+      cond do
+        summary.failed > 0 ->
+          Mix.raise("#{summary.failed} evaluation run(s) failed")
+
+        summary.acceptance.configured and not summary.acceptance.passed ->
+          Mix.raise("evaluation acceptance gate failed")
+
+        true ->
+          :ok
+      end
     else
       {:error, reason} -> Mix.raise("evaluation failed: #{inspect(reason)}")
     end

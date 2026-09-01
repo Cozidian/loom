@@ -32,6 +32,9 @@ func (m model) renderTreeList(width int) string {
 		flat := flattenGoalTree(*m.treeData.Root)
 		for i, line := range flat {
 			style := bodyStyle
+			if m.treeData.Progress != nil && line.workerID == m.treeData.Progress.CriticalWorkerID {
+				style = style.Foreground(colRose)
+			}
 			if i == m.treeTab.selected {
 				style = style.Background(colPanel)
 			}
@@ -48,7 +51,8 @@ func (m model) renderTreeList(width int) string {
 		fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("WORK BLOCKS"))
 		for i, block := range m.treeData.WorkBlocks {
 			selected := m.treeTab.selected == workerCount+i
-			fmt.Fprintf(&b, "%s\n", m.renderWorkBlock(block, selected, width))
+			critical := m.treeData.Progress != nil && block.WorkerID == m.treeData.Progress.CriticalWorkerID
+			fmt.Fprintf(&b, "%s\n", m.renderWorkBlock(block, selected, critical, width))
 			if m.treeTab.expanded[block.ID] {
 				fmt.Fprintf(&b, "%s\n", renderWorkBlockDetails(block, width))
 			}
@@ -63,10 +67,11 @@ func (m model) renderTreeList(width int) string {
 	)))
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · enter expand · r refresh · esc chat"))
 
+	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · enter evidence · c cancel worker · r refresh"))
 	return b.String()
 }
 
-func (m model) renderWorkBlock(block workBlock, selected bool, width int) string {
+func (m model) renderWorkBlock(block workBlock, selected, critical bool, width int) string {
 	disclosure := "▸"
 	if m.treeTab.expanded[block.ID] {
 		disclosure = "▾"
@@ -78,6 +83,9 @@ func (m model) renderWorkBlock(block workBlock, selected bool, width int) string
 		right += fmt.Sprintf(" · %.1fs", float64(block.DurationMs)/1000)
 	}
 	line := joinEdges(left, styleFaint.Render(right), width)
+	if critical {
+		line = styleRose.Render(line)
+	}
 	if selected {
 		return bodyStyle.Background(colPanel).Render(line)
 	}
@@ -118,11 +126,12 @@ func renderWorkBlockDetails(block workBlock, width int) string {
 }
 
 type treeLine struct {
-	depth int
-	glyph string
-	style lipgloss.Style
-	label string
-	right string
+	depth    int
+	workerID string
+	glyph    string
+	style    lipgloss.Style
+	label    string
+	right    string
 }
 
 func (l treeLine) render(width int) string {
@@ -141,11 +150,12 @@ func flattenGoalTree(root goalNode) []treeLine {
 			label += " · root"
 		}
 		lines = append(lines, treeLine{
-			depth: depth,
-			glyph: glyph,
-			style: style,
-			label: label,
-			right: goalStateDetail(node),
+			depth:    depth,
+			workerID: node.WorkerID,
+			glyph:    glyph,
+			style:    style,
+			label:    label,
+			right:    goalStateDetail(node),
 		})
 		for _, child := range node.Children {
 			walk(child, depth+1)
@@ -277,6 +287,25 @@ func (m model) updateTreeTab(key string) (tea.Model, tea.Cmd) {
 		}
 	case "r":
 		return m, m.refreshTabCmd(tabTree)
+	case "c":
+		if workerID := m.selectedTreeWorkerID(); workerID != "" {
+			return m, m.send(packet{Type: "command", Command: "cancel_worker", Query: workerID})
+		}
 	}
 	return m, nil
+}
+
+func (m model) selectedTreeWorkerID() string {
+	if m.treeData == nil || m.treeData.Root == nil {
+		return ""
+	}
+	workers := flattenGoalTree(*m.treeData.Root)
+	if m.treeTab.selected >= 0 && m.treeTab.selected < len(workers) {
+		return workers[m.treeTab.selected].workerID
+	}
+	index := m.treeTab.selected - len(workers)
+	if index >= 0 && index < len(m.treeData.WorkBlocks) {
+		return m.treeData.WorkBlocks[index].WorkerID
+	}
+	return ""
 }

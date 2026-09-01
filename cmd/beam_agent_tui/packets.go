@@ -34,8 +34,10 @@ type workBlock struct {
 }
 
 type progressSnapshot struct {
-	Summary progressSummary  `json:"summary"`
-	Workers []progressWorker `json:"workers"`
+	Summary          progressSummary  `json:"summary"`
+	Workers          []progressWorker `json:"workers"`
+	CriticalWorkerID string           `json:"critical_worker_id"`
+	CriticalReason   string           `json:"critical_reason"`
 }
 
 type progressSummary struct {
@@ -164,16 +166,17 @@ type providerMarket struct {
 }
 
 type providerBid struct {
-	ID                 string  `json:"id"`
-	EndpointID         string  `json:"endpoint_id"`
-	Provider           string  `json:"provider"`
-	Model              string  `json:"model"`
-	Score              int     `json:"score"`
-	Confidence         float64 `json:"confidence"`
-	EstimatedLatencyMs float64 `json:"estimated_latency_ms"`
-	CostTier           string  `json:"cost_tier"`
-	VerifiedSamples    int     `json:"verified_samples"`
-	Reason             string  `json:"reason"`
+	ID                 string         `json:"id"`
+	EndpointID         string         `json:"endpoint_id"`
+	Provider           string         `json:"provider"`
+	Model              string         `json:"model"`
+	Score              int            `json:"score"`
+	Confidence         float64        `json:"confidence"`
+	EstimatedLatencyMs float64        `json:"estimated_latency_ms"`
+	CostTier           string         `json:"cost_tier"`
+	VerifiedSamples    int            `json:"verified_samples"`
+	ScoreComponents    map[string]int `json:"score_components"`
+	Reason             string         `json:"reason"`
 }
 
 type providerAward struct {
