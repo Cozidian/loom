@@ -106,6 +106,7 @@ defmodule BeamAgent.Session.Context do
   defp event_data(snapshot, reason) do
     %{
       "fingerprint" => snapshot.fingerprint,
+      "prompt_version" => snapshot.prompt_version,
       "agent_spec_id" => snapshot.agent_spec_id,
       "agent_role" => snapshot.agent_role,
       "reason" => reason,
@@ -118,6 +119,7 @@ defmodule BeamAgent.Session.Context do
   defp summary(snapshot) do
     %{
       fingerprint: snapshot.fingerprint,
+      prompt_version: snapshot.prompt_version,
       instruction_count: length(snapshot.instructions),
       skill_count: length(snapshot.skills),
       warnings: snapshot.warnings

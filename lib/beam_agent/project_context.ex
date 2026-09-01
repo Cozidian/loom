@@ -1,7 +1,7 @@
 defmodule BeamAgent.ProjectContext do
   @moduledoc "Deterministic project-instruction and lazy-skill discovery for one workspace."
 
-  alias BeamAgent.Workspace
+  alias BeamAgent.{CodingPrompt, Workspace}
   alias BeamAgent.Tools.FileSupport
 
   @instruction_paths ["AGENTS.md", "CLAUDE.md", "BEAM_AGENT.md"]
@@ -19,6 +19,7 @@ defmodule BeamAgent.ProjectContext do
       {:ok,
        %{
          workspace_root: workspace_root,
+         prompt_version: CodingPrompt.version(),
          instructions: instructions,
          skills: skills,
          warnings: instruction_warnings ++ skill_warnings,
@@ -239,7 +240,8 @@ defmodule BeamAgent.ProjectContext do
 
   defp fingerprint(instructions, skills) do
     material =
-      Enum.map(instructions, &{"instruction", &1.path, &1.sha256}) ++
+      [{"coding_prompt", CodingPrompt.version()}] ++
+        Enum.map(instructions, &{"instruction", &1.path, &1.sha256}) ++
         Enum.map(skills, &{"skill", &1.name, &1.path, &1.sha256})
 
     material |> :erlang.term_to_binary() |> FileSupport.sha256()
@@ -256,13 +258,17 @@ defmodule BeamAgent.ProjectContext do
   end
 
   defp base_prompt(workspace_root) do
-    """
-    You are BeamAgent, an OTP-native coding agent working inside this immutable workspace root:
-    #{workspace_root}
+    CodingPrompt.base(workspace_root) <>
+      """
 
-    Use the provided tools to inspect evidence before changing files. Keep paths workspace-relative. Read a file before editing it, preserve unrelated user changes, and report tool failures honestly. Project instructions below are authoritative for this workspace. Skills are optional workflows: activate one with read_skill when its description clearly matches the task, then follow the complete returned SKILL.md. After creating or changing project instructions or skills, call reload_context before relying on the new content.
-    """
-    |> String.trim()
+
+      # Project context
+      Project instructions below are authoritative within the runtime contract.
+      Skills are optional workflows: activate one with read_skill when its
+      description clearly matches the task, then follow the complete returned
+      SKILL.md. After creating or changing project instructions or skills, call
+      reload_context before relying on the new content.
+      """
   end
 
   defp instruction_prompt([]), do: ""

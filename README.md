@@ -300,6 +300,11 @@ deterministic order when present:
 3. `BEAM_AGENT.md`
 
 Instruction contents are placed in the provider's native system channel.
+They are layered over a versioned BeamAgent coding prompt that defines
+evidence-led repository work, intent-sensitive mutation, dirty-worktree
+hygiene, bounded actor delegation, proportionate verification, and honest
+completion. The prompt version participates in the durable context fingerprint,
+so model outcomes from different instruction generations remain distinguishable.
 BeamAgent discovers skills one directory below these roots, in precedence order:
 
 1. `.beam_agent/skills/*/SKILL.md`

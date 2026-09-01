@@ -66,8 +66,10 @@ defmodule BeamAgent.AgentConstructionTest do
     assert context_snapshot.system_prompt =~ "Execute the runtime work contract directly"
 
     {:ok, events} = BeamAgent.events(session_id)
+    context_loaded = Enum.find(events, &(&1["type"] == "context_loaded"))
     constructed = Enum.find(events, &(&1["type"] == "agent_constructed"))
     applied = Enum.find(events, &(&1["type"] == "agent_spec_applied"))
+    assert context_loaded["data"]["prompt_version"] == BeamAgent.CodingPrompt.version()
     assert constructed["data"]["spec_id"] == spec.spec_id
     assert constructed["data"]["goal_fingerprint"]
     assert applied["data"]["role"] == "Primary goal worker"

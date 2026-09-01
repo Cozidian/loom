@@ -23,7 +23,11 @@ defmodule BeamAgent.Runtime.JSONLineServerTest do
     assert {:ok, {{127, 0, 0, 1}, port}} = BeamAgent.Runtime.JSONLineServer.address(server)
 
     assert {:ok, socket} =
-             :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: :line, active: false])
+             :gen_tcp.connect(
+               {127, 0, 0, 1},
+               port,
+               [:binary, packet: :raw, active: false]
+             )
 
     unauthorized = %{
       version: 1,
@@ -33,12 +37,12 @@ defmodule BeamAgent.Runtime.JSONLineServerTest do
     }
 
     :ok = :gen_tcp.send(socket, [JSON.encode!(unauthorized), "\n"])
-    assert {:ok, unauthorized_line} = :gen_tcp.recv(socket, 0, 2_000)
+    assert {:ok, unauthorized_line, buffer} = receive_line(socket, "", 2_000)
     assert JSON.decode!(unauthorized_line)["error"] == "unauthorized"
 
     request = %{version: 1, request_id: "status-1", command: "status", token: token}
     :ok = :gen_tcp.send(socket, [JSON.encode!(request), "\n"])
-    assert {:ok, response_line} = :gen_tcp.recv(socket, 0, 2_000)
+    assert {:ok, response_line, buffer} = receive_line(socket, buffer, 2_000)
     response = JSON.decode!(response_line)
     assert response["ok"]
     assert response["request_id"] == "status-1"
@@ -49,7 +53,7 @@ defmodule BeamAgent.Runtime.JSONLineServerTest do
                "resource" => "model_tokens"
              })
 
-    assert {:ok, event_line} = receive_type(socket, "event", 2_000)
+    assert {:ok, event_line, _buffer} = receive_type(socket, "event", 2_000, buffer)
     event = JSON.decode!(event_line)
     assert event["event"]["payload"]["type"] == "budget_warning"
 
@@ -58,15 +62,28 @@ defmodule BeamAgent.Runtime.JSONLineServerTest do
     assert {:ok, :idle} = BeamAgent.Agent.status(session_id)
   end
 
-  defp receive_type(socket, type, timeout) do
-    case :gen_tcp.recv(socket, 0, timeout) do
-      {:ok, line} ->
+  defp receive_type(socket, type, timeout, buffer) do
+    case receive_line(socket, buffer, timeout) do
+      {:ok, line, rest} ->
         if JSON.decode!(line)["type"] == type,
-          do: {:ok, line},
-          else: receive_type(socket, type, timeout)
+          do: {:ok, line, rest},
+          else: receive_type(socket, type, timeout, rest)
 
       error ->
         error
+    end
+  end
+
+  defp receive_line(socket, buffer, timeout) do
+    case String.split(buffer, "\n", parts: 2) do
+      [line, rest] ->
+        {:ok, line, rest}
+
+      [_partial] ->
+        case :gen_tcp.recv(socket, 0, timeout) do
+          {:ok, chunk} -> receive_line(socket, buffer <> chunk, timeout)
+          error -> error
+        end
     end
   end
 end

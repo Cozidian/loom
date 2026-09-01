@@ -322,10 +322,22 @@ assistant tool call
 
 Before each provider step, the strategy reads the current supervised context
 snapshot. OpenAI-compatible and Ollama adapters prepend it as a `system` message;
-Anthropic sends it through the top-level `system` field. Instruction bodies are
-eager because they define project authority. Skill bodies are lazy: only a
+Anthropic sends it through the top-level `system` field. Project-instruction
+bodies are eager because they define workspace behavior within runtime
+authority. Skill bodies are lazy: only a
 bounded name/description catalog enters the system prompt, while `read_skill`
 returns the complete selected `SKILL.md` and records `skill_activated`.
+
+The prompt is deliberately layered. `CodingPrompt` supplies versioned,
+provider-neutral coding behavior: intent recognition, repository evidence,
+workspace hygiene, actor delegation, verification, and completion reporting.
+`ProjectContext` adds workspace instructions and the lazy skill catalog;
+`AgentSpec` adds the runtime-created role and bounded assignment; `WorkContract`
+adds the current goal artifact and acceptance criteria; and `ToolLoop` adds only
+tool-aware execution or recovery guidance for the current step. The coding
+prompt version is part of the context fingerprint recorded with each turn. Hard
+authority and completion remain runtime checks rather than claims made by prompt
+text.
 
 The catalog still owns trusted, stateless tool modules. Every goal and worker
 also carries an immutable capability envelope for tool, path, command, host,

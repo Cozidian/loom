@@ -15,7 +15,7 @@ defmodule BeamAgent.RuntimeEventView do
     limit locality maximum_attempts measured_latency_ms minimum_verified_samples mode model name operational_samples
     operational_success_rate operational_successes outcome_id output_tokens quality_lower_bound
     parent_capability_id parent_session_id parent_worker_id permission_id policy previous privacy privacy_requirement project_id provider provider_profile
-    recency_weighted_pass_rate recommended_endpoint_id recovered redaction request_id request_version
+    recency_weighted_pass_rate recommended_endpoint_id recovered redaction request_id request_version prompt_version
     exit_status failed_count passed_count policy_reason provider_count requested_awards response_id required retries root score selected_endpoint_id server session_id source submitted_at
     execution_strategy operations operations_remaining purpose_fingerprint requested_capability_mode role role_requested source state status step strategy stream success target_session_id task_type template template_requested template_source template_version timeout to tool tool_call_id tool_count tools_required total_tokens
     truncated turn type verification_id verification_status verified_pass_rate verified_passes verified_samples version window_days window_tokens worker_id

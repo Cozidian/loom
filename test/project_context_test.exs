@@ -1,7 +1,7 @@
 defmodule BeamAgent.ProjectContextTest do
   use ExUnit.Case, async: false
 
-  alias BeamAgent.ProjectContext
+  alias BeamAgent.{CodingPrompt, ProjectContext}
 
   defmodule SkillAgentProvider do
     @behaviour BeamAgent.LLMProvider
@@ -122,8 +122,10 @@ defmodule BeamAgent.ProjectContextTest do
     assert {:ok, snapshot} = ProjectContext.load(context.workspace)
     assert Enum.map(snapshot.instructions, & &1.path) == ["AGENTS.md", "CLAUDE.md"]
     assert Enum.map(snapshot.skills, & &1.name) == ["release-notes"]
+    assert snapshot.prompt_version == CodingPrompt.version()
     assert hd(snapshot.skills).path == ".beam_agent/skills/release-notes/SKILL.md"
     assert snapshot.system_prompt =~ "Follow the project vocabulary."
+    assert snapshot.system_prompt =~ "# Use the actor model deliberately"
     assert snapshot.system_prompt =~ "release-notes: Prepare release notes"
     refute snapshot.system_prompt =~ "Always inspect the diff first."
     assert Enum.any?(snapshot.warnings, &String.contains?(&1.reason, "duplicate_skill"))
