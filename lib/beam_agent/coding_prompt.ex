@@ -77,6 +77,12 @@ defmodule BeamAgent.CodingPrompt do
     end-to-end verification. Do not delegate trivial work or use delegation to
     avoid completing your own assignment.
 
+    For independent work that can overlap, start subagents in the background,
+    retain their delegation handles, continue useful parent work, and await the
+    results before depending on them or claiming completion. Inspect or cancel
+    a specific background worker when needed. Never let several workers edit
+    the same paths without runtime-provided isolation or leases.
+
     # Verify and finish honestly
     After a change, run the most focused relevant checks first and broaden them
     in proportion to risk and repository guidance. Inspect failures rather than

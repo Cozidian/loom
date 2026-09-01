@@ -96,6 +96,8 @@ defmodule BeamAgent.RuntimeEvent do
               "turn_finished",
               "goal_work_started",
               "goal_work_finished",
+              "worker_stall_suspected",
+              "worker_progress_resumed",
               "worker_candidate_finished",
               "goal_steered",
               "subagent_spawned",
@@ -105,6 +107,7 @@ defmodule BeamAgent.RuntimeEvent do
               "agent_construction_failed",
               "delegation_requested",
               "delegation_accepted",
+              "delegation_started",
               "delegation_progressed",
               "organization_formed",
               "organization_task_transitioned",
@@ -278,6 +281,7 @@ defmodule BeamAgent.RuntimeEvent do
   defp category(type)
        when type in [
               "delegation_completed",
+              "delegation_failed",
               "delegation_rejected",
               "delegation_cancelled",
               "race_winner_selected",

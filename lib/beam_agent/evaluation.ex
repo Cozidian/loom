@@ -1,0 +1,475 @@
+defmodule BeamAgent.Evaluation do
+  @moduledoc "Manifest-driven, evidence-producing evaluation runs for the complete harness."
+
+  alias BeamAgent.VerificationPlan
+
+  @version 1
+
+  def run_file(path, opts \\ []) when is_binary(path) and is_list(opts) do
+    with {:ok, manifest} <- load(path) do
+      run(manifest, Keyword.put_new(opts, :manifest_path, Path.expand(path)))
+    end
+  end
+
+  def load(path) when is_binary(path) do
+    with {:ok, content} <- File.read(path),
+         {:ok, decoded} <- JSON.decode(content),
+         {:ok, manifest} <- validate_manifest(decoded, Path.dirname(Path.expand(path))) do
+      {:ok, manifest}
+    else
+      {:error, :enoent} -> {:error, {:evaluation_manifest_not_found, path}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def run(%{version: @version, scenarios: scenarios} = manifest, opts)
+      when is_list(scenarios) and is_list(opts) do
+    run_id = "eval-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+
+    runs_root =
+      (Keyword.get(opts, :runs_root) ||
+         Path.join(System.tmp_dir!(), "beam-agent-evaluations"))
+      |> Path.expand()
+
+    output_dir = Path.join(runs_root, run_id)
+    :ok = File.mkdir_p(output_dir)
+    started_at = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    maximum = max(1, Keyword.get(opts, :max_concurrency, 1))
+
+    results =
+      scenarios
+      |> Task.async_stream(&run_scenario(&1, output_dir, opts),
+        ordered: true,
+        max_concurrency: maximum,
+        timeout: :infinity
+      )
+      |> Enum.map(fn
+        {:ok, result} -> result
+        {:exit, reason} -> failed_result("unknown", {:scenario_runner_exit, reason})
+      end)
+
+    report = %{
+      version: @version,
+      run_id: run_id,
+      manifest: Keyword.get(opts, :manifest_path),
+      started_at: started_at,
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      scenarios: results,
+      summary: summarize(results),
+      metadata: Map.get(manifest, :metadata, %{})
+    }
+
+    report_path = Keyword.get(opts, :report_path) || Path.join(output_dir, "report.json")
+
+    with :ok <- File.mkdir_p(Path.dirname(report_path)),
+         :ok <- File.write(report_path, [JSON.encode!(stringify(report)), "\n"]) do
+      {:ok, Map.put(report, :report_path, report_path)}
+    end
+  rescue
+    error -> {:error, {:evaluation_failed, Exception.message(error)}}
+  end
+
+  def run(_manifest, _opts), do: {:error, :invalid_evaluation_manifest}
+
+  defp run_scenario(scenario, output_dir, opts) do
+    scenario_dir = Path.join(output_dir, safe_id(scenario.id))
+    workspace = Path.join(scenario_dir, "workspace")
+    data_dir = Path.join(scenario_dir, "runtime")
+    started = System.monotonic_time(:millisecond)
+
+    with :ok <- prepare_workspace(scenario.fixture, workspace),
+         {:ok, session_id} <- start_session(scenario, workspace, data_dir, opts) do
+      try do
+        run_started_scenario(scenario, session_id, workspace, started)
+      after
+        _ = BeamAgent.stop_session(session_id)
+      end
+    else
+      {:error, reason} -> failed_scenario(scenario.id, reason, workspace, started)
+    end
+  end
+
+  defp run_started_scenario(scenario, session_id, workspace, started) do
+    with {ask_result, timed_out?} <- ask(session_id, scenario.prompt, scenario.timeout_ms),
+         {:ok, goal} <- BeamAgent.goal(session_id),
+         canonical_workspace = goal.workspace_root,
+         verification <- verify(session_id, scenario.checks, ask_result),
+         expectations <- expectations(scenario.expect, canonical_workspace, ask_result),
+         {:ok, events} <- BeamAgent.goal_events(session_id, view: :internal) do
+      duration_ms = System.monotonic_time(:millisecond) - started
+      {:ok, goal_status} = BeamAgent.Goal.status(session_id)
+      artifact = goal_status.last_work && goal_status.last_work.artifact
+      metrics = metrics(events, artifact, duration_ms)
+      passed = passed?(ask_result, timed_out?, verification, expectations)
+
+      result = %{
+        id: scenario.id,
+        status: if(passed, do: :passed, else: :failed),
+        session_id: session_id,
+        project_id: goal.project_id,
+        workspace: canonical_workspace,
+        prompt_fingerprint: fingerprint(scenario.prompt),
+        answer: answer_summary(ask_result),
+        failure: failure_summary(ask_result, timed_out?),
+        verification: verification,
+        expectations: expectations,
+        artifact: artifact_summary(artifact),
+        metrics: metrics
+      }
+
+      result
+    else
+      {:error, reason} -> failed_scenario(scenario.id, reason, workspace, started)
+    end
+  end
+
+  defp failed_scenario(id, reason, workspace, started) do
+    failed_result(id, reason)
+    |> Map.put(:workspace, workspace)
+    |> put_in([:metrics, :duration_ms], System.monotonic_time(:millisecond) - started)
+  end
+
+  defp start_session(scenario, workspace, data_dir, opts) do
+    session_options =
+      opts
+      |> Keyword.get(:session_options, [])
+      |> Keyword.merge(scenario.session_options)
+      |> Keyword.put(:workspace_root, workspace)
+      |> Keyword.put(:data_dir, data_dir)
+      |> Keyword.put_new(:approval_policy, :auto)
+
+    BeamAgent.start_session(session_options)
+  end
+
+  defp ask(session_id, prompt, timeout_ms) do
+    task = Task.async(fn -> BeamAgent.ask(session_id, prompt) end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        {result, false}
+
+      nil ->
+        _ = BeamAgent.cancel(session_id)
+        _ = Task.shutdown(task, :brutal_kill)
+        {{:error, :evaluation_timeout}, true}
+    end
+  end
+
+  defp verify(_session_id, [], _ask_result), do: %{status: :not_configured, checks: []}
+
+  defp verify(session_id, checks, {:ok, _answer}) do
+    with {:ok, plan} <- VerificationPlan.new(%{source: "evaluation-manifest", checks: checks}),
+         {:ok, result} <- BeamAgent.verify(session_id, plan) do
+      Map.take(result, [:status, :source, :summary, :checks, :verification_id])
+    else
+      {:error, reason} -> %{status: :failed, checks: [], failure: inspect(reason)}
+    end
+  end
+
+  defp verify(_session_id, _checks, {:error, reason}),
+    do: %{status: :not_run, checks: [], failure: inspect(reason)}
+
+  defp expectations(expect, workspace, ask_result) do
+    answer =
+      case ask_result do
+        {:ok, content} -> content
+        _other -> ""
+      end
+
+    file_results =
+      Enum.map(expect.files, fn path ->
+        case BeamAgent.Workspace.resolve(workspace, path) do
+          {:ok, resolved} ->
+            %{kind: :file_exists, path: path, passed: File.regular?(resolved)}
+
+          {:error, reason} ->
+            %{kind: :file_exists, path: path, passed: false, error: inspect(reason)}
+        end
+      end)
+
+    content_results =
+      Enum.map(expect.file_contains, fn assertion ->
+        result =
+          with {:ok, resolved} <- BeamAgent.Workspace.resolve(workspace, assertion.path),
+               {:ok, content} <- File.read(resolved) do
+            String.contains?(content, assertion.text)
+          else
+            _other -> false
+          end
+
+        %{
+          kind: :file_contains,
+          path: assertion.path,
+          text_fingerprint: fingerprint(assertion.text),
+          passed: result
+        }
+      end)
+
+    answer_results =
+      Enum.map(expect.answer_contains, fn text ->
+        %{
+          kind: :answer_contains,
+          text_fingerprint: fingerprint(text),
+          passed: String.contains?(answer, text)
+        }
+      end)
+
+    file_results ++ content_results ++ answer_results
+  end
+
+  defp metrics(events, artifact, duration_ms) do
+    types = Enum.map(events, &event_type/1)
+
+    routes =
+      events
+      |> Enum.filter(&(event_type(&1) == "model_response_started"))
+      |> Enum.map(fn event ->
+        data = event_data(event)
+
+        %{
+          endpoint_id: data["provider_profile"] || data["endpoint_id"],
+          provider: data["provider"],
+          model: data["model"]
+        }
+      end)
+      |> Enum.uniq()
+
+    total_tokens =
+      events
+      |> Enum.filter(&(event_type(&1) == "model_response_finished"))
+      |> Enum.map(fn event ->
+        usage = event_data(event)["usage"] || %{}
+        usage["total_tokens"] || usage[:total_tokens] || 0
+      end)
+      |> Enum.filter(&is_number/1)
+      |> Enum.sum()
+
+    %{
+      duration_ms: duration_ms,
+      model_calls: Enum.count(types, &(&1 == "model_response_started")),
+      routes: routes,
+      total_tokens: total_tokens,
+      tool_calls: Enum.count(types, &(&1 == "tool_called")),
+      delegated_workers: Enum.count(types, &(&1 == "delegation_started")),
+      repair_attempts:
+        Enum.count(
+          types,
+          &(&1 in ["verification_recovery_started", "implementation_review_recovery_started"])
+        ),
+      approval_requests: Enum.count(types, &(&1 == "tool_approval_requested")),
+      permission_denials:
+        Enum.count(types, &(&1 in ["tool_denied", "capability_denied", "path_lease_denied"])),
+      suspected_stalls: Enum.count(types, &(&1 == "worker_stall_suspected")),
+      confirmed_stalls: Enum.count(types, &(&1 == "tool_loop_stalled")),
+      cancellations: Enum.count(types, &String.contains?(&1, "cancel")),
+      changed_file_count: length((artifact && artifact.changed_files) || []),
+      event_count: length(events)
+    }
+  end
+
+  defp passed?({:ok, _answer}, false, verification, expectations) do
+    verification.status in [:passed, :not_configured] and Enum.all?(expectations, & &1.passed)
+  end
+
+  defp passed?(_ask_result, _timed_out, _verification, _expectations), do: false
+
+  defp prepare_workspace(nil, workspace), do: File.mkdir_p(workspace)
+
+  defp prepare_workspace(fixture, workspace) do
+    if File.dir?(fixture) do
+      with :ok <- File.mkdir_p(Path.dirname(workspace)) do
+        case File.cp_r(fixture, workspace) do
+          {:ok, _files} -> :ok
+          {:error, reason, _file} -> {:error, {:fixture_copy_failed, reason}}
+        end
+      end
+    else
+      {:error, {:evaluation_fixture_not_found, fixture}}
+    end
+  end
+
+  defp validate_manifest(%{"version" => @version, "scenarios" => scenarios} = manifest, base)
+       when is_list(scenarios) and scenarios != [] do
+    with {:ok, scenarios} <- normalize_scenarios(scenarios, base) do
+      {:ok, %{version: @version, scenarios: scenarios, metadata: manifest["metadata"] || %{}}}
+    end
+  end
+
+  defp validate_manifest(_manifest, _base), do: {:error, :invalid_evaluation_manifest}
+
+  defp normalize_scenarios(scenarios, base) do
+    scenarios
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {scenario, index}, {:ok, acc} ->
+      case normalize_scenario(scenario, base, index) do
+        {:ok, normalized} -> {:cont, {:ok, acc ++ [normalized]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp normalize_scenario(%{"id" => id, "prompt" => prompt} = scenario, base, index)
+       when is_binary(id) and id != "" and is_binary(prompt) and prompt != "" do
+    fixture = scenario["fixture"]
+    timeout_ms = scenario["timeout_ms"] || 300_000
+    checks = scenario["checks"] || []
+    expect = scenario["expect"] || %{}
+
+    with true <-
+           valid_id?(id) and is_integer(timeout_ms) and timeout_ms in 100..1_800_000 and
+             is_list(checks) and is_map(expect),
+         {:ok, checks} <- normalize_verification_checks(checks),
+         {:ok, expect} <- normalize_expectations(expect) do
+      {:ok,
+       %{
+         id: id,
+         prompt: prompt,
+         fixture: fixture && Path.expand(fixture, base),
+         timeout_ms: timeout_ms,
+         checks: checks,
+         expect: expect,
+         session_options: []
+       }}
+    else
+      _invalid -> {:error, {:invalid_evaluation_scenario, index}}
+    end
+  end
+
+  defp normalize_scenario(_scenario, _base, index),
+    do: {:error, {:invalid_evaluation_scenario, index}}
+
+  defp normalize_verification_checks([]), do: {:ok, []}
+
+  defp normalize_verification_checks(checks) do
+    case VerificationPlan.new(%{source: "evaluation-manifest", checks: checks}) do
+      {:ok, plan} -> {:ok, plan.checks}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp normalize_expectations(expect) do
+    files = list(expect["files"])
+    answer_contains = list(expect["answer_contains"])
+    file_contains = list(expect["file_contains"])
+
+    valid? =
+      Enum.all?(files, &(is_binary(&1) and &1 != "")) and
+        Enum.all?(answer_contains, &is_binary/1) and
+        Enum.all?(file_contains, fn
+          %{"path" => path, "text" => text} ->
+            is_binary(path) and path != "" and is_binary(text)
+
+          _assertion ->
+            false
+        end)
+
+    if valid? do
+      {:ok,
+       %{
+         files: files,
+         answer_contains: answer_contains,
+         file_contains:
+           Enum.map(file_contains, fn assertion ->
+             %{path: assertion["path"], text: assertion["text"]}
+           end)
+       }}
+    else
+      :error
+    end
+  end
+
+  defp summarize(results) do
+    passed = Enum.count(results, &(&1.status == :passed))
+    total = length(results)
+
+    %{
+      total: total,
+      passed: passed,
+      failed: total - passed,
+      verified_completion_rate: if(total == 0, do: 0.0, else: passed / total),
+      total_duration_ms: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :duration_ms]))),
+      total_model_calls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :model_calls]))),
+      total_tokens: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :total_tokens]))),
+      total_tool_calls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :tool_calls]))),
+      total_user_interventions:
+        Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :approval_requests]))),
+      total_stalls:
+        Enum.sum(
+          Enum.map(results, fn result ->
+            result.metrics.suspected_stalls + result.metrics.confirmed_stalls
+          end)
+        )
+    }
+  end
+
+  defp failed_result(id, reason) do
+    %{
+      id: id,
+      status: :failed,
+      failure: inspect(reason),
+      verification: %{status: :not_run, checks: []},
+      expectations: [],
+      artifact: nil,
+      metrics: %{
+        duration_ms: 0,
+        model_calls: 0,
+        routes: [],
+        total_tokens: 0,
+        tool_calls: 0,
+        delegated_workers: 0,
+        repair_attempts: 0,
+        approval_requests: 0,
+        permission_denials: 0,
+        suspected_stalls: 0,
+        confirmed_stalls: 0,
+        cancellations: 0,
+        changed_file_count: 0,
+        event_count: 0
+      }
+    }
+  end
+
+  defp artifact_summary(nil), do: nil
+
+  defp artifact_summary(artifact) do
+    Map.take(artifact, [
+      :id,
+      :kind,
+      :status,
+      :changed_files,
+      :mutation_sources,
+      :result_fingerprint,
+      :workspace_delta
+    ])
+  end
+
+  defp answer_summary({:ok, answer}), do: String.slice(answer, 0, 4_000)
+  defp answer_summary(_result), do: nil
+  defp failure_summary(_result, true), do: "evaluation_timeout"
+  defp failure_summary({:error, reason}, false), do: inspect(reason)
+  defp failure_summary(_result, false), do: nil
+
+  defp event_type(%{payload: %{type: type}}), do: to_string(type)
+  defp event_type(%{"payload" => %{"type" => type}}), do: to_string(type)
+  defp event_type(_event), do: "unknown"
+
+  defp event_data(%{payload: %{data: data}}) when is_map(data), do: data
+  defp event_data(%{"payload" => %{"data" => data}}) when is_map(data), do: data
+  defp event_data(_event), do: %{}
+
+  defp fingerprint(value),
+    do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+
+  defp safe_id(id), do: String.replace(id, ~r/[^a-zA-Z0-9_-]/u, "-")
+  defp valid_id?(id), do: Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]*\z/u, id)
+  defp list(value) when is_list(value), do: value
+  defp list(_value), do: []
+
+  defp stringify(map) when is_map(map),
+    do: Map.new(map, fn {key, value} -> {to_string(key), stringify(value)} end)
+
+  defp stringify(list) when is_list(list), do: Enum.map(list, &stringify/1)
+  defp stringify(value) when is_atom(value), do: to_string(value)
+  defp stringify(value), do: value
+end

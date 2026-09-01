@@ -50,6 +50,7 @@ const (
 
 type treeTabState struct {
 	selected int
+	expanded map[string]bool
 }
 
 type filesTabState struct {

@@ -330,7 +330,7 @@ every earlier item must finish before a high-value product or safety slice.
       visible import status. Focused attachment, provider, runtime, replay, and
       Go TUI coverage accompanies the end-to-end implementation.
 
-- [ ] Support `@` file references in conversation input
+- [x] Support `@` file references in conversation input
 
     - Recognize explicit file mentions such as `@lib/beam_agent.ex` and quoted
       paths containing spaces while preserving a clear escape for literal `@`
@@ -356,6 +356,24 @@ every earlier item must finish before a high-value product or safety slice.
     - Verify single and multiple mentions, quoted and Unicode paths, completion,
       literal `@`, ignored and out-of-workspace paths, symlinks, changed/deleted
       files, large and binary files, delegation, replay, and compaction.
+
+    Delivered: runtime-owned file-reference snapshots now preserve safe metadata
+    through commands, events, replay, and model context. The TUI provides
+    repository-backed completion for unquoted and quoted paths, middle-of-input
+    insertion, cursor preservation, literal/email exclusions, no-match behavior,
+    and keyboard selection without accidental submission.
+
+- [x] Establish reproducible end-to-end harness evaluations
+
+    - Added manifest-defined scenarios that copy fixture repositories into
+      isolated workspaces and run the complete Goal/session/provider/tool path.
+    - Acceptance may combine deterministic sandboxed commands, expected files,
+      bounded content assertions, and answer assertions.
+    - Every retained JSON report records verified completion rate, provider
+      routes, tokens, model/tool calls, delegated workers, approvals, denials,
+      repair attempts, stalls, cancellations, elapsed time, and the authoritative
+      workspace artifact. `mix beam_agent.eval MANIFEST` uses normal configured
+      provider profiles and supports bounded scenario concurrency.
 
 - [ ] Group low-level runtime activity into concise, expandable work blocks
 
@@ -388,6 +406,13 @@ every earlier item must finish before a high-value product or safety slice.
       updates, expand/collapse behavior, raw-event parity, bounded rendering for
       large histories, and foreground treatment of approvals and failures.
 
+    First slice delivered: `RuntimeWorkBlocks` deterministically folds canonical
+    goal events into per-worker semantic blocks with activity counts, files,
+    warnings, duration, and raw event identities. The Tree tab renders compact
+    blocks and expands them interactively while retaining `/events` as the raw
+    inspector. Moving this projection into the main chat transcript and adding
+    throttled live refresh remain.
+
 - [ ] Make active, waiting, blocked, and stalled work visually unmistakable
 
     - Derive status from runtime-owned process state and durable/ephemeral events,
@@ -408,6 +433,13 @@ every earlier item must finish before a high-value product or safety slice.
       approval`, highlight the critical blocking path in the worker tree, and
       provide direct inspect, approve, cancel, retry, or recover actions when
       policy allows them.
+
+    First slice delivered: a goal-owned `ProgressMonitor` classifies inference,
+    tools, delegation, verification, review, repair, approval waits, queueing,
+    blocking, terminal work, confirmed repeated-tool stalls, and evidence-based
+    suspected stalls. It records recovery when meaningful progress resumes. The
+    Tree tab shows shared active/waiting/blocked/stalled totals; critical-path
+    highlighting and direct per-worker actions remain.
     - Preserve status through replay and reconnect, and verify nested approvals,
       long model calls, hung tools, scheduler backpressure, retries, process
       restarts, disconnected clients, and false-positive stall thresholds with

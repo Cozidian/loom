@@ -22,6 +22,16 @@ defmodule BeamAgent.Goal.DelegationManager do
   def progress(goal_id, delegation_id, progress),
     do: call(goal_id, {:progress, delegation_id, progress})
 
+  def start(goal_id, handle, prompt) when is_binary(prompt) and prompt != "",
+    do: call(goal_id, {:start, handle, prompt})
+
+  def await(goal_id, delegation_id, timeout_ms \\ 120_000)
+      when is_binary(delegation_id) and is_integer(timeout_ms) and timeout_ms >= 0,
+      do: call(goal_id, {:await, delegation_id, timeout_ms}, :infinity)
+
+  def status(goal_id, delegation_id) when is_binary(delegation_id),
+    do: call(goal_id, {:status, delegation_id})
+
   def complete(
         goal_id,
         delegation_id,
@@ -42,7 +52,9 @@ defmodule BeamAgent.Goal.DelegationManager do
      %{
        goal_id: Keyword.fetch!(opts, :goal_id),
        root_session_id: Keyword.fetch!(opts, :session_id),
-       delegations: %{}
+       delegations: %{},
+       runs: %{},
+       awaiters: %{}
      }}
   end
 
@@ -83,6 +95,88 @@ defmodule BeamAgent.Goal.DelegationManager do
     transition(state, id, :running, :delegation_progressed, %{progress_fingerprint: fingerprint})
   end
 
+  def handle_call({:start, handle, prompt}, _from, state) do
+    id = handle.delegation_id
+
+    case {state.delegations[id], state.runs[id]} do
+      {%{worker_id: worker_id, status: status} = delegation, nil}
+      when worker_id == handle.worker_id and status in [:accepted, :requested] ->
+        with {:ok, supervisor} <- Names.pid(:goal_resource_supervisor, state.goal_id) do
+          manager = self()
+
+          task = fn ->
+            result = BeamAgent.Agent.ask(worker_id, prompt)
+            send(manager, {:delegation_runner_result, id, self(), result})
+          end
+
+          case DynamicSupervisor.start_child(supervisor, {Task, task}) do
+            {:ok, pid} ->
+              delegation = %{delegation | status: :running}
+
+              state =
+                state
+                |> put_in([:delegations, id], delegation)
+                |> put_in([:runs, id], %{pid: pid, monitor: Process.monitor(pid)})
+
+              record(state, :delegation_started, delegation, %{})
+              {:reply, :ok, state}
+
+            {:error, reason} ->
+              {:reply, {:error, {:delegation_start_failed, reason}}, state}
+          end
+        else
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+
+      {%{status: :running}, _run} ->
+        {:reply, {:error, :delegation_already_running}, state}
+
+      {%{status: :completed, result: result}, _run} ->
+        {:reply, {:ok, result}, state}
+
+      {nil, _run} ->
+        {:reply, {:error, :unknown_delegation}, state}
+
+      {_delegation, _run} ->
+        {:reply, {:error, :delegation_not_startable}, state}
+    end
+  end
+
+  def handle_call({:await, id, timeout_ms}, from, state) do
+    case state.delegations[id] do
+      %{status: :completed, result: result} ->
+        {:reply, {:ok, result}, state}
+
+      %{status: :failed, result: result} ->
+        {:reply, {:error, result}, state}
+
+      %{status: :cancelled} ->
+        {:reply, {:error, :cancelled}, state}
+
+      %{status: status} when status in [:running, :accepted, :requested] and timeout_ms == 0 ->
+        {:reply, {:error, :not_ready}, state}
+
+      %{status: status} when status in [:running, :accepted, :requested] ->
+        token = make_ref()
+        timer = Process.send_after(self(), {:delegation_await_timeout, id, token}, timeout_ms)
+        awaiter = %{from: from, timer: timer, token: token}
+        {:noreply, update_in(state, [:awaiters, id], &[awaiter | &1 || []])}
+
+      nil ->
+        {:reply, {:error, :unknown_delegation}, state}
+
+      %{status: status} ->
+        {:reply, {:error, {:delegation_not_awaitable, status}}, state}
+    end
+  end
+
+  def handle_call({:status, id}, _from, state) do
+    case state.delegations[id] do
+      nil -> {:reply, {:error, :unknown_delegation}, state}
+      delegation -> {:reply, {:ok, public_delegation(delegation)}, state}
+    end
+  end
+
   def handle_call({:complete, id, worker_id, content, verification}, _from, state) do
     case state.delegations[id] do
       %{worker_id: ^worker_id} = delegation ->
@@ -105,12 +199,77 @@ defmodule BeamAgent.Goal.DelegationManager do
     end
   end
 
-  def handle_call({:cancel, id, reason}, _from, state),
-    do: transition(state, id, :cancelled, :delegation_cancelled, %{reason: error_code(reason)})
+  def handle_call({:cancel, id, reason}, _from, state) do
+    case state.delegations[id] do
+      nil ->
+        {:reply, {:error, :unknown_delegation}, state}
+
+      %{status: status} when status in [:completed, :failed, :cancelled, :rejected] ->
+        {:reply, {:error, {:delegation_terminal, status}}, state}
+
+      delegation ->
+        state = stop_run(state, id)
+        delegation = %{delegation | status: :cancelled}
+        state = put_in(state, [:delegations, id], delegation)
+        record(state, :delegation_cancelled, delegation, %{reason: error_code(reason)})
+        state = reply_awaiters(state, id, {:error, :cancelled})
+        send(self(), {:stop_delegated_session, delegation.worker_id})
+        {:reply, :ok, state}
+    end
+  end
 
   def handle_call(:list, _from, state) do
-    values = state.delegations |> Map.values() |> Enum.sort_by(& &1.requested_at, DateTime)
+    values =
+      state.delegations
+      |> Map.values()
+      |> Enum.map(&public_delegation/1)
+      |> Enum.sort_by(& &1.requested_at, DateTime)
+
     {:reply, {:ok, values}, state}
+  end
+
+  @impl true
+  def handle_info({:delegation_runner_result, id, pid, result}, state) do
+    case state.runs[id] do
+      %{pid: ^pid, monitor: monitor} ->
+        Process.demonitor(monitor, [:flush])
+        state = %{state | runs: Map.delete(state.runs, id)}
+        {reply, state} = finish_async(state, id, result)
+        state = reply_awaiters(state, id, reply)
+        send(self(), {:stop_delegated_session, state.delegations[id].worker_id})
+        {:noreply, state}
+
+      _stale ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
+    case Enum.find(state.runs, fn {_id, run} -> run.monitor == monitor end) do
+      {id, _run} ->
+        state = %{state | runs: Map.delete(state.runs, id)}
+        {reply, state} = finish_async(state, id, {:error, {:runner_exit, reason}})
+        state = reply_awaiters(state, id, reply)
+        {:noreply, state}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:delegation_await_timeout, id, token}, state) do
+    {expired, retained} =
+      state.awaiters
+      |> Map.get(id, [])
+      |> Enum.split_with(&(&1.token == token))
+
+    Enum.each(expired, &GenServer.reply(&1.from, {:error, :await_timeout}))
+    {:noreply, put_awaiters(state, id, retained)}
+  end
+
+  def handle_info({:stop_delegated_session, worker_id}, state) do
+    _ = BeamAgent.stop_session(worker_id)
+    {:noreply, state}
   end
 
   defp transition(state, id, status, event, extra) do
@@ -151,8 +310,57 @@ defmodule BeamAgent.Goal.DelegationManager do
   defp error_code(reason) when is_tuple(reason), do: reason |> elem(0) |> error_code()
   defp error_code(_reason), do: "delegation_failed"
 
-  defp call(goal_id, message) do
+  defp finish_async(state, id, {:ok, content}) do
+    delegation = state.delegations[id]
+    result = WorkerResult.new(delegation.worker_id, id, :completed, content)
+    delegation = %{delegation | status: :completed, result: result}
+    state = put_in(state, [:delegations, id], delegation)
+
+    record(state, :delegation_completed, delegation, %{
+      result_fingerprint: hash(content),
+      verification_status: :unverified
+    })
+
+    {{:ok, result}, state}
+  end
+
+  defp finish_async(state, id, {:error, reason}) do
+    delegation = state.delegations[id]
+    result = WorkerResult.new(delegation.worker_id, id, :failed, inspect(reason))
+    delegation = %{delegation | status: :failed, result: result}
+    state = put_in(state, [:delegations, id], delegation)
+    record(state, :delegation_failed, delegation, %{reason: error_code(reason)})
+    {{:error, result}, state}
+  end
+
+  defp stop_run(state, id) do
+    case state.runs[id] do
+      nil ->
+        state
+
+      %{pid: pid, monitor: monitor} ->
+        Process.demonitor(monitor, [:flush])
+        Process.exit(pid, :shutdown)
+        %{state | runs: Map.delete(state.runs, id)}
+    end
+  end
+
+  defp reply_awaiters(state, id, reply) do
+    Enum.each(Map.get(state.awaiters, id, []), fn awaiter ->
+      Process.cancel_timer(awaiter.timer)
+      GenServer.reply(awaiter.from, reply)
+    end)
+
+    put_awaiters(state, id, [])
+  end
+
+  defp put_awaiters(state, id, []), do: %{state | awaiters: Map.delete(state.awaiters, id)}
+  defp put_awaiters(state, id, awaiters), do: put_in(state, [:awaiters, id], awaiters)
+
+  defp public_delegation(delegation), do: Map.take(delegation, Map.keys(delegation))
+
+  defp call(goal_id, message, timeout \\ 5_000) do
     with {:ok, pid} <- Names.pid(:goal_delegation_manager, goal_id),
-         do: GenServer.call(pid, message)
+         do: GenServer.call(pid, message, timeout)
   end
 end

@@ -15,6 +15,43 @@ type treeSnapshot struct {
 	Budget        *treeBudget             `json:"budget"`
 	ResourcePools map[string]resourcePool `json:"resource_pools"`
 	WorkspaceDiff *treeWorkspace          `json:"workspace_diff"`
+	WorkBlocks    []workBlock             `json:"work_blocks"`
+	Progress      *progressSnapshot       `json:"progress"`
+}
+
+type workBlock struct {
+	ID             string         `json:"id"`
+	WorkerID       string         `json:"worker_id"`
+	State          string         `json:"state"`
+	Phase          string         `json:"phase"`
+	Label          string         `json:"label"`
+	BlockingReason string         `json:"blocking_reason"`
+	Summary        string         `json:"summary"`
+	DurationMs     int64          `json:"duration_ms"`
+	Counts         map[string]int `json:"counts"`
+	Files          []string       `json:"files"`
+	EventIDs       []string       `json:"event_ids"`
+}
+
+type progressSnapshot struct {
+	Summary progressSummary  `json:"summary"`
+	Workers []progressWorker `json:"workers"`
+}
+
+type progressSummary struct {
+	Active  int `json:"active"`
+	Waiting int `json:"waiting"`
+	Blocked int `json:"blocked"`
+	Stalled int `json:"stalled"`
+}
+
+type progressWorker struct {
+	WorkerID         string `json:"worker_id"`
+	State            string `json:"state"`
+	Phase            string `json:"phase"`
+	BlockingReason   string `json:"blocking_reason"`
+	LastProgressAt   string `json:"last_progress_at"`
+	SuspectedStalled bool   `json:"suspected_stalled"`
 }
 
 type goalNode struct {

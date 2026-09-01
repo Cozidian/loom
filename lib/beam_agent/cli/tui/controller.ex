@@ -723,7 +723,9 @@ defmodule BeamAgent.CLI.TUI.Controller do
         summary: tree_summary(tree),
         budget: soft_fetch(fn -> Runtime.budget(state.runtime) end),
         resource_pools: soft_fetch(fn -> Runtime.resource_pools(state.runtime) end),
-        workspace_diff: soft_fetch(fn -> Runtime.diff_summary(state.runtime) end)
+        workspace_diff: soft_fetch(fn -> Runtime.diff_summary(state.runtime) end),
+        work_blocks: soft_fetch(fn -> Runtime.work_blocks(state.runtime) end) || [],
+        progress: soft_fetch(fn -> Runtime.progress(state.runtime) end)
       }
 
       notify(state, {:tree, payload})

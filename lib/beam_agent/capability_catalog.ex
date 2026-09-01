@@ -27,7 +27,10 @@ defmodule BeamAgent.CapabilityCatalog do
     BeamAgent.Tools.FileSymbols,
     BeamAgent.Tools.FileDiagnostics,
     BeamAgent.Tools.RunCommand,
-    BeamAgent.Tools.SpawnSubagent
+    BeamAgent.Tools.SpawnSubagent,
+    BeamAgent.Tools.AwaitSubagent,
+    BeamAgent.Tools.SubagentStatus,
+    BeamAgent.Tools.CancelSubagent
   ]
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)

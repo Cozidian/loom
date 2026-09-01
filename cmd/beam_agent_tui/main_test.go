@@ -1870,6 +1870,45 @@ func TestTreeTabArrowKeysMoveSelection(t *testing.T) {
 	}
 }
 
+func TestTreeTabRendersAndExpandsRuntimeWorkBlocks(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.applyBackend(packet{
+		Type: "tree",
+		Root: &goalNode{SessionID: "session-root", Role: "root", State: "running"},
+		WorkBlocks: []workBlock{
+			{
+				ID:         "work-block-1",
+				WorkerID:   "session-root",
+				State:      "active",
+				Phase:      "implementing",
+				Label:      "Implementing",
+				Summary:    "2 reads · 1 write",
+				Files:      []string{"lib/beam_agent.ex"},
+				EventIDs:   []string{"one", "two", "three"},
+				DurationMs: 1200,
+			},
+		},
+		Progress: &progressSnapshot{Summary: progressSummary{Active: 1, Stalled: 1}},
+	})
+	m.switchTab(tabTree)
+	m.treeTab.selected = 1
+
+	content := m.View().Content
+	if !strings.Contains(content, "WORK BLOCKS") || !strings.Contains(content, "Implementing") {
+		t.Fatalf("expected compact work block, got %q", content)
+	}
+	if !strings.Contains(content, "1 active") || !strings.Contains(content, "1 stalled") {
+		t.Fatalf("expected runtime progress summary, got %q", content)
+	}
+
+	next, _ := m.updateTreeTab("enter")
+	updated := next.(model)
+	content = updated.View().Content
+	if !strings.Contains(content, "lib/beam_agent.ex") || !strings.Contains(content, "3 recorded") {
+		t.Fatalf("expected expanded work-block evidence, got %q", content)
+	}
+}
+
 func TestDigitKeyTypesIntoComposerWhenNotEmpty(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	m.composer.SetValue("port 8")

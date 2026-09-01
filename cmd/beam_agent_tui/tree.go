@@ -39,15 +39,82 @@ func (m model) renderTreeList(width int) string {
 		}
 	}
 
+	if len(m.treeData.WorkBlocks) > 0 {
+		workerCount := 0
+		if m.treeData.Root != nil {
+			workerCount = len(flattenGoalTree(*m.treeData.Root))
+		}
+
+		fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("WORK BLOCKS"))
+		for i, block := range m.treeData.WorkBlocks {
+			selected := m.treeTab.selected == workerCount+i
+			fmt.Fprintf(&b, "%s\n", m.renderWorkBlock(block, selected, width))
+			if m.treeTab.expanded[block.ID] {
+				fmt.Fprintf(&b, "%s\n", renderWorkBlockDetails(block, width))
+			}
+		}
+	}
+
 	summary := m.treeData.Summary
 	fmt.Fprintf(&b, "\n%s\n", mutedStyle.Render(strings.Repeat("─", max(0, width))))
 	fmt.Fprintf(&b, "%s\n", styleFaint.Render(fmt.Sprintf(
 		"%d workers · %d running · %d completed · %d failed · %d restarts",
 		summary.WorkerCount, summary.RunningCount, summary.CompletedCount, summary.FailedCount, summary.RestartCount,
 	)))
-	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · esc back to chat"))
+	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · enter expand · r refresh · esc chat"))
 
 	return b.String()
+}
+
+func (m model) renderWorkBlock(block workBlock, selected bool, width int) string {
+	disclosure := "▸"
+	if m.treeTab.expanded[block.ID] {
+		disclosure = "▾"
+	}
+	glyph, glyphStyle := workBlockGlyph(block)
+	left := fmt.Sprintf("%s %s %s", disclosure, glyphStyle.Render(glyph), block.Label)
+	right := block.Summary
+	if block.DurationMs > 0 {
+		right += fmt.Sprintf(" · %.1fs", float64(block.DurationMs)/1000)
+	}
+	line := joinEdges(left, styleFaint.Render(right), width)
+	if selected {
+		return bodyStyle.Background(colPanel).Render(line)
+	}
+	return bodyStyle.Render(line)
+}
+
+func workBlockGlyph(block workBlock) (string, lipgloss.Style) {
+	if block.Phase == "suspected_stalled" || block.Phase == "stalled" {
+		return "!", styleRose
+	}
+	switch block.State {
+	case "completed":
+		return "✓", styleMint
+	case "failed":
+		return "×", styleRose
+	case "cancelled":
+		return "×", styleFaint
+	case "waiting", "blocked":
+		return "◌", styleSand
+	default:
+		return "◍", styleSand
+	}
+}
+
+func renderWorkBlockDetails(block workBlock, width int) string {
+	lines := []string{
+		"  " + styleFaint.Render("worker") + "  " + shortSession(block.WorkerID),
+		"  " + styleFaint.Render("phase") + "   " + strings.ReplaceAll(block.Phase, "_", " "),
+	}
+	if block.BlockingReason != "" {
+		lines = append(lines, "  "+styleRose.Render("blocked")+" "+block.BlockingReason)
+	}
+	if len(block.Files) > 0 {
+		lines = append(lines, "  "+styleFaint.Render("files")+"   "+strings.Join(block.Files, ", "))
+	}
+	lines = append(lines, "  "+styleFaint.Render("events")+fmt.Sprintf("  %d recorded", len(block.EventIDs)))
+	return lipgloss.NewStyle().Width(max(1, width-2)).Foreground(colDim).Render(strings.Join(lines, "\n"))
 }
 
 type treeLine struct {
@@ -158,6 +225,18 @@ func (m model) renderTreeSidebar() string {
 		fmt.Fprintf(&b, "%s\n", styleFaint.Render("idle"))
 	}
 
+	if progress := m.treeData.Progress; progress != nil {
+		fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("LIVE STATE"))
+		fmt.Fprintf(&b, "%s\n", bodyStyle.Render(fmt.Sprintf(
+			"%d active · %d waiting", progress.Summary.Active, progress.Summary.Waiting,
+		)))
+		if progress.Summary.Blocked > 0 || progress.Summary.Stalled > 0 {
+			fmt.Fprintf(&b, "%s\n", styleRose.Render(fmt.Sprintf(
+				"%d blocked · %d stalled", progress.Summary.Blocked, progress.Summary.Stalled,
+			)))
+		}
+	}
+
 	return b.String()
 }
 
@@ -176,7 +255,7 @@ func (m model) updateTreeTab(key string) (tea.Model, tea.Cmd) {
 	if m.treeData == nil || m.treeData.Root == nil {
 		return m, nil
 	}
-	count := len(flattenGoalTree(*m.treeData.Root))
+	count := len(flattenGoalTree(*m.treeData.Root)) + len(m.treeData.WorkBlocks)
 	switch key {
 	case "up", "k":
 		if m.treeTab.selected > 0 {
@@ -186,6 +265,18 @@ func (m model) updateTreeTab(key string) (tea.Model, tea.Cmd) {
 		if m.treeTab.selected < count-1 {
 			m.treeTab.selected++
 		}
+	case "enter":
+		workerCount := len(flattenGoalTree(*m.treeData.Root))
+		index := m.treeTab.selected - workerCount
+		if index >= 0 && index < len(m.treeData.WorkBlocks) {
+			if m.treeTab.expanded == nil {
+				m.treeTab.expanded = make(map[string]bool)
+			}
+			id := m.treeData.WorkBlocks[index].ID
+			m.treeTab.expanded[id] = !m.treeTab.expanded[id]
+		}
+	case "r":
+		return m, m.refreshTabCmd(tabTree)
 	}
 	return m, nil
 }

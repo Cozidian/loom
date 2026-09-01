@@ -69,6 +69,8 @@ defmodule BeamAgent.Runtime do
     do: Client.inspect_events(client, query, opts)
 
   def goal_tree(client), do: Client.goal_tree(client)
+  def work_blocks(client), do: Client.work_blocks(client)
+  def progress(client), do: Client.progress(client)
   def budget(client), do: Client.budget(client)
   def repository(client), do: Client.repository(client)
   def project_context(client, request \\ %{}), do: Client.project_context(client, request)

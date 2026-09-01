@@ -817,13 +817,40 @@ defmodule BeamAgent.Strategies.ToolLoop do
       data = event["data"] || %{}
 
       event["type"] == "tool_result" and data["turn"] == turn and
-        data["is_error"] == false and action_tool?(calls[data["tool_call_id"]], context)
+        data["is_error"] == false and
+        action_tool?(calls[data["tool_call_id"]], data, context)
     end)
   end
 
-  defp action_tool?("mcp__" <> _name, _context), do: true
+  defp action_tool?("mcp__" <> _name, _result, _context), do: true
 
-  defp action_tool?(name, context) when is_binary(name) do
+  defp action_tool?("run_command", result, _context) do
+    case JSON.decode(result["content"] || "") do
+      {:ok, %{"changed_files" => [_ | _]}} -> true
+      _other -> false
+    end
+  end
+
+  defp action_tool?("spawn_subagent", result, _context) do
+    case JSON.decode(result["content"] || "") do
+      {:ok, %{"background" => true}} -> false
+      {:ok, %{"status" => status}} -> status in ["completed", "succeeded"]
+      _other -> false
+    end
+  end
+
+  defp action_tool?("await_subagent", result, _context) do
+    case JSON.decode(result["content"] || "") do
+      {:ok, %{"status" => status}} -> status in ["completed", "succeeded"]
+      _other -> false
+    end
+  end
+
+  defp action_tool?(name, _result, _context)
+       when name in ["subagent_status", "cancel_subagent"],
+       do: false
+
+  defp action_tool?(name, _result, context) when is_binary(name) do
     case CapabilityCatalog.tool(name) do
       {:ok, module} ->
         access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
@@ -836,7 +863,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp action_tool?(_name, _context), do: false
+  defp action_tool?(_name, _result, _context), do: false
 
   defp action_required?(context) do
     contract = Map.get(context, :work_contract)
@@ -1107,9 +1134,31 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp implementation_tool_names(context, tool_schemas) do
     tool_schemas
     |> Enum.map(& &1.name)
-    |> Enum.filter(&action_tool?(&1, context))
+    |> Enum.filter(&action_capable_tool?(&1, context))
     |> Enum.sort()
   end
+
+  defp action_capable_tool?("run_command", _context), do: true
+  defp action_capable_tool?("mcp__" <> _name, _context), do: true
+
+  defp action_capable_tool?(name, _context)
+       when name in ["subagent_status", "cancel_subagent"],
+       do: false
+
+  defp action_capable_tool?(name, context) when is_binary(name) do
+    case CapabilityCatalog.tool(name) do
+      {:ok, module} ->
+        access = if function_exported?(module, :access, 0), do: module.access(), else: :trusted
+
+        (access == :write and name != "reload_context") or
+          (access == :delegate and not direct_implementation_worker?(context))
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp action_capable_tool?(_name, _context), do: false
 
   defp direct_implementation_worker?(%{
          agent_spec: %{execution_strategy: %{id: "implement"}}

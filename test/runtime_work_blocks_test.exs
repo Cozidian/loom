@@ -1,0 +1,59 @@
+defmodule BeamAgent.RuntimeWorkBlocksTest do
+  use ExUnit.Case, async: true
+
+  alias BeamAgent.RuntimeWorkBlocks
+
+  test "groups low-level activity into one semantic worker block" do
+    events = [
+      event(1, "goal_work_started", %{}),
+      event(2, "turn_started", %{"turn" => 1}),
+      event(3, "model_response_started", %{}),
+      event(4, "tool_called", %{"name" => "read_file", "arguments" => %{"path" => "lib/a.ex"}}),
+      event(5, "tool_result", %{"name" => "read_file"}),
+      event(6, "tool_called", %{"name" => "apply_patch", "arguments" => %{"path" => "lib/a.ex"}}),
+      event(7, "tool_result", %{"name" => "apply_patch"}),
+      event(8, "verification_started", %{}),
+      event(9, "verification_check_finished", %{"status" => "passed"}),
+      event(10, "turn_finished", %{"reason" => "completed"})
+    ]
+
+    assert [block] = RuntimeWorkBlocks.project(events)
+    assert block.worker_id == "root"
+    assert block.state == :completed
+    assert block.label == "Implemented changes"
+    assert block.files == ["lib/a.ex"]
+    assert block.counts.reads == 1
+    assert block.counts.writes == 1
+    assert block.counts.model_calls == 1
+    assert block.counts.verification_checks == 1
+    assert block.duration_ms == 9_000
+    assert block.summary =~ "1 read"
+    assert block.summary =~ "1 write"
+  end
+
+  test "keeps stalls and warnings prominent inside the block summary" do
+    events = [
+      event(1, "turn_started", %{"turn" => 1}),
+      event(2, "worker_stall_suspected", %{"worker_id" => "root"}),
+      event(3, "worker_progress_resumed", %{"worker_id" => "root"}),
+      event(4, "tool_loop_stalled", %{}),
+      event(5, "turn_finished", %{"reason" => "error"})
+    ]
+
+    assert [block] = RuntimeWorkBlocks.project(events)
+    assert block.state == :failed
+    assert block.counts.warnings == 2
+    assert block.summary =~ "2 warnings"
+  end
+
+  defp event(seq, type, data) do
+    %{
+      durability: :durable,
+      event_id: "root:#{seq}",
+      goal_seq: seq,
+      at: "2026-09-01T10:00:#{String.pad_leading(Integer.to_string(seq), 2, "0")}Z",
+      scope: %{worker_id: "root"},
+      payload: %{type: type, data: data}
+    }
+  end
+end

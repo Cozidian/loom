@@ -23,6 +23,9 @@ It includes:
 - content-free model/task outcomes with later verification attachment;
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
+- background child workers with durable handles, independent await/status/cancel, and concurrent execution;
+- contract-scoped filesystem deltas that attribute actual workspace mutations, including command-generated files;
+- goal-owned progress/stall supervision and expandable semantic work blocks;
 - mailbox-driven turn cancellation with linked, monitored turn workers;
 - live, provider-native response streaming with session-scoped subscribers;
 - versioned, goal-wide runtime events spanning parent and child sessions;
@@ -173,6 +176,15 @@ behind; callers can opt into isolated write-capable lanes with `isolation:
 `provider_profile`, or `provider` pins remain subject to capability, locality,
 privacy, health, and budget policy. Verified coding races require worktree
 isolation.
+
+Ordinary delegation can also overlap without becoming a race. A model may call
+`spawn_subagent` with `background: true`, continue useful parent work, inspect
+the handle with `subagent_status`, collect it with `await_subagent`, or terminate
+its supervised subtree with `cancel_subagent`. Completion does not treat merely
+starting or polling a background worker as delivered implementation; the parent
+must collect a completed result before relying on it. `/tree` groups the
+canonical activity into expandable work blocks and shows runtime-owned
+active/waiting/blocked/stalled totals.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
@@ -487,6 +499,17 @@ supervised owner process and therefore its in-flight invocation.
 mix test
 mix beam_agent.demo
 ```
+
+Run repeatable end-to-end coding evaluations against configured providers with:
+
+```sh
+mix beam_agent.eval evals/coding.json --profile openai-chatgpt
+```
+
+See [`evals/README.md`](evals/README.md) for the manifest format. Each run keeps
+its isolated fixture workspace, runtime logs, and a JSON report containing
+verified completion, latency, routes, tokens, tool/model calls, interventions,
+repairs, stalls, cancellations, and final workspace evidence.
 
 The deterministic demo provider first calls `add`, then calls
 `spawn_subagent`, then produces a final answer. This makes the complete harness

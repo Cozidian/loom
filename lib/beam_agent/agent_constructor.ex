@@ -492,7 +492,15 @@ defmodule BeamAgent.AgentConstructor do
         allowed_tools =
           authority.effective
           |> effective_tool_names(parent.goal_id)
-          |> Enum.reject(&(&1 in ["delegate_tasks", "spawn_subagent"]))
+          |> Enum.reject(
+            &(&1 in [
+                "delegate_tasks",
+                "spawn_subagent",
+                "await_subagent",
+                "subagent_status",
+                "cancel_subagent"
+              ])
+          )
 
         reason =
           if depth >= maximum,

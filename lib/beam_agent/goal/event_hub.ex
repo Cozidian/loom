@@ -123,6 +123,12 @@ defmodule BeamAgent.Goal.EventHub do
     end
   end
 
+  def work_blocks(goal_id) do
+    with {:ok, events} <- events(goal_id, view: :public) do
+      {:ok, BeamAgent.RuntimeWorkBlocks.project(events)}
+    end
+  end
+
   def next_sequence(goal_id) do
     with {:ok, pid} <- Names.pid(:goal_event_hub, goal_id) do
       GenServer.call(pid, :next_sequence)

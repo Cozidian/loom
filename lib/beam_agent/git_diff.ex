@@ -121,7 +121,7 @@ defmodule BeamAgent.GitDiff do
   defp untracked_patch(workspace_root, path) do
     case System.cmd("git", ["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", path],
            cd: workspace_root,
-           stderr_to_stdout: false
+           stderr_to_stdout: true
          ) do
       {output, exit_code} when exit_code in [0, 1] -> output
       _other -> ""
@@ -141,7 +141,7 @@ defmodule BeamAgent.GitDiff do
   defp scope(_path), do: {:error, :invalid_git_path}
 
   defp git(workspace_root, args) do
-    case System.cmd("git", args, cd: workspace_root, stderr_to_stdout: false) do
+    case System.cmd("git", args, cd: workspace_root, stderr_to_stdout: true) do
       {output, 0} -> {:ok, output}
       {_output, status} -> {:error, {:git_command_failed, Enum.at(args, 0), status}}
     end

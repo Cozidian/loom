@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "metadata": {
+    "suite": "beam-agent-coding",
+    "description": "Small end-to-end coding tasks with deterministic acceptance checks"
+  },
+  "scenarios": [
+    {
+      "id": "clipboard-image-paste",
+      "fixture": "fixtures/clipboard_image_paste",
+      "prompt": "Implement the clipboard image paste contract described in README.md. Keep the public API small, reject invalid clipboard items, and make every test pass. Do not weaken or replace the tests.",
+      "timeout_ms": 300000,
+      "checks": [
+        {
+          "id": "tests",
+          "command": "mix test",
+          "timeout_ms": 120000
+        },
+        {
+          "id": "compile",
+          "command": "mix compile --warnings-as-errors",
+          "timeout_ms": 120000
+        }
+      ],
+      "expect": {
+        "files": ["lib/clipboard_fixture/editor.ex"],
+        "file_contains": [
+          {
+            "path": "lib/clipboard_fixture/editor.ex",
+            "text": "image/png"
+          },
+          {
+            "path": "lib/clipboard_fixture/editor.ex",
+            "text": "unsupported_clipboard_item"
+          }
+        ]
+      }
+    }
+  ]
+}

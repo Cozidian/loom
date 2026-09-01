@@ -42,6 +42,8 @@ defmodule BeamAgent.Runtime.Client do
     do: GenServer.call(client, {:inspect_events, query, opts})
 
   def goal_tree(client), do: GenServer.call(client, :goal_tree)
+  def work_blocks(client), do: GenServer.call(client, :work_blocks)
+  def progress(client), do: GenServer.call(client, :progress)
   def budget(client), do: GenServer.call(client, :budget)
   def repository(client), do: GenServer.call(client, :repository)
   def project_context(client, request), do: GenServer.call(client, {:project_context, request})
@@ -297,6 +299,12 @@ defmodule BeamAgent.Runtime.Client do
   def handle_call(:goal_tree, _from, state) do
     {:reply, BeamAgent.goal_tree(state.goal_id), state}
   end
+
+  def handle_call(:work_blocks, _from, state),
+    do: {:reply, BeamAgent.work_blocks(state.goal_id), state}
+
+  def handle_call(:progress, _from, state),
+    do: {:reply, BeamAgent.progress(state.goal_id), state}
 
   def handle_call(:budget, _from, state), do: {:reply, BeamAgent.budget(state.goal_id), state}
 

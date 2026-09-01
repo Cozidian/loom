@@ -271,7 +271,7 @@ defmodule BeamAgent.StreamingRuntimeTest do
     :ok = BeamAgent.subscribe(session_id)
     caller = Task.async(fn -> BeamAgent.ask(session_id, "wait", 5_000) end)
 
-    assert_receive {:beam_agent_stream, %{type: :text_delta, delta: "started"}}
+    assert_receive {:beam_agent_stream, %{type: :text_delta, delta: "started"}}, 500
     assert :ok = BeamAgent.cancel(session_id)
     assert {:error, :cancelled} = Task.await(caller)
 

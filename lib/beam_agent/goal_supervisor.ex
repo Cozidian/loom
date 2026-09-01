@@ -11,6 +11,7 @@ defmodule BeamAgent.GoalSupervisor do
     EventHub,
     ModelLease,
     OrganizationManager,
+    ProgressMonitor,
     ProviderBidCoordinator,
     ResourceSupervisor,
     SecretBroker
@@ -57,7 +58,8 @@ defmodule BeamAgent.GoalSupervisor do
         {ResourceSupervisor, opts},
         {Task.Supervisor, name: Names.via(:goal_verification_supervisor, goal_id)},
         {Registry, opts},
-        session
+        session,
+        {ProgressMonitor, opts}
       ],
       strategy: :rest_for_one
     )

@@ -121,6 +121,25 @@ defmodule BeamAgent do
 
   def worker_delegations(goal_id), do: BeamAgent.Goal.DelegationManager.list(goal_id)
 
+  def start_worker(%BeamAgent.WorkerHandle{} = handle, prompt) when is_binary(prompt),
+    do: BeamAgent.Goal.DelegationManager.start(handle.goal_id, handle, prompt)
+
+  def await_worker(%BeamAgent.WorkerHandle{} = handle, timeout_ms \\ 120_000),
+    do: BeamAgent.Goal.DelegationManager.await(handle.goal_id, handle.delegation_id, timeout_ms)
+
+  def await_delegation(goal_id, delegation_id, timeout_ms \\ 120_000),
+    do: BeamAgent.Goal.DelegationManager.await(goal_id, delegation_id, timeout_ms)
+
+  def worker_status(goal_id, delegation_id),
+    do: BeamAgent.Goal.DelegationManager.status(goal_id, delegation_id)
+
+  def cancel_delegation(goal_id, delegation_id, reason \\ :cancelled) do
+    with {:ok, delegation} <- worker_status(goal_id, delegation_id),
+         :ok <- BeamAgent.Goal.DelegationManager.cancel(goal_id, delegation_id, reason) do
+      stop_session(delegation.worker_id)
+    end
+  end
+
   def execute_decomposition(parent_session_id, plan, opts \\ []),
     do: BeamAgent.Goal.DecompositionExecutor.run(parent_session_id, plan, opts)
 
@@ -320,6 +339,8 @@ defmodule BeamAgent do
   def sync_goal(goal_id), do: EventHub.sync(goal_id)
 
   def goal_tree(goal_id), do: EventHub.goal_tree(goal_id)
+  def work_blocks(goal_id), do: EventHub.work_blocks(goal_id)
+  def progress(goal_id), do: BeamAgent.Goal.ProgressMonitor.snapshot(goal_id)
   def verify(goal_id, plan \\ :auto), do: Verifier.run(goal_id, plan)
   def cancel_verification(goal_id), do: Verifier.cancel(goal_id)
 

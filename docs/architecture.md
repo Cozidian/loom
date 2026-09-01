@@ -62,18 +62,19 @@ BeamAgent.Supervisor
                 ├── GoalVerificationSupervisor (Task.Supervisor)
                 │   └── Goal.Verifier task (temporary, on demand)
                 ├── MCP.Registry (GenServer, discovery and namespaced tools)
-                └── SessionSupervisor (:rest_for_one)
-                    ├── EventLog (GenServer, append-only JSONL)
-                    ├── StreamHub (GenServer, live fan-out and checkpoints)
-                    ├── ResourceSupervisor (DynamicSupervisor)
-                    ├── Context (GenServer, instructions and skill snapshot)
-                    ├── ConversationContext (GenServer, model projection)
-                    ├── FileTracker (GenServer, observed file generations)
-                    ├── ToolPolicy (GenServer, approvals and pending callers)
-                    ├── SubagentSupervisor (DynamicSupervisor)
-                    │   └── SessionSupervisor (one per child, recursively)
-                    ├── Agent (GenServer)
-                    └── CodexAppServer.Conversation (ChatGPT profiles only)
+                ├── SessionSupervisor (:rest_for_one)
+                │   ├── EventLog (GenServer, append-only JSONL)
+                │   ├── StreamHub (GenServer, live fan-out and checkpoints)
+                │   ├── ResourceSupervisor (DynamicSupervisor)
+                │   ├── Context (GenServer, instructions and skill snapshot)
+                │   ├── ConversationContext (GenServer, model projection)
+                │   ├── FileTracker (GenServer, observed file generations)
+                │   ├── ToolPolicy (GenServer, approvals and pending callers)
+                │   ├── SubagentSupervisor (DynamicSupervisor)
+                │   │   └── SessionSupervisor (one per child, recursively)
+                │   ├── Agent (GenServer)
+                │   └── CodexAppServer.Conversation (ChatGPT profiles only)
+                └── Goal.ProgressMonitor (GenServer, worker activity and stall state)
 ```
 
 The canonical workspace determines a stable project identity, so separate goals
@@ -96,6 +97,28 @@ existing clients do not need to change. A goal-state failure rebuilds the
 dependent session from its event log; sibling goals remain isolated. Nested
 subagent sessions remain inside the root session for now and inherit the
 project and goal identity from their parent process.
+
+Each contract captures a filesystem-authoritative starting snapshot. Its final
+`WorkArtifact` compares actual repository state rather than trusting named edit
+tools, so command-generated, deleted, and externally produced paths participate
+in verification and patch fingerprints while pre-existing dirty state remains
+distinguishable. Runtime data is excluded even when tests deliberately place the
+data directory inside the workspace.
+
+Delegation has both compatibility and actor-native forms. The original
+`spawn_subagent` call may still await one child synchronously; background mode
+returns a durable delegation handle immediately. `DelegationManager` starts the
+runner beneath the Goal resource supervisor, monitors it, stores its terminal
+`WorkerResult`, wakes independent awaiters, and owns cancellation. Several
+children can therefore run concurrently while the parent continues useful work.
+
+`Goal.ProgressMonitor` subscribes to the same canonical runtime stream and owns
+the shared worker-state vocabulary. It distinguishes active work, provider
+inference, tools, delegation, verification, review, repair, approval waits,
+queueing, blocking, confirmed no-progress loops, and suspected silence. A later
+meaningful event records recovery rather than leaving an interface timer to
+guess. `RuntimeWorkBlocks` is a pure replayable projection of those facts for
+all clients; the Go TUI only renders and expands it.
 
 Every root and delegated worker receives a validated `AgentSpec` before its
 `Agent` process starts. The value keeps soft configuration—goal, role,

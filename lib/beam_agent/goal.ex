@@ -3,7 +3,16 @@ defmodule BeamAgent.Goal do
   use GenServer
 
   alias BeamAgent.{Agent, Names, OutcomeStore, TaskClassifier, WorkContract}
-  alias BeamAgent.Goal.{ContextPacket, ModelLease, Reviewer, Verifier, WorkArtifact}
+
+  alias BeamAgent.Goal.{
+    ContextPacket,
+    ModelLease,
+    Reviewer,
+    Verifier,
+    WorkArtifact,
+    WorkspaceSnapshot
+  }
+
   alias BeamAgent.Project.PathLeaseManager
   alias BeamAgent.Session.EventLog
 
@@ -33,6 +42,7 @@ defmodule BeamAgent.Goal do
        goal_id: Keyword.fetch!(opts, :goal_id),
        project_id: Keyword.fetch!(opts, :project_id),
        session_id: Keyword.fetch!(opts, :session_id),
+       data_dir: Keyword.fetch!(opts, :data_dir),
        workspace_root: Keyword.fetch!(opts, :workspace_root),
        objective: Keyword.get(opts, :objective),
        agent_spec: Keyword.fetch!(opts, :agent_spec),
@@ -50,7 +60,12 @@ defmodule BeamAgent.Goal do
   def handle_call({:submit, prompt, attachment_ids}, from, %{current_work: nil} = state) do
     objective = if String.trim(prompt) == "", do: "Process the attached user input", else: prompt
 
-    with {:ok, context_packet} <- ContextPacket.build(state.project_id, objective),
+    with {:ok, workspace_baseline} <-
+           WorkspaceSnapshot.capture(state.project_id,
+             workspace_root: state.workspace_root,
+             data_dir: state.data_dir
+           ),
+         {:ok, context_packet} <- ContextPacket.build(state.project_id, objective),
          {:ok, contract} <-
            WorkContract.new(objective, state.workspace_root, context_packet: context_packet),
          {:ok, event} <-
@@ -70,7 +85,8 @@ defmodule BeamAgent.Goal do
         review: nil,
         attempts: 0,
         failure_fingerprints: MapSet.new(),
-        cancel_requested: false
+        cancel_requested: false,
+        workspace_baseline: workspace_baseline
       }
 
       case launch_stage(state, current, :executing, fn ->
@@ -390,7 +406,13 @@ defmodule BeamAgent.Goal do
   defp build_artifact(state, current, result \\ nil) do
     result = result || current.candidate_result || {:error, :no_candidate}
 
-    case WorkArtifact.build(state, current.contract, result, current.started_event_id) do
+    case WorkArtifact.build(
+           state,
+           current.contract,
+           result,
+           current.started_event_id,
+           current.workspace_baseline
+         ) do
       {:ok, artifact} -> artifact
       {:error, _reason} -> nil
     end

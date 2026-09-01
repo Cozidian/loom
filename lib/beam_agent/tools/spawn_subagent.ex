@@ -53,7 +53,11 @@ defmodule BeamAgent.Tools.SpawnSubagent do
           type: "object",
           properties: %{required: %{type: "boolean"}}
         },
-        completion_criteria: %{type: "string"}
+        completion_criteria: %{type: "string"},
+        background: %{
+          type: "boolean",
+          description: "Return a handle immediately and let the worker run concurrently"
+        }
       },
       required: ["prompt"]
     }
@@ -106,27 +110,41 @@ defmodule BeamAgent.Tools.SpawnSubagent do
     ]
 
     with {:ok, handle} <- BeamAgent.spawn_worker(context.session_id, opts[:agent_proposal], opts) do
-      try do
-        case BeamAgent.ask(handle.worker_id, prompt) do
-          {:ok, answer} ->
-            {:ok, result} = BeamAgent.complete_worker(handle, answer)
-
-            {:ok,
-             JSON.encode!(%{
-               child_session_id: handle.worker_id,
-               delegation_id: handle.delegation_id,
-               agent_spec_id: handle.spec_id,
-               role: handle.role,
-               status: result.status,
-               answer: answer
-             })}
-
-          {:error, reason} = error ->
-            _ = BeamAgent.cancel_worker(handle, reason)
-            error
+      if Map.get(arguments, "background", false) do
+        with :ok <- BeamAgent.start_worker(handle, prompt) do
+          {:ok,
+           JSON.encode!(%{
+             child_session_id: handle.worker_id,
+             delegation_id: handle.delegation_id,
+             agent_spec_id: handle.spec_id,
+             role: handle.role,
+             status: "running",
+             background: true
+           })}
         end
-      after
-        _ = BeamAgent.stop_session(handle.worker_id)
+      else
+        try do
+          case BeamAgent.ask(handle.worker_id, prompt) do
+            {:ok, answer} ->
+              {:ok, result} = BeamAgent.complete_worker(handle, answer)
+
+              {:ok,
+               JSON.encode!(%{
+                 child_session_id: handle.worker_id,
+                 delegation_id: handle.delegation_id,
+                 agent_spec_id: handle.spec_id,
+                 role: handle.role,
+                 status: result.status,
+                 answer: answer
+               })}
+
+            {:error, reason} = error ->
+              _ = BeamAgent.cancel_worker(handle, reason)
+              error
+          end
+        after
+          _ = BeamAgent.stop_session(handle.worker_id)
+        end
       end
     end
   end

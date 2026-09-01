@@ -62,8 +62,42 @@ defmodule BeamAgent.VerificationTest do
     end
   end
 
+  defmodule CommandMutationProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :command_mutation_verification_test
+
+    @impl true
+    def complete(messages, _tools, options) do
+      system_prompt = options[:system_prompt] || ""
+
+      cond do
+        String.contains?(system_prompt, "Role: Mandatory completion reviewer") ->
+          {:ok, %{content: "REVIEW_PASS\nThe generated file is present.", tool_calls: []}}
+
+        Enum.any?(messages, &(&1.role == :tool and &1.name == "run_command")) ->
+          {:ok, %{content: "Generated the requested file.", tool_calls: []}}
+
+        true ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "generate-file",
+                 name: "run_command",
+                 arguments: %{"command" => "printf generated > generated.txt"}
+               }
+             ]
+           }}
+      end
+    end
+  end
+
   setup_all do
     :ok = BeamAgent.CapabilityCatalog.register_provider(RecoveryAndReviewProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(CommandMutationProvider)
     :ok
   end
 
@@ -114,6 +148,42 @@ defmodule BeamAgent.VerificationTest do
 
     assert {:error, :invalid_verification_plan} =
              VerificationPlan.new(%{version: 2, source: "test", checks: [%{command: "true"}]})
+  end
+
+  @tag :darwin
+  test "command-created files enter the work artifact and trigger automatic verification",
+       context do
+    if :os.type() != {:unix, :darwin} do
+      :ok
+    else
+      config_dir = Path.join(context.workspace, ".beam_agent")
+      File.mkdir_p!(config_dir)
+
+      File.write!(
+        Path.join(config_dir, "verification.json"),
+        JSON.encode!(%{
+          version: 1,
+          checks: [%{id: "generated", command: "test -f generated.txt", timeout_ms: 5_000}]
+        })
+      )
+
+      assert {:ok, session_id} =
+               BeamAgent.start_session(
+                 data_dir: context.data_dir,
+                 workspace_root: context.workspace,
+                 provider: :command_mutation_verification_test,
+                 approval_policy: :auto
+               )
+
+      assert {:ok, "Generated the requested file."} =
+               BeamAgent.ask(session_id, "implement the generated file")
+
+      assert {:ok, goal} = BeamAgent.goal(session_id)
+      assert goal.last_work.verification.status == :passed
+      assert goal.last_work.artifact.changed_files == ["generated.txt"]
+      assert goal.last_work.artifact.workspace_delta.preexisting_dirty == false
+      assert "run_command" in goal.last_work.artifact.mutation_sources
+    end
   end
 
   @tag :darwin

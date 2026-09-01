@@ -93,6 +93,8 @@ type packet struct {
 	RawPatch            string                  `json:"raw_patch,omitempty"`
 	Status              string                  `json:"status,omitempty"`
 	WorkspaceDiff       *treeWorkspace          `json:"workspace_diff,omitempty"`
+	WorkBlocks          []workBlock             `json:"work_blocks,omitempty"`
+	Progress            *progressSnapshot       `json:"progress,omitempty"`
 	CompetitionEvents   []map[string]any        `json:"competition_events,omitempty"`
 	RaceEvents          []map[string]any        `json:"race_events,omitempty"` // legacy bridge payload
 }
@@ -1253,6 +1255,8 @@ func (m *model) applyBackend(message packet) {
 			Budget:        message.Budget,
 			ResourcePools: message.ResourcePools,
 			WorkspaceDiff: message.WorkspaceDiff,
+			WorkBlocks:    message.WorkBlocks,
+			Progress:      message.Progress,
 		}
 		if m.tab != tabTree {
 			m.unseen[tabTree]++
