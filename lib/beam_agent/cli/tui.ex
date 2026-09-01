@@ -5,6 +5,8 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.TUI.Controller
 
   @commands ~w(connect auto status new sessions models race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
+  @race_event_types ~w(race_started race_candidate_started race_candidate_completed race_winner_selected race_collapsed race_inconclusive)
+  @race_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
   def available?(override \\ nil)
 
@@ -91,6 +93,7 @@ defmodule BeamAgent.CLI.TUI do
       attachments: json_safe(Map.get(bootstrap, :attachments, [])),
       workspace_files: repository_files(bootstrap.project_id),
       entries: history(bootstrap.events),
+      race_events: bootstrap.events |> race_history() |> json_safe(),
       context_stats: context_stats(session_id)
     }
   end
@@ -461,7 +464,74 @@ defmodule BeamAgent.CLI.TUI do
     error -> {:error, {:go_tui_write_failed, Exception.message(error)}}
   end
 
-  defp history(events), do: Enum.reduce(events, [], &history_event/2)
+  defp history(events) do
+    race_context = race_context(events)
+
+    Enum.reduce(events, [], fn event, entries ->
+      if race_ui_event?(event, race_context) do
+        maybe_append_race_anchor(event, entries)
+      else
+        history_event(event, entries)
+      end
+    end)
+  end
+
+  defp maybe_append_race_anchor(
+         %{payload: %{type: type, data: %{"auction_id" => auction_id}}},
+         entries
+       )
+       when type in ["provider_auction_started", :provider_auction_started] do
+    entries ++ [%{kind: "race", id: auction_id}]
+  end
+
+  defp maybe_append_race_anchor(_event, entries), do: entries
+
+  defp race_history(events) do
+    race_context = race_context(events)
+    Enum.filter(events, &race_ui_event?(&1, race_context))
+  end
+
+  defp race_context(events) do
+    Enum.reduce(events, %{auctions: MapSet.new(), workers: MapSet.new()}, fn event, context ->
+      type = to_string(event.payload.type)
+      data = event.payload.data
+
+      context =
+        if type in [
+             "provider_auction_started",
+             "provider_auction_awarded",
+             "provider_auction_settled"
+           ] and
+             data["purpose"] == "provider_race" do
+          auction_id = data["auction_id"] || data["provider_auction_id"]
+
+          if is_binary(auction_id),
+            do: update_in(context.auctions, &MapSet.put(&1, auction_id)),
+            else: context
+        else
+          context
+        end
+
+      if type in ["race_candidate_started", "race_candidate_completed"] and
+           is_binary(data["worker_id"]) do
+        update_in(context.workers, &MapSet.put(&1, data["worker_id"]))
+      else
+        context
+      end
+    end)
+  end
+
+  defp race_ui_event?(event, context) do
+    type = to_string(event.payload.type)
+    data = event.payload.data
+    auction_id = data["auction_id"] || data["provider_auction_id"]
+
+    type in @race_event_types or
+      (type in ~w(provider_auction_started provider_bid_submitted provider_auction_awarded provider_auction_settled) and
+         MapSet.member?(context.auctions, auction_id)) or
+      (type in @race_activity_types and
+         MapSet.member?(context.workers, event.scope.session_id))
+  end
 
   defp event_cursor([]), do: 0
   defp event_cursor(events), do: List.last(events).goal_seq

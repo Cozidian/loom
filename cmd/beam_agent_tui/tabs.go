@@ -9,7 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// tab identifies one of the six numbered views over a single session. Tabs
+// tab identifies one of the numbered views over a single session. Tabs
 // are views onto the same goal, not separate modes — number keys jump
 // straight to any of them.
 type tab int
@@ -21,6 +21,7 @@ const (
 	tabEvents
 	tabSessions
 	tabModels
+	tabRace
 	tabCount
 )
 
@@ -31,6 +32,7 @@ var tabLabels = [tabCount]string{
 	tabEvents:   "events",
 	tabSessions: "sessions",
 	tabModels:   "models",
+	tabRace:     "race",
 }
 
 // sheetKind identifies which bottom-docked sheet, if any, is currently
@@ -70,6 +72,11 @@ type sessionsTabState struct {
 
 type modelsTabState struct {
 	selected int
+}
+
+type raceTabState struct {
+	selected int
+	expanded bool
 }
 
 // switchTab moves focus to t, clears its unseen badge, moves composer focus
@@ -142,6 +149,12 @@ func (m model) renderTabStrip() string {
 		right = "cancelling…"
 		rightStyle = styleSand
 	}
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		right = shortSession(m.sessionID)
+	}
+	if lipgloss.Width(left)+lipgloss.Width(right)+1 > m.width {
+		right = ""
+	}
 	line := joinEdges(left, rightStyle.Render(right), m.width)
 
 	activeStart := lipgloss.Width(wordmark) + lipgloss.Width(gap)
@@ -180,6 +193,8 @@ func (m model) renderActiveTab(dim bool) string {
 		return m.renderSessionsTab()
 	case tabFiles:
 		return m.renderFilesTab()
+	case tabRace:
+		return m.renderRaceTab()
 	default:
 		return m.renderTabPlaceholder()
 	}
@@ -207,6 +222,8 @@ func (m model) updateActiveTab(key string) (tea.Model, tea.Cmd) {
 		return m.updateSessionsTab(key)
 	case tabFiles:
 		return m.updateFilesTab(key)
+	case tabRace:
+		return m.updateRaceTab(key)
 	default:
 		return m, nil
 	}

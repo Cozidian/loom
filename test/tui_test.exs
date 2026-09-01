@@ -122,6 +122,54 @@ defmodule BeamAgent.CLITUITest do
     assert payload.workspace_files == ["README.md", "lib/nested/worker.ex"]
   end
 
+  test "initial bridge payload groups durable provider race events for visual replay", context do
+    {:ok, _} =
+      BeamAgent.Session.EventLog.append(context.session_id, :provider_auction_started, %{
+        "auction_id" => "auction-1",
+        "purpose" => "provider_race",
+        "eligible_count" => 2,
+        "requested_awards" => 2
+      })
+
+    {:ok, _} =
+      BeamAgent.Session.EventLog.append(context.session_id, :provider_bid_submitted, %{
+        "auction_id" => "auction-1",
+        "id" => "bid-1",
+        "endpoint_id" => "codex",
+        "score" => 90,
+        "confidence" => 0.8
+      })
+
+    {:ok, _} =
+      BeamAgent.Session.EventLog.append(context.session_id, :race_started, %{
+        "race_id" => "race-1",
+        "provider_auction_id" => "auction-1",
+        "candidate_count" => 2,
+        "provider_count" => 2
+      })
+
+    payload = TUI.initial_payload(context.session_id, context.config)
+    race_types = Enum.map(payload.race_events, &get_in(&1, ["payload", "type"]))
+
+    assert race_types == [
+             "provider_auction_started",
+             "provider_bid_submitted",
+             "race_started"
+           ]
+
+    refute Enum.any?(
+             payload.entries,
+             &String.starts_with?(Map.get(&1, :content, ""), "Provider market")
+           )
+
+    refute Enum.any?(payload.entries, &String.starts_with?(Map.get(&1, :content, ""), "Bid ·"))
+
+    refute Enum.any?(
+             payload.entries,
+             &String.starts_with?(Map.get(&1, :content, ""), "Provider race")
+           )
+  end
+
   test "replayed image-only messages render a safe attachment summary", context do
     png =
       Base.decode64!(

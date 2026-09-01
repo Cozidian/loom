@@ -140,7 +140,14 @@ defmodule BeamAgent.Goal.Race do
 
     with {:ok, worktree} <- maybe_create_worktree(parent, worker_id, id, opts),
          worker_options <- bind_isolation(worker_options, worker_id, worktree),
-         :ok <- append_candidate_started(parent.session_id, race_id, id, provider_assignment),
+         :ok <-
+           append_candidate_started(
+             parent.session_id,
+             race_id,
+             id,
+             worker_id,
+             provider_assignment
+           ),
          {:ok, handle} <- BeamAgent.spawn_worker(parent.session_id, proposal, worker_options),
          :ok <- lease_candidate_provider(parent.goal_id, handle.worker_id, provider_assignment) do
       try do
@@ -422,10 +429,11 @@ defmodule BeamAgent.Goal.Race do
     end
   end
 
-  defp append_candidate_started(session_id, race_id, candidate_id, assignment) do
+  defp append_candidate_started(session_id, race_id, candidate_id, worker_id, assignment) do
     case EventLog.append(session_id, :race_candidate_started, %{
            "race_id" => race_id,
            "candidate_id" => candidate_id,
+           "worker_id" => worker_id,
            "provider_auction_id" => assignment.auction_id,
            "endpoint_id" => assignment.endpoint_id,
            "provider" => to_string(assignment.provider),

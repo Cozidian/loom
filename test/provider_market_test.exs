@@ -103,10 +103,12 @@ defmodule BeamAgent.ProviderMarketTest do
 
     {:ok, events} = BeamAgent.events(session_id)
     started = Enum.find(events, &(&1["type"] == "race_started"))
+    candidate_started = Enum.find(events, &(&1["type"] == "race_candidate_started"))
     winner = Enum.find(events, &(&1["type"] == "race_winner_selected"))
     settlement = Enum.find(events, &(&1["type"] == "provider_auction_settled"))
 
     assert started["data"]["provider_count"] == 2
+    assert is_binary(candidate_started["data"]["worker_id"])
     assert winner["data"]["winner_endpoint_id"] in ["provider-a", "provider-b"]
     assert settlement["data"]["status"] == "selected"
     assert settlement["data"]["winner_endpoint_id"] == winner["data"]["winner_endpoint_id"]

@@ -162,10 +162,12 @@ The coordinator owns recent market state and the session event log records
 possible, and pins each worker's provider profile before construction. A
 candidate can explicitly request an endpoint or provider, but cannot bypass
 model capability, privacy, locality, health, budget, or authority constraints.
-Race candidate start/completion events retain the bid and endpoint identity;
-the final settlement links the selected candidate back to its provider. The Go
-TUI renders this state and offers `/race GOAL`, but does not select providers or
-own auctions.
+Race candidate start/completion events retain worker, bid, and endpoint
+identity; the final settlement links the selected candidate back to its
+provider. The Go TUI projects these durable events into a grouped transcript
+card and an interactive race arena, but does not infer a leader, select
+providers, or own auctions. A finished candidate remains merely submitted until
+the runtime emits `race_winner_selected`.
 
 All provider execution enters through a versioned `ModelRequest`, including
 ordinary tool-loop steps and context compaction. It explicitly carries request

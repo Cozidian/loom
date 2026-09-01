@@ -57,7 +57,7 @@ func (m model) renderModelsTab() string {
 			}
 			latency := "latency unknown"
 			if bid.EstimatedLatencyMs > 0 {
-				latency = fmt.Sprintf("~%.0f ms", bid.EstimatedLatencyMs)
+				latency = fmt.Sprintf("routing est. ~%.0f ms", bid.EstimatedLatencyMs)
 			}
 			fmt.Fprintf(&b, "%s\n", style.Render(fmt.Sprintf(
 				"%s%s · score %d · %.0f%% confidence · %s · %s",

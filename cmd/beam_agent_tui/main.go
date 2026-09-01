@@ -93,6 +93,7 @@ type packet struct {
 	RawPatch            string                  `json:"raw_patch,omitempty"`
 	Status              string                  `json:"status,omitempty"`
 	WorkspaceDiff       *treeWorkspace          `json:"workspace_diff,omitempty"`
+	RaceEvents          []map[string]any        `json:"race_events,omitempty"`
 }
 
 type entry struct {
@@ -289,6 +290,8 @@ type model struct {
 	eventsTab   eventsTabState
 	sessionsTab sessionsTabState
 	modelsTab   modelsTabState
+	raceTab     raceTabState
+	races       []raceArena
 
 	treeData          *treeSnapshot
 	eventsData        *eventsSnapshot
@@ -335,6 +338,9 @@ func newModel(initial packet, bridge *protocol) model {
 		approvalMode:   initial.ApprovalMode,
 		attachments:    initial.Attachments,
 		workspaceFiles: append([]string(nil), initial.WorkspaceFiles...),
+	}
+	for _, event := range initial.RaceEvents {
+		m.applyRaceProjection(event, true)
 	}
 	for _, pending := range initial.Approvals {
 		m.enqueueApproval(approvalFromMap(pending))
@@ -477,7 +483,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			m.viewport.PageDown()
 			return m, nil
-		case "1", "2", "3", "4", "5", "6":
+		case "1", "2", "3", "4", "5", "6", "7":
 			if m.tab != tabChat || m.composer.Value() == "" {
 				return m, m.switchTab(tab(key[0] - '1'))
 			}
@@ -1221,6 +1227,8 @@ func (m *model) applyBackend(message packet) {
 		}
 		m.cursor = 0
 		m.entries = []entry{{Kind: "system", Content: "Started " + shortSession(message.SessionID)}}
+		m.races = nil
+		m.raceTab = raceTabState{}
 		m.status = "ready"
 		m.panelTitle = ""
 		m.panelLines = nil
@@ -1363,7 +1371,13 @@ func (m *model) applyRuntimeEvent(event map[string]any) {
 	eventType := asString(payload["type"])
 	data := asMap(payload["data"])
 	m.applyMarketStatus(eventType, data)
-	m.applyDurableEvent(eventType, data, sessionID, root)
+	groupedRaceEvent := m.applyRaceEvent(eventType, data, sessionID, root, false)
+	if !groupedRaceEvent {
+		m.applyDurableEvent(eventType, data, sessionID, root)
+	}
+	if groupedRaceEvent {
+		return
+	}
 
 	if info, role, scopeID := runtimeInfo(eventType, data, sessionID, root); info != "" {
 		m.entries = append(m.entries, entry{Kind: "info", Content: info, Role: role, SessionID: scopeID})
@@ -1670,6 +1684,10 @@ func (m *model) refreshTranscript(bottom bool) {
 			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, mutedStyle.Render(item.Content)))
 		case "info":
 			fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, mutedStyle.Render(item.Content)))
+		case "race":
+			if arena := m.raceByAnchor(item.ID); arena != nil {
+				fmt.Fprintf(&b, "%s\n", withSpine(glyph, style, m.renderCompactRace(*arena)))
+			}
 		}
 	}
 	if m.notice != "" {

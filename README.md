@@ -104,6 +104,11 @@ move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
 idle). Approval dialogs default to deny and offer explicit once or durable
 scoped-always choices.
 
+Number keys open the shared session views when the composer is empty: chat,
+tree, files, events, sessions, models, and the race arena (`7`). The race arena
+groups provider bidding and candidate activity into parallel lanes. Arrow keys
+focus a lane and Enter expands its bid evidence.
+
 The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`, `/race GOAL`,
 `/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/steer MESSAGE`, `/events`, `/tree`, `/clear`,
 and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservative
@@ -152,6 +157,8 @@ Use `/race GOAL` when independent attempts are worth the additional cost. The
 runtime requests bids from eligible configured endpoints, awards up to three
 distinct provider leases, runs the candidates independently, and retains one
 winner only when consensus or deterministic verification justifies it. The
+race arena marks early results as submitted and awaiting judgment; completion
+order is never presented as a lead or used as the winner decision. The
 ordinary API also accepts candidate `endpoint_id`, `provider_profile`, or
 `provider` pins through `BeamAgent.race_workers/3`. Pins remain subject to the
 same capability, locality, privacy, health, and budget policy as automatic
