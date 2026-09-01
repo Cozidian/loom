@@ -185,6 +185,13 @@ starting or polling a background worker as delivered implementation; the parent
 must collect a completed result before relying on it. `/tree` groups the
 canonical activity into expandable work blocks and shows runtime-owned
 active/waiting/blocked/stalled totals.
+For model-aware decomposition, `list_models` exposes only safe endpoint claims
+and `delegate_tasks` accepts soft per-worker model requirements such as a
+preferred endpoint, locality, reasoning, cost, and latency. Each worker receives
+its own stable lease. Independent tasks may overlap; workers that modify
+overlapping paths must be ordered through dependencies so ownership is handed
+off instead of raced. Runtime eligibility and capability policy can reject or
+override every model preference.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
@@ -193,6 +200,12 @@ choice appears as a `Model routed` information event in the chat. Recent
 verified outcomes also produce a shadow recommendation. It remains advisory
 until enough comparative evidence has been evaluated; unverified provider
 success never counts as model-quality evidence.
+Short construction requests such as “build,” “create,” “add,” “integrate,” or
+“scaffold” are implementation work even when phrased casually. Local/free
+preference remains useful for genuinely simple work, but cost is only a
+tie-breaker for unverified feature implementation. If any turn mutates the
+workspace, filesystem evidence forces verification even if the initial intent
+classification was imperfect.
 Use `./beam_agent --no-tui` for the line-oriented interface. Redirected input,
 redirected output, and tests select that fallback automatically.
 
@@ -235,7 +248,9 @@ Every real LLM sees the same model-callable coding tools:
 - `reload_context` refreshes changed instruction and skill files after approval;
 - `spawn_subagent` dynamically constructs a bounded specialist with attenuated
   authority and reclaims its live worker after recording the result;
-- `delegate_tasks` executes a validated dependency DAG with bounded parallelism;
+- `list_models` returns the safe provider inventory for model-aware planning;
+- `delegate_tasks` executes a validated dependency DAG with bounded parallelism,
+  ordered implementation handoffs, and per-worker model preferences;
 - `request_capability` submits structured temporary-authority requests;
 - `request_project_context`, `file_symbols`, `git_inspect`, and `apply_patch`
   consume deterministic project state rather than asking a model to rediscover it.

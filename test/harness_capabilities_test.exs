@@ -252,7 +252,8 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
         workspace_root: context.workspace,
         provider: :file_agent_test,
         approval_policy: :ask,
-        approval_handler: self()
+        approval_handler: self(),
+        completion_review: :external
       )
 
     parent = self()
@@ -272,6 +273,7 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     {:ok, events} = BeamAgent.events(session_id)
     assert Enum.any?(events, &(&1["type"] == "tool_approval_requested"))
     assert Enum.any?(events, &(&1["type"] == "tool_approval_granted"))
+    assert Enum.any?(events, &(&1["data"]["verification_status"] == "not_configured"))
   end
 
   test "denied approval becomes a model-visible tool error without executing", context do
@@ -281,7 +283,8 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
         workspace_root: context.workspace,
         provider: :file_agent_test,
         approval_policy: :ask,
-        approval_handler: self()
+        approval_handler: self(),
+        completion_review: :external
       )
 
     assert {:ok, answer} = TurnRunner.run(session_id, "create the file", 5_000, fn _ -> :deny end)

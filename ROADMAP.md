@@ -610,6 +610,12 @@ every earlier item must finish before a high-value product or safety slice.
      capability envelopes. Exact arithmetic can select ordinary computation
      instead of an LLM. Every decision records safe inputs, candidates,
      selection, strategy, and a concise reason; the TUI renders it inline.
+     Construction language such as build/create/add/integrate/scaffold is now
+     conservatively classified as implementation rather than short prose, and
+     filesystem mutation forces verification even if intent classification was
+     imperfect. Free/local bidding remains favored for genuinely simple work
+     but no longer outweighs the configured primary endpoint for unverified
+     feature implementation.
 
 - [x] Capture model and task outcomes
 
@@ -768,6 +774,11 @@ every earlier item must finish before a high-value product or safety slice.
     - Prefer deterministic dependency/state transitions and use models for the
       semantic decisions that genuinely need intelligence.
     - Re-plan or terminate branches cheaply when evidence invalidates them.
+    - Delivered: coordinators can inspect safe endpoint inventory and propose
+      per-task endpoint, locality, reasoning, cost, and latency preferences.
+      Every task receives a separately leased supervised worker. Independent
+      tasks retain bounded parallelism, while overlapping implementation phases
+      require explicit dependency-ordered ownership handoff.
 
 16. [x] Support temporary self-forming worker organizations
 

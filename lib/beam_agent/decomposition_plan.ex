@@ -142,26 +142,58 @@ defmodule BeamAgent.DecompositionPlan do
         :ok
 
       many ->
-        if explicitly_disjoint_implementers?(many),
+        if noncompeting_implementers?(many, tasks),
           do: :ok,
           else: {:error, {:multiple_implementation_owners, Enum.map(many, & &1.id)}}
     end
   end
 
-  defp explicitly_disjoint_implementers?(tasks) do
-    with scopes when is_list(scopes) <- Enum.map(tasks, &implementation_paths/1),
-         true <- Enum.all?(scopes, &match?([_ | _], &1)) do
-      scopes
-      |> Enum.with_index()
-      |> Enum.all?(fn {paths, index} ->
-        scopes
-        |> Enum.drop(index + 1)
-        |> Enum.all?(fn other ->
-          Enum.all?(paths, fn path -> Enum.all?(other, &(not overlapping_path?(path, &1))) end)
-        end)
+  defp noncompeting_implementers?(implementers, tasks) do
+    tasks_by_id = Map.new(tasks, &{&1.id, &1})
+
+    implementers
+    |> Enum.with_index()
+    |> Enum.all?(fn {task, index} ->
+      implementers
+      |> Enum.drop(index + 1)
+      |> Enum.all?(fn other ->
+        disjoint_implementation_paths?(task, other) or
+          depends_transitively?(task.id, other.id, tasks_by_id) or
+          depends_transitively?(other.id, task.id, tasks_by_id)
+      end)
+    end)
+  end
+
+  defp disjoint_implementation_paths?(left, right) do
+    with [_ | _] = left_paths <- implementation_paths(left),
+         [_ | _] = right_paths <- implementation_paths(right) do
+      Enum.all?(left_paths, fn path ->
+        Enum.all?(right_paths, &(not overlapping_path?(path, &1)))
       end)
     else
       _other -> false
+    end
+  end
+
+  defp depends_transitively?(task_id, dependency_id, tasks, visited \\ MapSet.new()) do
+    if MapSet.member?(visited, task_id) do
+      false
+    else
+      case tasks[task_id] do
+        nil ->
+          false
+
+        task ->
+          dependency_id in task.depends_on or
+            Enum.any?(task.depends_on, fn parent_id ->
+              depends_transitively?(
+                parent_id,
+                dependency_id,
+                tasks,
+                MapSet.put(visited, task_id)
+              )
+            end)
+      end
     end
   end
 

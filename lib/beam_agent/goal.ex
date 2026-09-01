@@ -196,6 +196,17 @@ defmodule BeamAgent.Goal do
     recover_or_finish(state, %{current | verification: verification}, :verification, verification)
   end
 
+  defp continue_stage(:verifying, {:error, :no_verification_checks}, state, current) do
+    verification = %{
+      status: :not_configured,
+      source: "workspace-discovery",
+      summary: "No deterministic verification checks were discovered",
+      checks: []
+    }
+
+    continue_after_verification(state, %{current | verification: verification}, verification)
+  end
+
   defp continue_stage(:verifying, {:error, reason}, state, current) do
     finish_work(state, current, {:error, {:verification_infrastructure_failed, reason}})
   end
@@ -565,6 +576,10 @@ defmodule BeamAgent.Goal do
   defp should_verify?(%{kind: :verification}, _artifact), do: true
 
   defp should_verify?(%{verification_required: true}, %{changed_files: [_ | _]}), do: true
+
+  # Filesystem evidence outranks an imperfect intent classification. Any turn
+  # that mutates the workspace must pass the project's verification boundary.
+  defp should_verify?(_contract, %{changed_files: [_ | _]}), do: true
 
   defp should_verify?(_contract, _artifact), do: false
 

@@ -26,6 +26,7 @@ defmodule BeamAgent.CapabilityCatalog do
     BeamAgent.Tools.GitInspect,
     BeamAgent.Tools.FileSymbols,
     BeamAgent.Tools.FileDiagnostics,
+    BeamAgent.Tools.ListModels,
     BeamAgent.Tools.RunCommand,
     BeamAgent.Tools.SpawnSubagent,
     BeamAgent.Tools.AwaitSubagent,

@@ -31,8 +31,56 @@ defmodule BeamAgent.DynamicOrganizationTest do
     end
   end
 
+  defmodule MultiModelLocalProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :organization_local
+
+    @impl true
+    def configuration do
+      %{
+        name: "organization_local",
+        label: "Organization local test provider",
+        capabilities: [:text_generation, :tool_use],
+        locality: :local,
+        privacy: :local,
+        cost_hint: :free
+      }
+    end
+
+    @impl true
+    def complete(_messages, _tools, _options),
+      do: {:ok, %{content: "local scaffold analysis", tool_calls: []}}
+  end
+
+  defmodule MultiModelRemoteProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :organization_remote
+
+    @impl true
+    def configuration do
+      %{
+        name: "organization_remote",
+        label: "Organization remote test provider",
+        capabilities: [:text_generation, :tool_use],
+        locality: :remote,
+        privacy: :provider,
+        cost_hint: :metered
+      }
+    end
+
+    @impl true
+    def complete(_messages, _tools, _options),
+      do: {:ok, %{content: "remote middleware analysis", tool_calls: []}}
+  end
+
   setup_all do
     :ok = BeamAgent.CapabilityCatalog.register_provider(SpeculativeProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(MultiModelLocalProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(MultiModelRemoteProvider)
     :ok
   end
 
@@ -97,6 +145,29 @@ defmodule BeamAgent.DynamicOrganizationTest do
              DecompositionPlan.new(%{
                tasks: [
                  %{
+                   id: "scaffold",
+                   goal: "Build the Phoenix scaffold",
+                   template: "implementer"
+                 },
+                 %{
+                   id: "middleware",
+                   goal: "Implement the middleware on the scaffold",
+                   template: "implementer",
+                   depends_on: ["scaffold"]
+                 },
+                 %{
+                   id: "tests",
+                   goal: "Add tests for the middleware",
+                   template: "implementer",
+                   depends_on: ["middleware"]
+                 }
+               ]
+             })
+
+    assert {:ok, _plan} =
+             DecompositionPlan.new(%{
+               tasks: [
+                 %{
                    id: "api",
                    goal: "Implement the API portion",
                    template: "implementer",
@@ -153,6 +224,76 @@ defmodule BeamAgent.DynamicOrganizationTest do
     assert {:ok, events} = BeamAgent.events(root_id)
     assert Enum.any?(events, &(&1["type"] == "organization_formed"))
     assert Enum.any?(events, &(&1["type"] == "organization_finished"))
+  end
+
+  test "one decomposition leases different requested endpoints to ordered workers", context do
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :organization_remote,
+               provider_profile: "remote",
+               model_strategy: :auto,
+               model_endpoints: [
+                 %{
+                   id: "local",
+                   provider: :organization_local,
+                   provider_module: MultiModelLocalProvider
+                 },
+                 %{
+                   id: "remote",
+                   provider: :organization_remote,
+                   provider_module: MultiModelRemoteProvider
+                 }
+               ]
+             )
+
+    assert {:ok, encoded_models} =
+             BeamAgent.Tools.ListModels.execute(%{}, %{project_id: project_id(root_id)})
+
+    assert {:ok, models} = JSON.decode(encoded_models)
+    assert Enum.map(models, & &1["endpoint_id"]) |> Enum.sort() == ["local", "remote"]
+
+    assert {:ok, result} =
+             BeamAgent.execute_decomposition(
+               root_id,
+               %{
+                 tasks: [
+                   %{
+                     id: "scaffold",
+                     goal: "Inspect the bounded Phoenix scaffold command",
+                     template: "researcher",
+                     model_requirements: %{
+                       preferred_endpoint_id: "local",
+                       locality: "local",
+                       cost: "prefer_low"
+                     }
+                   },
+                   %{
+                     id: "middleware",
+                     goal: "Review the middleware integration boundary",
+                     template: "researcher",
+                     depends_on: ["scaffold"],
+                     model_requirements: %{
+                       preferred_endpoint_id: "remote",
+                       locality: "remote",
+                       cost: "balanced"
+                     }
+                   }
+                 ]
+               },
+               strategy: "coordinate",
+               worker_options: [data_dir: context.data_dir, model_strategy: :auto]
+             )
+
+    assert result.results["scaffold"].result.content == "local scaffold analysis"
+    assert result.results["middleware"].result.content == "remote middleware analysis"
+
+    scaffold_worker = result.results["scaffold"].worker.worker_id
+    middleware_worker = result.results["middleware"].worker.worker_id
+
+    assert route_endpoint(scaffold_worker) == "local"
+    assert route_endpoint(middleware_worker) == "remote"
   end
 
   test "tournament selects only deterministic consensus and never merges", context do
@@ -261,5 +402,16 @@ defmodule BeamAgent.DynamicOrganizationTest do
     collapsed = Enum.find(events, &(&1["type"] == "tournament_collapsed"))
     assert collapsed["data"]["merged"] == false
     assert collapsed["data"]["retained_worktree_count"] == 2
+  end
+
+  defp project_id(root_id) do
+    {:ok, goal} = BeamAgent.goal(root_id)
+    goal.project_id
+  end
+
+  defp route_endpoint(worker_id) do
+    {:ok, events} = BeamAgent.events(worker_id)
+    route = Enum.find(events, &(&1["type"] == "model_route_selected"))
+    route["data"]["selected_endpoint_id"]
   end
 end

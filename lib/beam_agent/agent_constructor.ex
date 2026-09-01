@@ -326,6 +326,7 @@ defmodule BeamAgent.AgentConstructor do
 
   defp root_model_requirements(opts, template) do
     Map.merge(template.model_requirements, %{
+      preferred_endpoint_id: Keyword.get(opts, :provider_profile),
       reasoning: :standard,
       locality: if(Keyword.get(opts, :model_strategy) == :local_only, do: :local, else: :any),
       privacy:
@@ -346,6 +347,7 @@ defmodule BeamAgent.AgentConstructor do
       if parent.model_strategy == :local_only, do: :local, else: :provider_allowed
 
     %{
+      preferred_endpoint_id: preferred_endpoint_id(requested),
       reasoning:
         enum_value(
           requested,
@@ -383,6 +385,13 @@ defmodule BeamAgent.AgentConstructor do
         )
     }
     |> constrain_privacy(inherited_privacy)
+  end
+
+  defp preferred_endpoint_id(requested) do
+    case value(requested, :preferred_endpoint_id) do
+      endpoint_id when is_binary(endpoint_id) and endpoint_id != "" -> endpoint_id
+      _other -> nil
+    end
   end
 
   defp constrain_privacy(requirements, :local),

@@ -7,7 +7,7 @@ defmodule BeamAgent.CodingPrompt do
   supervised runtime processes.
   """
 
-  @version 2
+  @version 3
 
   def version, do: @version
 

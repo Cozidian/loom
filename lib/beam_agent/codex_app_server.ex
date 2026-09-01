@@ -15,7 +15,6 @@ defmodule BeamAgent.CodexAppServer do
     apps browser_use computer_use image_generation in_app_browser multi_agent
     plugins shell_tool skill_search web_search_request
   )
-  @max_tool_calls 16
 
   def available?(opts \\ []) do
     not is_nil(
@@ -407,9 +406,6 @@ defmodule BeamAgent.CodexAppServer do
 
   defp capture_completed_item(state, _item), do: state
 
-  defp capture_tool_call(%{call_count: count}, _params, _emit) when count >= @max_tool_calls,
-    do: {:error, :too_many_codex_tool_calls}
-
   defp capture_tool_call(state, params, emit) do
     with name when is_binary(name) and name != "" <- params["tool"],
          true <- MapSet.member?(state.allowed_tools, name),
@@ -491,13 +487,11 @@ defmodule BeamAgent.CodexAppServer do
          {:ok, decoded} when is_map(decoded) <- JSON.decode(encoded),
          :ok <- validate_envelope_shape(decoded),
          calls when is_list(calls) and calls != [] <- decoded["tool_calls"],
-         true <- length(calls) <= @max_tool_calls,
          {:ok, calls} <- validate_serialized_calls(calls, allowed_tools) do
       {:ok, calls}
     else
       :not_envelope -> :not_envelope
       {:error, reason} -> {:error, reason}
-      false -> {:error, :too_many_tool_calls}
       [] -> {:error, :empty_tool_calls}
       other -> {:error, {:invalid_envelope, other}}
     end

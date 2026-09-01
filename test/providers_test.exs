@@ -52,7 +52,8 @@ defmodule BeamAgent.ProvidersTest do
         %{
           mode: Keyword.get(opts, :mode, :tool),
           owner: Keyword.fetch!(opts, :owner),
-          test_pid: Keyword.fetch!(opts, :test_pid)
+          test_pid: Keyword.fetch!(opts, :test_pid),
+          tool_calls: 0
         }
       end)
     end
@@ -75,20 +76,10 @@ defmodule BeamAgent.ProvidersTest do
 
       case state.mode do
         mode when mode in [:tool, :native_tool] ->
-          send(
-            state.owner,
-            {:codex_app_server, client,
-             {:request,
-              %{
-                "id" => 41,
-                "method" => "item/tool/call",
-                "params" => %{
-                  "callId" => "codex-call",
-                  "tool" => "add",
-                  "arguments" => %{"a" => 2, "b" => 3}
-                }
-              }}}
-          )
+          emit_tool_request(client, state.owner, 41, "codex-call", %{"a" => 2, "b" => 3})
+
+        :many_native_tools ->
+          emit_tool_request(client, state.owner, 1, "codex-call-1", %{"a" => 1, "b" => 1})
 
         :text ->
           emit_agent_text(client, state.owner, "hello")
@@ -139,15 +130,35 @@ defmodule BeamAgent.ProvidersTest do
 
     def notify(_client, "initialized", %{}), do: :ok
 
-    def respond(client, 41, result) do
-      state = Agent.get(client, & &1)
+    def respond(client, _id, result) do
+      state =
+        Agent.get_and_update(client, fn state ->
+          {state, %{state | tool_calls: state.tool_calls + 1}}
+        end)
+
       send(state.test_pid, {:codex_tool_response, result})
 
-      if state.mode == :native_tool do
-        emit_agent_text(client, state.owner, "The host result was 5.")
+      case state.mode do
+        :native_tool ->
+          emit_agent_text(client, state.owner, "The host result was 5.")
+          complete_turn(client, state.owner)
+
+        :many_native_tools when state.tool_calls + 1 < 20 ->
+          next = state.tool_calls + 2
+
+          emit_tool_request(client, state.owner, next, "codex-call-#{next}", %{
+            "a" => next,
+            "b" => 1
+          })
+
+        :many_native_tools ->
+          emit_agent_text(client, state.owner, "Completed 20 host tool calls.")
+          complete_turn(client, state.owner)
+
+        _other ->
+          complete_turn(client, state.owner)
       end
 
-      complete_turn(client, state.owner)
       :ok
     end
 
@@ -161,6 +172,23 @@ defmodule BeamAgent.ProvidersTest do
           %{
             "method" => "turn/completed",
             "params" => %{"turn" => %{"status" => "completed"}}
+          }}}
+      )
+    end
+
+    defp emit_tool_request(client, owner, id, call_id, arguments) do
+      send(
+        owner,
+        {:codex_app_server, client,
+         {:request,
+          %{
+            "id" => id,
+            "method" => "item/tool/call",
+            "params" => %{
+              "callId" => call_id,
+              "tool" => "add",
+              "arguments" => arguments
+            }
           }}}
       )
     end
@@ -647,6 +675,30 @@ defmodule BeamAgent.ProvidersTest do
              "contentItems" => [%{"type" => "inputText", "text" => "5"}],
              "success" => true
            }
+  end
+
+  test "OpenAI ChatGPT-plan transport has no arbitrary host tool-call ceiling" do
+    executor = fn call ->
+      send(self(), {:native_codex_call, call})
+      {:ok, %{content: "ok", is_error: false, error: nil}}
+    end
+
+    assert {:ok, %{content: "Completed 20 host tool calls.", tool_calls: []}} =
+             OpenAI.complete([%{role: :user, content: "inspect a large project"}], @tools,
+               model: "gpt-test",
+               auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+               dynamic_tool_executor: executor,
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :many_native_tools]
+             )
+
+    calls =
+      for _index <- 1..20 do
+        assert_receive {:native_codex_call, call}
+        call
+      end
+
+    assert Enum.map(calls, & &1.id) == Enum.map(1..20, &"codex-call-#{&1}")
   end
 
   test "OpenAI ChatGPT-plan transport returns final text without HTTP credentials" do

@@ -177,6 +177,14 @@ identity, a deterministic fit score, confidence, verified sample count, cost
 tier, and estimated latency. It contains neither prompt text nor credentials.
 Manual routing remains a hard selection constraint; Auto uses the normal router
 policy and evidence, while additional tournament or race awards follow ranked eligible bids.
+The deterministic classifier is deliberately conservative about workspace
+change intent: short construction requests remain implementation contracts
+rather than falling through to cheap prose work. A model may propose semantic
+decomposition and endpoint preferences, but it cannot downgrade that runtime
+classification or disable verification. Observed filesystem mutations force
+the Goal verification boundary even when initial classification was imperfect.
+Free/local cost is a tie-breaker rather than a substitute for verified
+implementation quality.
 The coordinator owns recent market state and the session event log records
 `provider_auction_started`, `provider_bid_submitted`,
 `provider_auction_awarded`, and `provider_auction_settled` facts.
@@ -547,13 +555,21 @@ Native Codex tool requests are executed
 immediately through BeamAgent's normal `ToolRunner` capability, approval,
 sandbox, event, and budget boundary; the real result is returned to the same
 Codex turn so one coding turn can inspect, edit, and finish without an
-acknowledgement race.
+acknowledgement race. BeamAgent does not impose an arbitrary number of native
+tool calls on that turn. Cancellation, resource budgets, approval and
+capability policy, command bounds, and repeated-result stall detection remain
+the meaningful runtime limits.
 
 Model routing is selected once per `WorkContract` and retained by
 `Goal.ModelLease` through tool steps, verification, and repair attempts. Child
 workers without an explicit contract receive a worker-lifetime lease, so their
 provider does not change between tool steps. Child work may still select a
-different endpoint. A user can send
+different endpoint. Coordinators can inspect safe endpoint inventory and attach
+soft model requirements to each task in a validated dependency plan. This
+supports, for example, a local scaffold worker followed by a stronger remote
+implementation worker and a separately leased test worker. Independent tasks
+run in parallel; overlapping implementation ownership is admitted only when an
+explicit dependency orders the handoff. A user can send
 `BeamAgent.steer/2`, the runtime `steer` command, or `/steer MESSAGE`; Goal puts
 the message into the active worker mailbox and the tool loop applies it before
 the next model decision without cancelling or rebuilding the work.

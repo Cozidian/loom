@@ -29,7 +29,7 @@ defmodule BeamAgent.WorkContract do
   def new(objective, workspace_root, opts) when is_binary(objective) do
     objective = String.trim(objective)
     classification = TaskClassifier.classify(objective, workspace_root)
-    kind = Keyword.get(opts, :kind, kind(classification.task_type))
+    kind = Keyword.get(opts, :kind, kind(classification))
 
     with true <- objective != "",
          true <- kind in @kinds do
@@ -80,6 +80,8 @@ defmodule BeamAgent.WorkContract do
     |> String.trim()
   end
 
+  defp kind(%{change_intent: true}), do: :implementation
+  defp kind(%{task_type: task_type}), do: kind(task_type)
   defp kind(:implementation), do: :implementation
   defp kind(:debugging), do: :debugging
   defp kind(:verification), do: :verification

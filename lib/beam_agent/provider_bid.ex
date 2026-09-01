@@ -71,7 +71,9 @@ defmodule BeamAgent.ProviderBid do
   defp score(endpoint, evidence, input, latency) do
     health = if endpoint.health.status == :available, do: 15, else: 5
     preferred = if endpoint.id == input[:preferred_endpoint_id], do: 15, else: 0
-    cost = if endpoint.claims.cost_hint == :free, do: 20, else: 0
+    # Cost is a tie-breaker after task and configured-provider fit. It must not
+    # make an unverified local endpoint the default owner of feature work.
+    cost = if endpoint.claims.cost_hint == :free, do: 5, else: 0
     locality = locality_score(endpoint, input)
     reasoning = reasoning_score(endpoint, input)
     latency_score = if is_number(latency), do: max(0, 20 - trunc(latency / 250)), else: 0

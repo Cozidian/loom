@@ -111,6 +111,7 @@ defmodule BeamAgent.AgentConstructionTest do
         "model_classes" => "all"
       },
       "model_requirements" => %{
+        "preferred_endpoint_id" => "local-specialist",
         "reasoning" => "high",
         "locality" => "local",
         "privacy" => "local"
@@ -135,6 +136,7 @@ defmodule BeamAgent.AgentConstructionTest do
     assert spec.lifecycle.maximum_delegation_depth == 2
     assert spec.restrictions.external_network == :denied
     assert spec.model_requirements.reasoning == :high
+    assert spec.model_requirements.preferred_endpoint_id == "local-specialist"
     assert spec.model_requirements.locality == :local
     assert spec.model_requirements.privacy == :local
     assert spec.provenance.role == "runtime_inference"

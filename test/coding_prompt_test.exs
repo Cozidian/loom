@@ -4,7 +4,7 @@ defmodule BeamAgent.CodingPromptTest do
   alias BeamAgent.CodingPrompt
 
   test "coding behavior has an explicit durable version" do
-    assert CodingPrompt.version() == 2
+    assert CodingPrompt.version() == 3
   end
 
   test "base prompt defines evidence-led end-to-end coding behavior" do

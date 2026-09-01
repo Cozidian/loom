@@ -572,7 +572,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
         prompt: prompt,
         workspace_root: context.workspace_root,
         strategy: context.model_strategy,
-        preferred_endpoint_id: context.provider_profile,
+        preferred_endpoint_id:
+          requirements[:preferred_endpoint_id] || requirements["preferred_endpoint_id"] ||
+            context.provider_profile,
         preferred_provider: context.provider,
         tools: tool_schemas,
         context_tokens: estimated_context_tokens(context.session_id),
@@ -733,7 +735,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
         {:non_final, :future_intent}
 
       action_required?(context) and implementation_tool_names(context, tool_schemas) != [] and
-          turn_action_count(context, turn) == 0 ->
+        turn_action_count(context, turn) == 0 and
+          not turn_action_blocked_by_runtime?(context, turn) ->
         {:non_final, :action_not_started}
 
       true ->
@@ -822,6 +825,38 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end)
   end
 
+  defp turn_action_blocked_by_runtime?(context, turn) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    calls =
+      events
+      |> Enum.filter(fn event ->
+        event["type"] == "tool_called" and event["data"]["turn"] == turn
+      end)
+      |> Map.new(fn event -> {event["data"]["tool_call_id"], event["data"]["name"]} end)
+
+    Enum.any?(events, fn event ->
+      data = event["data"] || %{}
+      code = get_in(data, ["error", "code"])
+
+      event["type"] == "tool_result" and data["turn"] == turn and
+        data["is_error"] == true and runtime_blocker?(code) and
+        action_capable_tool?(calls[data["tool_call_id"]], context)
+    end)
+  end
+
+  defp runtime_blocker?(code),
+    do:
+      code in [
+        "tool_denied",
+        "capability_denied",
+        "capability_lease_denied",
+        "path_lease_denied",
+        "codex_tool_not_allowed",
+        "tool_not_allowed",
+        "budget_deadline_exceeded"
+      ]
+
   defp action_tool?("mcp__" <> _name, _result, _context), do: true
 
   defp action_tool?("run_command", result, _context) do
@@ -876,6 +911,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       contract
     ) or
       classification.task_type == :implementation or
+      classification.change_intent or
       Regex.match?(~r/\b(implement|fix|modify|refactor)\b/u, text) or
       String.contains?(text, ["add support", "make a plan and then", "do that, make"])
   end
@@ -1089,7 +1125,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
             """
         end
 
-      append_prompt(system_prompt, String.trim(contract))
+      system_prompt
+      |> append_prompt(String.trim(contract))
+      |> append_prompt(provider_market_prompt(direct_worker?, tool_schemas))
     else
       system_prompt
     end
@@ -1109,6 +1147,27 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp append_prompt(prompt, nil), do: prompt
   defp append_prompt(prompt, addition), do: prompt <> "\n\n" <> addition
+
+  defp provider_market_prompt(false, tool_schemas) do
+    names = MapSet.new(tool_schemas, & &1.name)
+
+    if MapSet.member?(names, "list_models") and MapSet.member?(names, "delegate_tasks") do
+      """
+      # Multi-provider coordination
+      A feature may use different providers for meaningfully different bounded phases. Inspect
+      the safe endpoint inventory with list_models, then propose workers through delegate_tasks
+      with explicit model requirements. Cheap or local endpoints may fit deterministic
+      scaffolding and narrow inspection; stronger coding endpoints may fit coherent
+      implementation; an independent endpoint may fit tests or review. These are preferences,
+      not authority: runtime capability, privacy, availability, evidence, budget, leases, and
+      routing policy decide the award. Run independent workers concurrently. Order workers with
+      explicit dependencies whenever their paths overlap so ownership is handed off, not raced.
+      """
+      |> String.trim()
+    end
+  end
+
+  defp provider_market_prompt(_direct_worker?, _tool_schemas), do: nil
 
   defp completion_recovery_prompt(_context, nil, _tool_schemas), do: nil
 
@@ -1365,6 +1424,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
         {:ok, %{status: :failed} = result} ->
           verification_recovery(context, turn, result)
+
+        {:error, :no_verification_checks} ->
+          {:ok,
+           %{
+             status: :not_configured,
+             source: "workspace-discovery",
+             summary: "No deterministic verification checks were discovered",
+             checks: []
+           }}
 
         {:error, reason} ->
           {:error,
@@ -1663,9 +1731,16 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp append_completion_report(context, verification) do
     checks = Map.get(verification, :checks, [])
 
+    status =
+      case verification.status do
+        :passed -> "verified"
+        :not_configured -> "unverified"
+        _other -> "verification_failed"
+      end
+
     EventLog.append(context.session_id, :completion_report_generated, %{
       "verification_id" => Map.get(verification, :verification_id),
-      "status" => if(verification.status == :passed, do: "verified", else: "verification_failed"),
+      "status" => status,
       "evidence_count" => length(checks),
       "passed_count" => Enum.count(checks, &(&1.status == :passed)),
       "failed_count" => Enum.count(checks, &(&1.status != :passed))

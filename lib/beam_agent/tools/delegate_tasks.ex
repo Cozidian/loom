@@ -7,7 +7,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
 
   @impl true
   def description do
-    "Execute up to four independent specialist tasks with bounded parallelism. Do not delegate duplicate ownership of one coherent implementation."
+    "Execute up to four bounded specialist tasks as supervised workers. Independent tasks overlap; dependent tasks run as ordered handoffs and may request different model endpoints."
   end
 
   @impl true
@@ -31,6 +31,27 @@ defmodule BeamAgent.Tools.DelegateTasks do
               template: %{type: "string"},
               instructions: %{type: "array", items: %{type: "string"}},
               depends_on: %{type: "array", items: %{type: "string"}},
+              capabilities: %{
+                type: "object",
+                properties: %{
+                  paths: %{type: "array", items: %{type: "string"}}
+                }
+              },
+              model_requirements: %{
+                type: "object",
+                properties: %{
+                  preferred_endpoint_id: %{type: "string"},
+                  reasoning: %{type: "string", enum: ["standard", "high"]},
+                  locality: %{type: "string", enum: ["any", "local", "remote"]},
+                  privacy: %{type: "string", enum: ["provider_allowed", "local"]},
+                  cost: %{type: "string", enum: ["prefer_low", "balanced"]},
+                  latency: %{type: "string", enum: ["interactive", "batch"]}
+                }
+              },
+              verification_requirements: %{
+                type: "object",
+                properties: %{required: %{type: "boolean"}}
+              },
               completion_criteria: %{type: "string"}
             },
             required: ["id", "goal"]

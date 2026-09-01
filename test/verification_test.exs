@@ -95,9 +95,41 @@ defmodule BeamAgent.VerificationTest do
     end
   end
 
+  defmodule GeneralMutationProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :general_mutation_verification_test
+
+    @impl true
+    def complete(messages, _tools, options) do
+      cond do
+        String.contains?(options[:system_prompt] || "", "Role: Mandatory completion reviewer") ->
+          {:ok, %{content: "REVIEW_PASS\nThe mutation was verified.", tool_calls: []}}
+
+        Enum.any?(messages, &(&1.role == :tool and &1.name == "create_file")) ->
+          {:ok, %{content: "Surprise completed.", tool_calls: []}}
+
+        true ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "surprise-file",
+                 name: "create_file",
+                 arguments: %{"path" => "surprise.txt", "content" => "surprise\n"}
+               }
+             ]
+           }}
+      end
+    end
+  end
+
   setup_all do
     :ok = BeamAgent.CapabilityCatalog.register_provider(RecoveryAndReviewProvider)
     :ok = BeamAgent.CapabilityCatalog.register_provider(CommandMutationProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(GeneralMutationProvider)
     :ok
   end
 
@@ -183,6 +215,38 @@ defmodule BeamAgent.VerificationTest do
       assert goal.last_work.artifact.changed_files == ["generated.txt"]
       assert goal.last_work.artifact.workspace_delta.preexisting_dirty == false
       assert "run_command" in goal.last_work.artifact.mutation_sources
+    end
+  end
+
+  @tag :darwin
+  test "filesystem mutations force verification even when initial intent was general", context do
+    if :os.type() != {:unix, :darwin} do
+      :ok
+    else
+      config_dir = Path.join(context.workspace, ".beam_agent")
+      File.mkdir_p!(config_dir)
+
+      File.write!(
+        Path.join(config_dir, "verification.json"),
+        JSON.encode!(%{
+          version: 1,
+          checks: [%{id: "surprise", command: "test -f surprise.txt", timeout_ms: 5_000}]
+        })
+      )
+
+      assert {:ok, session_id} =
+               BeamAgent.start_session(
+                 data_dir: context.data_dir,
+                 workspace_root: context.workspace,
+                 provider: :general_mutation_verification_test,
+                 approval_policy: :auto
+               )
+
+      assert {:ok, "Surprise completed."} = BeamAgent.ask(session_id, "Please surprise me")
+      assert {:ok, goal} = BeamAgent.goal(session_id)
+      assert goal.last_work.contract.kind == :general
+      assert goal.last_work.artifact.changed_files == ["surprise.txt"]
+      assert goal.last_work.verification.status == :passed
     end
   end
 
