@@ -149,7 +149,7 @@ defmodule BeamAgent.CLITUITest do
       })
 
     payload = TUI.initial_payload(context.session_id, context.config)
-    race_types = Enum.map(payload.race_events, &get_in(&1, ["payload", "type"]))
+    race_types = Enum.map(payload.competition_events, &get_in(&1, ["payload", "type"]))
 
     assert race_types == [
              "provider_auction_started",

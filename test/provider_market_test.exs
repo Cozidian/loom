@@ -78,7 +78,8 @@ defmodule BeamAgent.ProviderMarketTest do
     assert [%{endpoint_id: "provider-a"}] = recovered.awards
   end
 
-  test "a race assigns distinct provider leases and records the winning provider", context do
+  test "a tournament assigns distinct provider leases and records the winning provider",
+       context do
     {:ok, session_id} = start_market_session(context)
 
     candidates = [
@@ -86,15 +87,15 @@ defmodule BeamAgent.ProviderMarketTest do
       %{id: "b", goal: "return a bounded result"}
     ]
 
-    assert {:ok, race} =
-             BeamAgent.race_workers(session_id, candidates,
+    assert {:ok, tournament} =
+             BeamAgent.tournament_workers(session_id, candidates,
                justification: "Compare two provider implementations and retain one"
              )
 
-    assert race.status == :selected
+    assert tournament.status == :selected
 
     endpoint_ids =
-      race.results
+      tournament.results
       |> Map.values()
       |> Enum.map(fn {:ok, result} -> result.provider_bid.endpoint_id end)
       |> Enum.sort()
@@ -102,9 +103,9 @@ defmodule BeamAgent.ProviderMarketTest do
     assert endpoint_ids == ["provider-a", "provider-b"]
 
     {:ok, events} = BeamAgent.events(session_id)
-    started = Enum.find(events, &(&1["type"] == "race_started"))
-    candidate_started = Enum.find(events, &(&1["type"] == "race_candidate_started"))
-    winner = Enum.find(events, &(&1["type"] == "race_winner_selected"))
+    started = Enum.find(events, &(&1["type"] == "tournament_started"))
+    candidate_started = Enum.find(events, &(&1["type"] == "tournament_candidate_started"))
+    winner = Enum.find(events, &(&1["type"] == "tournament_winner_selected"))
     settlement = Enum.find(events, &(&1["type"] == "provider_auction_settled"))
 
     assert started["data"]["provider_count"] == 2
@@ -114,12 +115,12 @@ defmodule BeamAgent.ProviderMarketTest do
     assert settlement["data"]["winner_endpoint_id"] == winner["data"]["winner_endpoint_id"]
 
     assert {:ok, market} = BeamAgent.provider_market(session_id)
-    assert market.purpose == :provider_race
+    assert market.purpose == :provider_tournament
     assert market.status == :selected
     assert market.settlement.winner_endpoint_id == winner["data"]["winner_endpoint_id"]
   end
 
-  test "a candidate can explicitly pin an endpoint in a provider race", context do
+  test "a candidate can explicitly pin an endpoint in a provider tournament", context do
     {:ok, session_id} = start_market_session(context)
 
     candidates = [
@@ -127,13 +128,13 @@ defmodule BeamAgent.ProviderMarketTest do
       %{id: "a", goal: "return a bounded result", endpoint_id: "provider-a"}
     ]
 
-    assert {:ok, race} =
-             BeamAgent.race_workers(session_id, candidates,
+    assert {:ok, tournament} =
+             BeamAgent.tournament_workers(session_id, candidates,
                justification: "Explicit cross-provider tournament"
              )
 
-    assert {:ok, %{provider_bid: %{endpoint_id: "provider-b"}}} = race.results["b"]
-    assert {:ok, %{provider_bid: %{endpoint_id: "provider-a"}}} = race.results["a"]
+    assert {:ok, %{provider_bid: %{endpoint_id: "provider-b"}}} = tournament.results["b"]
+    assert {:ok, %{provider_bid: %{endpoint_id: "provider-a"}}} = tournament.results["a"]
   end
 
   defp start_market_session(context) do

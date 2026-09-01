@@ -4,9 +4,9 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect auto status new sessions models race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
-  @race_event_types ~w(race_started race_candidate_started race_candidate_completed race_winner_selected race_collapsed race_inconclusive)
-  @race_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
+  @commands ~w(connect auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
+  @competition_event_types ~w(tournament_started tournament_candidate_started tournament_candidate_completed tournament_judgment_requested tournament_winner_selected tournament_collapsed tournament_inconclusive tournament_judgment_unresolved race_started race_candidate_started race_candidate_completed race_candidate_rejected race_candidate_cancelled race_winner_selected race_settled race_inconclusive)
+  @competition_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
   def available?(override \\ nil)
 
@@ -93,7 +93,7 @@ defmodule BeamAgent.CLI.TUI do
       attachments: json_safe(Map.get(bootstrap, :attachments, [])),
       workspace_files: repository_files(bootstrap.project_id),
       entries: history(bootstrap.events),
-      race_events: bootstrap.events |> race_history() |> json_safe(),
+      competition_events: bootstrap.events |> competition_history() |> json_safe(),
       context_stats: context_stats(session_id)
     }
   end
@@ -378,6 +378,15 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp dispatch_action(
+         %{"type" => "command", "command" => "tournament", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:tournament, query})
+    :ok
+  end
+
+  defp dispatch_action(
          %{"type" => "command", "command" => "tree", "query" => _query},
          controller
        ) do
@@ -486,7 +495,7 @@ defmodule BeamAgent.CLI.TUI do
 
   defp maybe_append_race_anchor(_event, entries), do: entries
 
-  defp race_history(events) do
+  defp competition_history(events) do
     race_context = race_context(events)
     Enum.filter(events, &race_ui_event?(&1, race_context))
   end
@@ -502,7 +511,7 @@ defmodule BeamAgent.CLI.TUI do
              "provider_auction_awarded",
              "provider_auction_settled"
            ] and
-             data["purpose"] == "provider_race" do
+             data["purpose"] in ["provider_race", "provider_tournament"] do
           auction_id = data["auction_id"] || data["provider_auction_id"]
 
           if is_binary(auction_id),
@@ -512,7 +521,12 @@ defmodule BeamAgent.CLI.TUI do
           context
         end
 
-      if type in ["race_candidate_started", "race_candidate_completed"] and
+      if type in [
+           "race_candidate_started",
+           "race_candidate_completed",
+           "tournament_candidate_started",
+           "tournament_candidate_completed"
+         ] and
            is_binary(data["worker_id"]) do
         update_in(context.workers, &MapSet.put(&1, data["worker_id"]))
       else
@@ -526,10 +540,10 @@ defmodule BeamAgent.CLI.TUI do
     data = event.payload.data
     auction_id = data["auction_id"] || data["provider_auction_id"]
 
-    type in @race_event_types or
+    type in @competition_event_types or
       (type in ~w(provider_auction_started provider_bid_submitted provider_auction_awarded provider_auction_settled) and
          MapSet.member?(context.auctions, auction_id)) or
-      (type in @race_activity_types and
+      (type in @competition_activity_types and
          MapSet.member?(context.workers, event.scope.session_id))
   end
 
@@ -730,6 +744,10 @@ defmodule BeamAgent.CLI.TUI do
     do:
       "Provider race started · #{data["provider_count"]} providers · #{data["candidate_count"]} candidates"
 
+  defp info_entry(%{payload: %{type: "tournament_started", data: data}}),
+    do:
+      "Provider tournament started · #{data["provider_count"]} providers · #{data["candidate_count"]} candidates"
+
   defp info_entry(%{payload: %{type: "race_candidate_started", data: data}}),
     do: "Candidate #{data["candidate_id"]} · #{data["endpoint_id"]} started"
 
@@ -737,11 +755,26 @@ defmodule BeamAgent.CLI.TUI do
     do:
       "Candidate #{data["candidate_id"]} · #{data["endpoint_id"]} · #{data["verification_status"]}"
 
+  defp info_entry(%{payload: %{type: "race_candidate_cancelled", data: data}}),
+    do: "Race lane #{data["candidate_id"]} cancelled after winner"
+
   defp info_entry(%{payload: %{type: "race_winner_selected", data: data}}),
     do: "Race winner · #{data["winner_endpoint_id"]} · #{data["winner_id"]}"
 
   defp info_entry(%{payload: %{type: "race_inconclusive"}}),
     do: "Provider race needs independent judgment"
+
+  defp info_entry(%{payload: %{type: "tournament_winner_selected", data: data}}),
+    do: "Tournament winner · #{data["winner_endpoint_id"]} · #{data["winner_id"]}"
+
+  defp info_entry(%{payload: %{type: "tournament_inconclusive"}}),
+    do: "Provider tournament needs independent judgment"
+
+  defp info_entry(%{payload: %{type: "tournament_judgment_requested"}}),
+    do: "Parent judge comparing tournament candidates"
+
+  defp info_entry(%{payload: %{type: "tournament_judgment_unresolved"}}),
+    do: "Parent judgment did not identify one candidate"
 
   defp info_entry(%{payload: %{type: "path_lease_denied", data: data}}),
     do: "Write lease conflict · #{data["path"]}"
@@ -855,7 +888,18 @@ defmodule BeamAgent.CLI.TUI do
               "race_candidate_completed",
               "race_winner_selected",
               "race_collapsed",
-              "race_inconclusive"
+              "race_inconclusive",
+              "race_settled",
+              "race_candidate_rejected",
+              "race_candidate_cancelled",
+              "tournament_started",
+              "tournament_candidate_started",
+              "tournament_candidate_completed",
+              "tournament_judgment_requested",
+              "tournament_winner_selected",
+              "tournament_collapsed",
+              "tournament_inconclusive",
+              "tournament_judgment_unresolved"
             ],
        do:
          "Race #{event_verb(type)} · #{short_id(data["race_id"])}#{optional_suffix(data["winner_id"])}"

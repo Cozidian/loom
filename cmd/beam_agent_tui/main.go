@@ -93,7 +93,8 @@ type packet struct {
 	RawPatch            string                  `json:"raw_patch,omitempty"`
 	Status              string                  `json:"status,omitempty"`
 	WorkspaceDiff       *treeWorkspace          `json:"workspace_diff,omitempty"`
-	RaceEvents          []map[string]any        `json:"race_events,omitempty"`
+	CompetitionEvents   []map[string]any        `json:"competition_events,omitempty"`
+	RaceEvents          []map[string]any        `json:"race_events,omitempty"` // legacy bridge payload
 }
 
 type entry struct {
@@ -226,7 +227,8 @@ var commands = []commandItem{
 	{ID: "new", Label: "New session", Hint: "/new"},
 	{ID: "sessions", Label: "Durable sessions", Hint: "/sessions"},
 	{ID: "models", Label: "Model registry", Hint: "/models [refresh|PROFILE]"},
-	{ID: "race", Label: "Race providers", Hint: "/race GOAL"},
+	{ID: "tournament", Label: "Compare provider quality", Hint: "/tournament GOAL"},
+	{ID: "race", Label: "First finish wins", Hint: "/race GOAL"},
 	{ID: "skills", Label: "Project skills", Hint: "/skills"},
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
@@ -339,7 +341,7 @@ func newModel(initial packet, bridge *protocol) model {
 		attachments:    initial.Attachments,
 		workspaceFiles: append([]string(nil), initial.WorkspaceFiles...),
 	}
-	for _, event := range initial.RaceEvents {
+	for _, event := range append(initial.RaceEvents, initial.CompetitionEvents...) {
 		m.applyRaceProjection(event, true)
 	}
 	for _, pending := range initial.Approvals {
@@ -983,30 +985,35 @@ func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
 		m.notice = ""
 		m.refreshTranscript(true)
 		return m, nil
-	case "/race":
+	case "/race", "/tournament":
+		kind := strings.TrimPrefix(name, "/")
 		if query == "" {
-			m.notice = "Usage: /race GOAL"
+			m.notice = "Usage: /" + kind + " GOAL"
 			m.noticeTone = "warning"
 			m.refreshTranscript(true)
 			return m, nil
 		}
 		if m.status != "ready" {
-			m.notice = "Cancel the current turn before starting a provider race"
+			m.notice = "Cancel the current turn before starting a provider " + kind
 			m.noticeTone = "warning"
 			m.refreshTranscript(true)
 			return m, nil
 		}
 		if len(m.attachments) > 0 {
-			m.notice = "Send attached images normally; provider races currently accept text goals only"
+			m.notice = "Send attached images normally; provider competitions currently accept text goals only"
 			m.noticeTone = "warning"
 			m.refreshTranscript(true)
 			return m, nil
 		}
-		m.entries = append(m.entries, entry{Kind: "user", Content: "Race providers · " + query, Role: spineUser})
+		label := "Race providers"
+		if kind == "tournament" {
+			label = "Tournament providers"
+		}
+		m.entries = append(m.entries, entry{Kind: "user", Content: label + " · " + query, Role: spineUser})
 		m.status = "providers bidding"
 		m.notice = ""
 		m.refreshTranscript(true)
-		return m, m.send(packet{Type: "command", Command: "race", Query: query})
+		return m, m.send(packet{Type: "command", Command: kind, Query: query})
 	case "/model":
 		name = "/status"
 	}
@@ -1391,16 +1398,20 @@ func (m *model) applyMarketStatus(eventType string, data map[string]any) {
 	case "provider_auction_awarded":
 		if asString(data["purpose"]) == "provider_race" {
 			m.status = "racing providers"
+		} else if asString(data["purpose"]) == "provider_tournament" {
+			m.status = "running tournament"
 		} else {
 			m.status = "working"
 		}
-	case "race_started":
+	case "race_started", "tournament_started":
 		count := asString(data["provider_count"])
 		if count == "" {
 			count = asString(data["candidate_count"])
 		}
 		m.status = "racing " + count + " providers"
-	case "race_collapsed", "race_inconclusive", "provider_auction_settled":
+	case "tournament_judgment_requested":
+		m.status = "judging tournament"
+	case "race_settled", "race_inconclusive", "tournament_collapsed", "tournament_inconclusive", "provider_auction_settled":
 		m.status = "working"
 	}
 }
@@ -1562,7 +1573,19 @@ func runtimeInfoText(eventType string, data map[string]any, sessionID string, ro
 	case "race_winner_selected":
 		return "Race winner · " + asString(data["winner_endpoint_id"]) + " · " + asString(data["winner_id"])
 	case "race_inconclusive":
-		return "Provider race needs independent judgment"
+		return "Provider race had no admissible finisher"
+	case "race_candidate_cancelled":
+		return "Race lane " + asString(data["candidate_id"]) + " cancelled"
+	case "tournament_started":
+		return "Provider tournament started · " + asString(data["provider_count"]) + " providers · " + asString(data["candidate_count"]) + " candidates"
+	case "tournament_winner_selected":
+		return "Tournament winner · " + asString(data["winner_endpoint_id"]) + " · " + asString(data["winner_id"])
+	case "tournament_inconclusive":
+		return "Provider tournament needs independent judgment"
+	case "tournament_judgment_requested":
+		return "Parent judge comparing tournament candidates"
+	case "tournament_judgment_unresolved":
+		return "Parent judgment did not identify one candidate"
 	case "goal_steered":
 		return "Live steering queued for active worker"
 	case "path_lease_denied":

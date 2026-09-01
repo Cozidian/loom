@@ -153,21 +153,32 @@ endpoint actor for a content-free quote. A bid contains endpoint/provider/model
 identity, a deterministic fit score, confidence, verified sample count, cost
 tier, and estimated latency. It contains neither prompt text nor credentials.
 Manual routing remains a hard selection constraint; Auto uses the normal router
-policy and evidence, while additional race awards follow ranked eligible bids.
+policy and evidence, while additional tournament or race awards follow ranked eligible bids.
 The coordinator owns recent market state and the session event log records
 `provider_auction_started`, `provider_bid_submitted`,
 `provider_auction_awarded`, and `provider_auction_settled` facts.
 
-`Goal.Race` requests two to four awards, assigns distinct endpoint leases where
-possible, and pins each worker's provider profile before construction. A
-candidate can explicitly request an endpoint or provider, but cannot bypass
-model capability, privacy, locality, health, budget, or authority constraints.
-Race candidate start/completion events retain worker, bid, and endpoint
-identity; the final settlement links the selected candidate back to its
-provider. The Go TUI projects these durable events into a grouped transcript
-card and an interactive race arena, but does not infer a leader, select
-providers, or own auctions. A finished candidate remains merely submitted until
-the runtime emits `race_winner_selected`.
+`Goal.Tournament` requests two to four awards, assigns distinct endpoint leases
+where possible, runs every candidate, and selects only from deterministic
+consensus, verification, or a caller-supplied evaluator. Its durable
+`tournament_*` events keep quality judging distinct from completion order. In
+interactive chat, an inconclusive result emits `tournament_judgment_requested`;
+the root agent must return one original candidate verbatim. The runtime matches
+that answer to its durable candidate set, emits `tournament_winner_selected`
+with `selection_source: parent_judgment`, settles the provider auction again as
+selected, and emits `tournament_collapsed`. The TUI therefore never infers the
+judge's choice.
+
+`Goal.Race` uses the same provider market and constrained worker construction,
+but its coordinator selects the first successful admissible terminal result.
+It records `race_winner_selected` before cancelling the remaining worker trees,
+waits for their runner processes to terminate, and emits `race_settled` only
+after cleanup. Errors, empty results, and candidates that fail the configured
+verification or admissibility gate cannot win. Shared-workspace lanes receive
+only read/trusted built-in tools; write/execute tools require worktree
+isolation. Verified coding races require worktree isolation. The Go TUI projects both modes into one interactive arena;
+it never infers a winner or owns cancellation. Historical `race_*` events
+without `selection_policy: first_admissible` replay as legacy tournaments.
 
 All provider execution enters through a versioned `ModelRequest`, including
 ordinary tool-loop steps and context compaction. It explicitly carries request

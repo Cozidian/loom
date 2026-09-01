@@ -19,7 +19,7 @@ It includes:
 - session-owned auto/ask/deny policy with once/always approvals and revocation;
 - goal-supervised local stdio MCP servers with namespaced tools;
 - goal-scoped provider auctions and stable model leases across configured profiles;
-- bounded cross-provider races with deterministic winner selection;
+- bounded quality tournaments plus first-admissible provider races with early loser cancellation;
 - content-free model/task outcomes with later verification attachment;
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
@@ -105,11 +105,12 @@ idle). Approval dialogs default to deny and offer explicit once or durable
 scoped-always choices.
 
 Number keys open the shared session views when the composer is empty: chat,
-tree, files, events, sessions, models, and the race arena (`7`). The race arena
-groups provider bidding and candidate activity into parallel lanes. Arrow keys
+tree, files, events, sessions, models, and the competition arena (`7`). The arena
+groups provider bidding and candidate activity into parallel lanes for both
+quality tournaments and first-finish races. Arrow keys
 focus a lane and Enter expands its bid evidence.
 
-The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`, `/race GOAL`,
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`, `/tournament GOAL`, `/race GOAL`,
 `/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/steer MESSAGE`, `/events`, `/tree`, `/clear`,
 and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservative
 checks discovered from Mix, Go, and Git project files. Ollama, OpenAI, xAI/Grok,
@@ -153,16 +154,25 @@ latency estimate, and cost tier. During work, the chat reports `providers
 bidding` and `racing N providers` instead of hiding orchestration behind a
 generic spinner.
 
-Use `/race GOAL` when independent attempts are worth the additional cost. The
-runtime requests bids from eligible configured endpoints, awards up to three
-distinct provider leases, runs the candidates independently, and retains one
-winner only when consensus or deterministic verification justifies it. The
-race arena marks early results as submitted and awaiting judgment; completion
-order is never presented as a lead or used as the winner decision. The
-ordinary API also accepts candidate `endpoint_id`, `provider_profile`, or
-`provider` pins through `BeamAgent.race_workers/3`. Pins remain subject to the
-same capability, locality, privacy, health, and budget policy as automatic
-awards.
+Use `/tournament GOAL` when quality matters more than latency. It runs every
+candidate, then retains one winner only when consensus or deterministic
+verification justifies it. If that evidence is inconclusive during chat, the
+root agent acts as a second-stage judge, selects exactly one original candidate,
+and durably closes the same tournament. The arena shows that winner and marks
+the other candidates discarded. `BeamAgent.tournament_workers/3` exposes the
+lower-level deterministic mechanism, and `BeamAgent.speculate_implementations/3`
+uses isolated worktrees and verified-patch judging.
+
+Use `/race GOAL` when latency matters. `BeamAgent.race_workers/3` durably selects
+the first successful, non-empty, admissible terminal result, cancels every other
+worker tree, waits for their runner processes to stop, and then settles the
+provider auction. A fast failure cannot win. Shared-workspace race lanes are
+restricted to read-only tools so a cancelled loser cannot leave mutations
+behind; callers can opt into isolated write-capable lanes with `isolation:
+:worktree`. Candidate `endpoint_id`,
+`provider_profile`, or `provider` pins remain subject to capability, locality,
+privacy, health, and budget policy. Verified coding races require worktree
+isolation.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
@@ -285,7 +295,7 @@ Every model choice first passes through the goal-owned
 `ProviderBidCoordinator`. It starts one short-lived OTP bidder task per eligible
 endpoint, collects secret-free bids from declared capability, cost and latency
 claims plus verified outcome evidence, then awards a bounded lease. Ordinary
-work receives one stable lease; races receive distinct leases where the registry
+work receives one stable lease; tournaments and races receive distinct leases where the registry
 has enough eligible providers. Auction, bid, award, candidate, winner, and
 settlement facts are durable runtime events, while prompts and model output are
 never copied into market records.

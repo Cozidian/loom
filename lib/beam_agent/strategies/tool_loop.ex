@@ -11,10 +11,17 @@ defmodule BeamAgent.Strategies.ToolLoop do
     ModelRequest,
     OutcomeStore,
     RacePolicy,
+    TournamentPolicy,
     ToolRunner
   }
 
-  alias BeamAgent.Goal.{BudgetManager, CapabilityManager, ModelLease, ProviderBidCoordinator}
+  alias BeamAgent.Goal.{
+    BudgetManager,
+    CapabilityManager,
+    ModelLease,
+    ProviderBidCoordinator,
+    Tournament
+  }
 
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
@@ -59,7 +66,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp start_turn(context, prompt, turn) do
-    case maybe_race(context, prompt) do
+    case maybe_competition(context, prompt) do
       {:answered, content} ->
         with {:ok, _} <-
                EventLog.append(context.session_id, :assistant_message, %{
@@ -74,8 +81,14 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp maybe_race(context, prompt) do
-    case {Map.get(context, :turn_attachments, []), RacePolicy.consider(prompt, context)} do
+  defp maybe_competition(context, prompt) do
+    decision =
+      case RacePolicy.consider(prompt, context) do
+        :skip -> TournamentPolicy.consider(prompt, context)
+        race -> race
+      end
+
+    case {Map.get(context, :turn_attachments, []), decision} do
       {[_ | _], _decision} ->
         :continue
 
@@ -90,11 +103,32 @@ defmodule BeamAgent.Strategies.ToolLoop do
           {:ok, %{status: :selected} = race} ->
             case winner_content(race) do
               content when is_binary(content) and content != "" -> {:answered, content}
-              _missing -> continue_after_inconclusive_race(context, race)
+              _missing -> :continue
             end
 
-          {:ok, race} ->
-            continue_after_inconclusive_race(context, race)
+          {:ok, _race} ->
+            :continue
+
+          {:error, _reason} ->
+            :continue
+        end
+
+      {[], {:tournament, plan}} ->
+        opts = [
+          justification: plan.justification,
+          maximum_parallelism: length(plan.candidates),
+          worker_options: race_worker_options(context)
+        ]
+
+        case BeamAgent.tournament_workers(context.session_id, plan.candidates, opts) do
+          {:ok, %{status: :selected} = tournament} ->
+            case winner_content(tournament) do
+              content when is_binary(content) and content != "" -> {:answered, content}
+              _missing -> continue_after_inconclusive_tournament(context, tournament)
+            end
+
+          {:ok, tournament} ->
+            continue_after_inconclusive_tournament(context, tournament)
 
           {:error, _reason} ->
             :continue
@@ -105,18 +139,20 @@ defmodule BeamAgent.Strategies.ToolLoop do
     end
   end
 
-  defp continue_after_inconclusive_race(context, race) do
+  defp continue_after_inconclusive_tournament(context, tournament) do
+    _ = Tournament.request_judgment(context.session_id, tournament)
+
     _ =
       EventLog.append(context.session_id, :user_message, %{
-        "content" => race_judgment_prompt(race)
+        "content" => tournament_judgment_prompt(tournament)
       })
 
     :continue
   end
 
-  defp race_judgment_prompt(race) do
+  defp tournament_judgment_prompt(tournament) do
     candidates =
-      race.results
+      tournament.results
       |> Enum.sort_by(fn {id, _result} -> id end)
       |> Enum.flat_map(fn
         {id, {:ok, %{content: content}}} when is_binary(content) and content != "" ->
@@ -127,7 +163,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       end)
 
     """
-    The runtime raced #{map_size(race.results)} independent candidates for this goal and could not select a winner with deterministic evidence. Pick exactly one candidate. Quote it verbatim. Do not merge, blend, or list them.
+    The runtime compared #{map_size(tournament.results)} independent tournament candidates for this goal and could not select a winner with deterministic evidence. Pick exactly one candidate. Return that candidate's answer verbatim with no label, preface, explanation, merge, blend, or list.
 
     Candidates:
     #{Enum.join(candidates, "\n\n")}
@@ -676,7 +712,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp handle_terminal_response(context, turn, step, content, tool_schemas) do
     case completion_guard(context, turn, content, tool_schemas) do
       :complete ->
-        finish(context, turn, step, content || "")
+        answer = content || ""
+
+        case Tournament.resolve_pending_judgment(context.goal_id, context.session_id, answer) do
+          {:ok, winner_content} -> finish(context, turn, step, winner_content)
+          _not_resolved -> finish(context, turn, step, answer)
+        end
 
       {:non_final, reason} ->
         continue_after_non_final_response(context, turn, step, reason)

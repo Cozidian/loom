@@ -135,6 +135,9 @@ defmodule BeamAgent do
   def race_workers(parent_session_id, candidates, opts \\ []),
     do: BeamAgent.Goal.Race.run(parent_session_id, candidates, opts)
 
+  def tournament_workers(parent_session_id, candidates, opts \\ []),
+    do: BeamAgent.Goal.Tournament.run(parent_session_id, candidates, opts)
+
   def speculate_implementations(parent_session_id, candidates, opts \\ []) do
     opts =
       opts
@@ -142,7 +145,7 @@ defmodule BeamAgent do
       |> Keyword.put(:verify_candidates, true)
       |> Keyword.put_new(:evaluator, :verified_patch)
 
-    BeamAgent.Goal.Race.run(parent_session_id, candidates, opts)
+    BeamAgent.Goal.Tournament.run(parent_session_id, candidates, opts)
   end
 
   def complete_worker(

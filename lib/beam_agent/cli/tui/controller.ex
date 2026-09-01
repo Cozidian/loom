@@ -600,7 +600,46 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
     prompt =
       """
-      Run #{count} competing independent provider candidates for exactly the same request. Keep only the single winner and do not merge their answers.
+      Run a provider race with #{count} independent candidates for exactly the same request. The first admissible terminal result wins; cancel all other candidates immediately.
+
+      User request:
+      #{query}
+      """
+      |> String.trim()
+
+    case Runtime.submit(state.runtime, prompt, []) do
+      :ok ->
+        %{state | current: :running}
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
+  defp run_command({:tournament, ""}, state) do
+    notify(state, {:notice, :warning, "Usage: /tournament GOAL"})
+    state
+  end
+
+  defp run_command({:tournament, _query}, %{current: current} = state)
+       when not is_nil(current) do
+    notify(state, {:notice, :warning, "A turn is already running"})
+    state
+  end
+
+  defp run_command({:tournament, query}, state) when is_binary(query) do
+    provider_count =
+      case Runtime.models(state.runtime) do
+        {:ok, endpoints} -> endpoints |> length() |> min(3) |> max(2)
+        {:error, _reason} -> 2
+      end
+
+    count = if provider_count == 3, do: "three", else: "two"
+
+    prompt =
+      """
+      Run a provider tournament with #{count} competing independent candidates for exactly the same request. Keep only the single winner selected by quality evidence and do not merge their answers.
 
       User request:
       #{query}

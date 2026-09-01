@@ -81,7 +81,7 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
     data =
       settlement
       |> Map.put(:auction_id, auction_id)
-      |> Map.put_new(:purpose, :provider_race)
+      |> Map.put_new(:purpose, :work_contract)
       |> stringify()
 
     case append(session_id, :provider_auction_settled, data) do
@@ -364,6 +364,7 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
   end
 
   defp known_purpose("provider_race"), do: :provider_race
+  defp known_purpose("provider_tournament"), do: :provider_tournament
   defp known_purpose(_purpose), do: :work_contract
 
   defp known_status("selected", _awarded), do: :selected

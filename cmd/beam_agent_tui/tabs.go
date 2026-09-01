@@ -32,7 +32,7 @@ var tabLabels = [tabCount]string{
 	tabEvents:   "events",
 	tabSessions: "sessions",
 	tabModels:   "models",
-	tabRace:     "race",
+	tabRace:     "arena",
 }
 
 // sheetKind identifies which bottom-docked sheet, if any, is currently

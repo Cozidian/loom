@@ -23,7 +23,7 @@ defmodule BeamAgent.RuntimeEventView do
     delegation_id completion_criteria_fingerprint progress_fingerprint result_fingerprint spec_id
     organization_id organization_status coordinator_id plan_id task_id task_status task_count
     resource_pool resource_lease_id queue_depth wait_ms evidence_count
-    race_id candidate_id candidate_count winner_id winner_endpoint_id winner_provider discarded_count merged evaluation_fingerprint justification_fingerprint provider_auction_id
+    race_id tournament_id candidate_id candidate_count winner_id winner_endpoint_id winner_provider discarded_count cancelled_count merged selection_policy selection_source evaluation_fingerprint justification_fingerprint provider_auction_id
     generation added_count changed_count removed_count change hash path command_fingerprint
     worktree_id owner_worker_id base_revision worktree_status changed_file_count patch_fingerprint force
     contract_id artifact_id expected_artifact phase worker_kind

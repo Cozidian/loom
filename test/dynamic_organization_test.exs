@@ -155,7 +155,7 @@ defmodule BeamAgent.DynamicOrganizationTest do
     assert Enum.any?(events, &(&1["type"] == "organization_finished"))
   end
 
-  test "race-to-solution selects only deterministic consensus and never merges", context do
+  test "tournament selects only deterministic consensus and never merges", context do
     assert {:ok, root_id} =
              BeamAgent.start_session(
                data_dir: context.data_dir,
@@ -169,18 +169,20 @@ defmodule BeamAgent.DynamicOrganizationTest do
       %{id: "b", goal: "return the same bounded answer"}
     ]
 
-    assert {:ok, race} =
-             BeamAgent.race_workers(root_id, candidates,
+    assert {:ok, tournament} =
+             BeamAgent.tournament_workers(root_id, candidates,
                justification: "Two cheap independent checks reduce ambiguity",
                worker_options: [provider: :echo, data_dir: context.data_dir]
              )
 
-    assert race.status == :selected, inspect(race, pretty: true, limit: :infinity)
-    assert race.winner_id == "a"
+    assert tournament.status == :selected,
+           inspect(tournament, pretty: true, limit: :infinity)
+
+    assert tournament.winner_id == "a"
 
     assert {:ok, events} = BeamAgent.events(root_id)
-    selected = Enum.find(events, &(&1["type"] == "race_winner_selected"))
-    collapsed = Enum.find(events, &(&1["type"] == "race_collapsed"))
+    selected = Enum.find(events, &(&1["type"] == "tournament_winner_selected"))
+    collapsed = Enum.find(events, &(&1["type"] == "tournament_collapsed"))
     assert selected["data"]["winner_id"] == "a"
     assert collapsed["data"]["merged"] == false
   end
@@ -256,7 +258,7 @@ defmodule BeamAgent.DynamicOrganizationTest do
     refute File.exists?(Path.join(context.workspace, "candidate.txt"))
 
     {:ok, events} = BeamAgent.events(root_id)
-    collapsed = Enum.find(events, &(&1["type"] == "race_collapsed"))
+    collapsed = Enum.find(events, &(&1["type"] == "tournament_collapsed"))
     assert collapsed["data"]["merged"] == false
     assert collapsed["data"]["retained_worktree_count"] == 2
   end

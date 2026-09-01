@@ -40,7 +40,7 @@ func (m model) renderModelsTab() string {
 
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("PROVIDER MARKET"))
 	if m.modelsData.Market == nil {
-		fmt.Fprintf(&b, "%s\n", mutedStyle.Render("No auction yet · send a message or use /race GOAL"))
+		fmt.Fprintf(&b, "%s\n", mutedStyle.Render("No auction yet · send a message or use /race or /tournament"))
 	} else {
 		market := m.modelsData.Market
 		fmt.Fprintf(&b, "%s\n", bodyStyle.Render(providerMarketSummary(market)))

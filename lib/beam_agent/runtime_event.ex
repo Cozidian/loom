@@ -114,7 +114,17 @@ defmodule BeamAgent.RuntimeEvent do
        do: :lifecycle
 
   defp category(type)
-       when type in ["race_started", "race_candidate_started", "race_candidate_completed"],
+       when type in [
+              "race_started",
+              "race_candidate_started",
+              "race_candidate_completed",
+              "race_candidate_cancelled",
+              "race_candidate_rejected",
+              "tournament_started",
+              "tournament_candidate_started",
+              "tournament_candidate_completed",
+              "tournament_judgment_requested"
+            ],
        do: :lifecycle
 
   defp category(type)
@@ -271,8 +281,12 @@ defmodule BeamAgent.RuntimeEvent do
               "delegation_rejected",
               "delegation_cancelled",
               "race_winner_selected",
-              "race_collapsed",
-              "race_inconclusive"
+              "race_settled",
+              "race_inconclusive",
+              "tournament_winner_selected",
+              "tournament_collapsed",
+              "tournament_inconclusive",
+              "tournament_judgment_unresolved"
             ],
        do: :outcome
 

@@ -278,6 +278,30 @@ func TestRaceSlashCommandIsDiscoverableAndForwardsTheGoal(t *testing.T) {
 	}
 }
 
+func TestTournamentSlashCommandIsDiscoverableAndForwardsTheGoal(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+
+	next, cmd := m.runSlash("/tournament implement clipboard image paste")
+	if cmd == nil {
+		t.Fatal("expected provider tournament bridge command")
+	}
+	cmd()
+
+	updated := next.(model)
+	if !strings.Contains(updated.entries[0].Content, "Tournament providers") {
+		t.Fatalf("expected an immediately visible tournament, got %#v", updated.entries)
+	}
+
+	action, err := newProtocol(&wire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Command != "tournament" || action.Query != "implement clipboard image paste" {
+		t.Fatalf("unexpected tournament action: %#v", action)
+	}
+}
+
 func TestRaceSlashCommandDoesNotSilentlyDropAttachments(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	m.attachments = []attachmentItem{{ID: "attachment-1", Name: "clipboard.png"}}
@@ -983,7 +1007,7 @@ func TestProviderMarketEventsExplainRaceAndUpdateStatus(t *testing.T) {
 	}
 }
 
-func TestRaceArenaGroupsEventsAndNeverTreatsFirstSubmissionAsWinner(t *testing.T) {
+func TestLegacyRaceArenaReplaysAsTournamentAndNeverTreatsFirstSubmissionAsWinner(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	root := "session-root"
 
@@ -1085,6 +1109,88 @@ func TestRaceArenaTracksWorkerActivityAndOnlyEvaluatorSelectsWinner(t *testing.T
 	}, root, true))
 	if m.latestRace().WinnerID != "candidate-a" || m.latestRace().Phase != "selected" {
 		t.Fatalf("expected evaluator selection to mark the winner: %#v", m.latestRace())
+	}
+}
+
+func TestTournamentParentJudgmentReopensAndClosesTheArenaWithAWinner(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	root := "session-root"
+	m.applyStream(runtimeEvent("provider_auction_started", map[string]any{
+		"auction_id": "auction-judge", "purpose": "provider_tournament",
+	}, root, true))
+	m.applyStream(runtimeEvent("tournament_started", map[string]any{
+		"tournament_id": "tournament-judge", "provider_auction_id": "auction-judge", "candidate_count": float64(2),
+	}, root, true))
+	for _, lane := range []map[string]any{
+		{"tournament_id": "tournament-judge", "candidate_id": "candidate-1", "worker_id": "worker-1", "endpoint_id": "ollama"},
+		{"tournament_id": "tournament-judge", "candidate_id": "candidate-2", "worker_id": "worker-2", "endpoint_id": "grok"},
+	} {
+		m.applyStream(runtimeEvent("tournament_candidate_started", lane, root, true))
+		m.applyStream(runtimeEvent("tournament_candidate_completed", lane, root, true))
+	}
+	m.applyStream(runtimeEvent("tournament_inconclusive", map[string]any{
+		"tournament_id": "tournament-judge",
+	}, root, true))
+	m.applyStream(runtimeEvent("tournament_judgment_requested", map[string]any{
+		"tournament_id": "tournament-judge", "selection_source": "parent_judgment",
+	}, root, true))
+	if m.latestRace().Phase != "judging" || !strings.Contains(m.latestRace().Status, "parent judge") {
+		t.Fatalf("expected parent judgment to reopen judging, got %#v", m.latestRace())
+	}
+	m.applyStream(runtimeEvent("tournament_winner_selected", map[string]any{
+		"tournament_id": "tournament-judge", "winner_id": "candidate-2", "winner_endpoint_id": "grok", "selection_source": "parent_judgment",
+	}, root, true))
+	m.applyStream(runtimeEvent("tournament_collapsed", map[string]any{
+		"tournament_id": "tournament-judge", "winner_id": "candidate-2", "selection_source": "parent_judgment",
+	}, root, true))
+
+	arena := m.latestRace()
+	if arena.Phase != "selected" || arena.WinnerID != "candidate-2" || arena.Candidates[0].Status != "discarded" {
+		t.Fatalf("expected judged tournament winner and discarded loser, got %#v", arena)
+	}
+	view := m.renderRaceTab()
+	for _, want := range []string{"TOURNAMENT STATE", "selected by parent judge", "grok"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in judged tournament view:\n%s", want, view)
+		}
+	}
+}
+
+func TestSpeedRaceShowsFirstAdmissibleWinnerAndCancelledLanes(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	root := "session-root"
+	m.applyStream(runtimeEvent("provider_auction_started", map[string]any{
+		"auction_id": "auction-speed", "purpose": "provider_race",
+	}, root, true))
+	m.applyStream(runtimeEvent("race_started", map[string]any{
+		"race_id": "race-speed", "provider_auction_id": "auction-speed",
+		"candidate_count": float64(2), "selection_policy": "first_admissible",
+	}, root, true))
+	for _, lane := range []map[string]any{
+		{"race_id": "race-speed", "candidate_id": "fast", "worker_id": "worker-fast", "endpoint_id": "codex"},
+		{"race_id": "race-speed", "candidate_id": "slow", "worker_id": "worker-slow", "endpoint_id": "claude"},
+	} {
+		m.applyStream(runtimeEvent("race_candidate_started", lane, root, true))
+	}
+	m.applyStream(runtimeEvent("race_candidate_completed", map[string]any{
+		"race_id": "race-speed", "candidate_id": "fast", "worker_id": "worker-fast", "endpoint_id": "codex",
+	}, root, true))
+	m.applyStream(runtimeEvent("race_winner_selected", map[string]any{
+		"race_id": "race-speed", "winner_id": "fast", "winner_endpoint_id": "codex",
+	}, root, true))
+	m.applyStream(runtimeEvent("race_candidate_cancelled", map[string]any{
+		"race_id": "race-speed", "candidate_id": "slow", "worker_id": "worker-slow",
+	}, root, true))
+
+	arena := m.latestRace()
+	if arena.Mode != "race" || arena.WinnerID != "fast" || arena.Candidates[1].Status != "cancelled" {
+		t.Fatalf("expected an authoritative speed-race projection, got %#v", arena)
+	}
+	view := m.renderRaceTab()
+	for _, want := range []string{"SPEED RACE", "First admissible terminal result wins", "first admissible finish"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in speed-race view:\n%s", want, view)
+		}
 	}
 }
 
@@ -1682,7 +1788,7 @@ func TestTabStripStaysOnOneRow(t *testing.T) {
 	}
 
 	labelsLine := lines[0]
-	for _, want := range []string{"BEAM", "1 chat", "2 tree", "3 files", "4 events", "5 sessions", "6 models", "7 race"} {
+	for _, want := range []string{"BEAM", "1 chat", "2 tree", "3 files", "4 events", "5 sessions", "6 models", "7 arena"} {
 		if !strings.Contains(labelsLine, want) {
 			t.Fatalf("expected %q on the tab labels row, got %q", want, labelsLine)
 		}
