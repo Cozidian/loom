@@ -1,5 +1,6 @@
 defmodule BeamAgent.ProvidersTest do
   use ExUnit.Case, async: true
+  import ExUnit.CaptureLog
 
   alias BeamAgent.Providers.{Anthropic, Ollama, OpenAI, XAI}
 
@@ -306,6 +307,126 @@ defmodule BeamAgent.ProvidersTest do
     assert hd(first["input"])["text"] =~ "first request"
     assert hd(second["input"])["text"] =~ "second request"
     refute hd(second["input"])["text"] =~ "first request"
+  end
+
+  test "idle Codex notifications are consumed without resetting the native conversation" do
+    session_id = "idle-codex-notification-#{System.unique_integer([:positive])}"
+
+    options = [
+      model: "gpt-test",
+      codex_client: PersistentCodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    {:ok, conversation} =
+      BeamAgent.CodexAppServer.Conversation.start_link(
+        session_id: session_id,
+        provider_options: options
+      )
+
+    assert {:ok, %{content: "reply-1"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "first request"}],
+               [],
+               Keyword.put(options, :beam_turn, 1),
+               fn _event -> :ok end
+             )
+
+    client = :sys.get_state(conversation).conversation.client
+
+    log =
+      capture_log(fn ->
+        send(
+          conversation,
+          {:codex_app_server, client,
+           {:notification,
+            %{
+              "method" => "mcpServer/startupStatus/updated",
+              "params" => %{
+                "threadId" => "persistent-thread",
+                "name" => "context7",
+                "status" => "ready",
+                "error" => nil,
+                "failureReason" => nil
+              }
+            }}}
+        )
+
+        _state = :sys.get_state(conversation)
+      end)
+
+    refute log =~ "received unexpected message"
+    assert Process.alive?(conversation)
+
+    assert {:ok, %{content: "reply-2"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [
+                 %{role: :user, content: "first request"},
+                 %{role: :assistant, content: "reply-1", tool_calls: []},
+                 %{role: :user, content: "second request"}
+               ],
+               [],
+               Keyword.put(options, :beam_turn, 2),
+               fn _event -> :ok end
+             )
+
+    assert_receive :persistent_codex_client_started
+    assert_receive {:persistent_thread_started, _params}
+    refute_receive :persistent_codex_client_started
+    refute_receive {:persistent_thread_started, _params}
+  end
+
+  test "idle Codex errors reset the native conversation before the next invocation" do
+    session_id = "idle-codex-error-#{System.unique_integer([:positive])}"
+
+    options = [
+      model: "gpt-test",
+      codex_client: PersistentCodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    {:ok, conversation} =
+      BeamAgent.CodexAppServer.Conversation.start_link(
+        session_id: session_id,
+        provider_options: options
+      )
+
+    assert {:ok, %{content: "reply-1"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "first request"}],
+               [],
+               Keyword.put(options, :beam_turn, 1),
+               fn _event -> :ok end
+             )
+
+    client = :sys.get_state(conversation).conversation.client
+
+    capture_log(fn ->
+      send(
+        conversation,
+        {:codex_app_server, client,
+         {:notification, %{"method" => "error", "params" => %{"message" => "late"}}}}
+      )
+
+      assert :sys.get_state(conversation).conversation == nil
+    end)
+
+    assert {:ok, %{content: "reply-1"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "new request"}],
+               [],
+               Keyword.put(options, :beam_turn, 2),
+               fn _event -> :ok end
+             )
+
+    assert_receive :persistent_codex_client_started
+    assert_receive {:persistent_thread_started, _params}
+    assert_receive :persistent_codex_client_started
+    assert_receive {:persistent_thread_started, _params}
   end
 
   test "ChatGPT session supervision reuses the native thread through BeamAgent.ask" do

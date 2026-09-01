@@ -7,6 +7,7 @@ defmodule BeamAgent.CodexAppServer.Conversation do
   back through the current BeamAgent turn's `ToolRunner` executor.
   """
   use GenServer
+  require Logger
 
   alias BeamAgent.{CodexAppServer, Names}
 
@@ -49,6 +50,61 @@ defmodule BeamAgent.CodexAppServer.Conversation do
         {:reply, {:error, reason}, %{state | conversation: nil}}
     end
   end
+
+  @impl true
+  def handle_info(
+        {:codex_app_server, client, {:notification, %{"method" => "error", "params" => _error}}},
+        %{conversation: %{client: client} = conversation} = state
+      ) do
+    Logger.warning(
+      "Codex App Server reported an error while the conversation was idle; resetting"
+    )
+
+    close(conversation)
+    {:noreply, %{state | conversation: nil}}
+  end
+
+  def handle_info(
+        {:codex_app_server, client, {:notification, %{"method" => method}}},
+        %{conversation: %{client: client}} = state
+      ) do
+    Logger.debug("Codex App Server idle notification: #{method}")
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:codex_app_server, client, {:request, %{"method" => method}}},
+        %{conversation: %{client: client} = conversation} = state
+      ) do
+    Logger.warning(
+      "Codex App Server sent request #{method} without an active invocation; resetting conversation"
+    )
+
+    close(conversation)
+    {:noreply, %{state | conversation: nil}}
+  end
+
+  def handle_info(
+        {:codex_app_server, client, {:protocol_error, reason, _line}},
+        %{conversation: %{client: client} = conversation} = state
+      ) do
+    Logger.warning(
+      "Codex App Server protocol error while the conversation was idle: #{inspect(reason)}; resetting"
+    )
+
+    close(conversation)
+    {:noreply, %{state | conversation: nil}}
+  end
+
+  def handle_info(
+        {:codex_app_server, client, {:exit, reason}},
+        %{conversation: %{client: client}} = state
+      ) do
+    Logger.warning("Codex App Server exited while the conversation was idle: #{inspect(reason)}")
+    {:noreply, %{state | conversation: nil}}
+  end
+
+  def handle_info({:codex_app_server, _stale_client, _event}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
