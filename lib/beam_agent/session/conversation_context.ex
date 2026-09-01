@@ -343,6 +343,13 @@ defmodule BeamAgent.Session.ConversationContext do
   end
 
   defp compaction_plan(events, projection, stats, force?) do
+    stage_boundary =
+      events
+      |> Enum.reverse()
+      |> Enum.find(fn event ->
+        event["type"] == "context_stage_boundary" and event["seq"] > projection.through_seq
+      end)
+
     boundaries =
       Enum.filter(events, fn event ->
         event["type"] == "turn_finished" and event["seq"] > projection.through_seq
@@ -351,7 +358,8 @@ defmodule BeamAgent.Session.ConversationContext do
     keep_turns = if force?, do: 1, else: @recent_turns
     eligible_count = max(0, length(boundaries) - keep_turns)
 
-    boundary = if eligible_count > 0, do: Enum.at(boundaries, eligible_count - 1)
+    boundary =
+      stage_boundary || if(eligible_count > 0, do: Enum.at(boundaries, eligible_count - 1))
 
     case boundary do
       nil ->

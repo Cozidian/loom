@@ -132,7 +132,9 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
                  "eligible_count" => length(endpoints),
                  "requested_awards" => award_count,
                  "task_type" => to_string(route.inputs.task_type),
-                 "language" => to_string(route.inputs.language)
+                 "language" => to_string(route.inputs.language),
+                 "preference_source" => to_string(input[:preference_source] || :unspecified),
+                 "job_role" => input[:job_role]
                }),
              quote_input <-
                input
@@ -147,7 +149,8 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
                  quote_input
                ),
              :ok <- append_bids(session_id, bids),
-             {:ok, awards} <- award(route, bids, endpoints, award_count, opts) do
+             award_opts <- enforce_routing_boundary(route, input, opts),
+             {:ok, awards} <- award(route, bids, endpoints, award_count, award_opts) do
           route = apply_primary_award(route, awards)
 
           with :ok <-
@@ -172,6 +175,17 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
         end
       end
     end
+  end
+
+  defp enforce_routing_boundary(_route, %{market_competition: true}, opts), do: opts
+
+  defp enforce_routing_boundary(route, _input, opts) do
+    Keyword.update(
+      opts,
+      :pinned_endpoint_ids,
+      [route.selected_endpoint_id],
+      &Enum.uniq(&1 ++ [route.selected_endpoint_id])
+    )
   end
 
   defp eligible_endpoints(project_id, ids, selected_endpoint) do
@@ -218,7 +232,7 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
     case Enum.find(pinned, &(not MapSet.member?(bid_ids, &1))) do
       nil ->
         ordered_ids =
-          (pinned ++ [route.selected_endpoint_id] ++ Enum.map(bids, & &1.endpoint_id))
+          (pinned ++ Enum.map(bids, & &1.endpoint_id) ++ [route.selected_endpoint_id])
           |> Enum.reject(&is_nil/1)
           |> Enum.filter(&MapSet.member?(bid_ids, &1))
           |> Enum.uniq()

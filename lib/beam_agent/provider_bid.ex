@@ -73,13 +73,19 @@ defmodule BeamAgent.ProviderBid do
 
   defp score_components(endpoint, evidence, input, latency) do
     health = if endpoint.health.status == :available, do: 15, else: 5
-    preferred = if endpoint.id == input[:preferred_endpoint_id], do: 15, else: 0
+
+    preferred =
+      if endpoint.id == input[:preferred_endpoint_id] and authoritative_preference?(input),
+        do: 20,
+        else: 0
+
     # Cost is a tie-breaker after task and configured-provider fit. It must not
     # make an unverified local endpoint the default owner of feature work.
     cost = if endpoint.claims.cost_hint == :free, do: 5, else: 0
     locality = locality_score(endpoint, input)
     reasoning = reasoning_score(endpoint, input)
-    latency_score = if is_number(latency), do: max(0, 20 - trunc(latency / 250)), else: 0
+    latency_score = latency_score(latency)
+    role_fit = role_score(endpoint, input)
     evidence_score = evidence_score(evidence, input)
 
     %{
@@ -88,21 +94,66 @@ defmodule BeamAgent.ProviderBid do
       cost: cost,
       locality: locality,
       reasoning: reasoning,
+      role_fit: role_fit,
       latency: latency_score,
       verified_evidence: evidence_score
     }
   end
 
   defp evidence_score(evidence, input) do
-    enabled? = get_in(input, [:routing_evidence, :mode]) in [:enabled, "enabled"]
+    mode = get_in(input, [:routing_evidence, :mode])
 
-    if enabled? do
+    if mode in [:enabled, "enabled"] do
       pass_rate = number(evidence, :recency_weighted_pass_rate, 0.0)
       lower_bound = number(evidence, :quality_lower_bound, 0.0)
       confidence = number(evidence, :confidence, 0.0)
       round(pass_rate * 45 + lower_bound * 25 + confidence * 20)
     else
-      0
+      verified_samples = integer(evidence, :verified_samples, 0)
+
+      if verified_samples > 0 do
+        pass_rate = number(evidence, :recency_weighted_pass_rate, 0.0)
+        confidence = number(evidence, :confidence, 0.0)
+        round((pass_rate - 0.5) * 20 * confidence)
+      else
+        0
+      end
+    end
+  end
+
+  defp authoritative_preference?(input) do
+    input[:preference_source] in [:manual, :user_pinned, :work_assignment] or
+      input[:strategy] == :manual
+  end
+
+  defp latency_score(milliseconds) when is_number(milliseconds) do
+    cond do
+      milliseconds <= 2_000 -> 20
+      milliseconds <= 5_000 -> 16
+      milliseconds <= 10_000 -> 12
+      milliseconds <= 20_000 -> 8
+      milliseconds <= 40_000 -> 4
+      true -> 0
+    end
+  end
+
+  defp latency_score(_latency), do: 0
+
+  defp role_score(endpoint, input) do
+    role = input[:job_role] |> to_string() |> String.downcase()
+    task_type = get_in(input, [:classification, :task_type])
+
+    remote_reasoner? =
+      endpoint.claims.locality == :remote and :reasoning in endpoint.claims.capabilities
+
+    local? = endpoint.claims.locality == :local
+
+    cond do
+      task_type == :implementation and remote_reasoner? -> 20
+      String.contains?(role, ["implement", "architect", "middleware"]) and remote_reasoner? -> 20
+      String.contains?(role, ["review", "verify", "test"]) and remote_reasoner? -> 15
+      String.contains?(role, ["scaffold", "inspect", "investigate"]) and local? -> 15
+      true -> 0
     end
   end
 
@@ -117,7 +168,11 @@ defmodule BeamAgent.ProviderBid do
   end
 
   defp reasoning_score(endpoint, input) do
-    if input[:reasoning_requirement] == :high and :reasoning in endpoint.claims.capabilities,
+    reasoning_required? =
+      input[:reasoning_requirement] == :high or
+        get_in(input, [:classification, :reasoning]) == :high
+
+    if reasoning_required? and :reasoning in endpoint.claims.capabilities,
       do: 35,
       else: 0
   end

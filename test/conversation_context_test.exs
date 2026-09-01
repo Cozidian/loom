@@ -65,7 +65,8 @@ defmodule BeamAgent.ConversationContextTest do
       BeamAgent.start_session(
         data_dir: data_dir,
         workspace_root: workspace,
-        provider: :echo,
+        provider: :automatic_context_test,
+        provider_options: [test_pid: self()],
         context_window_tokens: 1_024,
         compaction_threshold_percent: 50
       )
@@ -189,6 +190,7 @@ defmodule BeamAgent.ConversationContextTest do
                workspace_root: context.workspace,
                provider: :automatic_context_test,
                provider_options: [test_pid: self()],
+               model_strategy: :manual,
                context_window_tokens: 1_024,
                compaction_threshold_percent: 50
              )
@@ -242,6 +244,48 @@ defmodule BeamAgent.ConversationContextTest do
     assert stats.context_artifact_count == 2
     assert stats.deduplicated_artifact_count == 1
     assert stats.deduplicated_artifact_bytes > 0
+  end
+
+  test "a repair-stage boundary compacts an oversized unfinished turn", context do
+    {:ok, _} = EventLog.append(context.session_id, :turn_started, %{"turn" => 1})
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :user_message, %{
+        "content" => "large implementation " <> String.duplicate("x", 3_000)
+      })
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :assistant_message, %{
+        "content" => "candidate output " <> String.duplicate("y", 2_000),
+        "tool_calls" => []
+      })
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :review_feedback, %{
+        "content" => "one concrete blocking defect"
+      })
+
+    {:ok, _} = EventLog.append(context.session_id, :context_stage_boundary, %{"attempt" => 1})
+    {:ok, _} = EventLog.append(context.session_id, :user_message, %{"content" => "repair now"})
+
+    assert {:ok, messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               SummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    assert_receive {:summary_source, source, _prompt}
+    assert source =~ "large implementation"
+    assert source =~ "one concrete blocking defect"
+    assert stats.compacted?
+
+    projected = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+    assert projected =~ "Durable summary"
+    assert projected =~ "repair now"
+    refute projected =~ String.duplicate("x", 1_000)
   end
 
   defp append_turn(session_id, turn, label, padding) do

@@ -148,6 +148,14 @@ defmodule BeamAgent.VerificationTest do
     %{root: root, workspace: workspace, data_dir: data_dir}
   end
 
+  test "review severity distinguishes warnings from repair blockers" do
+    assert BeamAgent.Goal.Reviewer.review_status("REVIEW_PASS\nLooks good") == :passed
+    assert BeamAgent.Goal.Reviewer.review_status("REVIEW_WARN\nMinor docs issue") == :warning
+    assert BeamAgent.Goal.Reviewer.review_status("REVIEW_FAIL\nCompile failure") == :failed
+    assert BeamAgent.Goal.Reviewer.review_rubric() =~ "Documentation"
+    assert BeamAgent.Goal.Reviewer.review_rubric() =~ "must not trigger a repair loop"
+  end
+
   test "plans validate project checks and discover supported repository checks", context do
     File.write!(Path.join(context.workspace, "mix.exs"), "defmodule Sample.MixProject do\nend\n")
     File.write!(Path.join(context.workspace, "go.mod"), "module example.test/sample\n")

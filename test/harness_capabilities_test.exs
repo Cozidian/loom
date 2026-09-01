@@ -2,6 +2,7 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
   use ExUnit.Case, async: false
 
   alias BeamAgent.CLI.TurnRunner
+  alias BeamAgent.Goal.WorkspaceSnapshot
 
   alias BeamAgent.Tools.{
     ApplyPatch,
@@ -74,6 +75,56 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
 
     assert {:error, {:workspace_path_must_be_relative, _path}} =
              BeamAgent.Workspace.resolve(context.workspace, "/tmp/secret.txt")
+  end
+
+  test "workspace evidence excludes generated BeamAgent temp artifacts", context do
+    {_output, 0} = System.cmd("git", ["init"], cd: context.workspace, stderr_to_stdout: true)
+    File.write!(Path.join(context.workspace, "README.md"), "baseline\n")
+    {_output, 0} = System.cmd("git", ["add", "README.md"], cd: context.workspace)
+
+    {_output, 0} =
+      System.cmd(
+        "git",
+        [
+          "-c",
+          "user.name=BeamAgent Test",
+          "-c",
+          "user.email=beam-agent@example.test",
+          "commit",
+          "-m",
+          "baseline"
+        ],
+        cd: context.workspace,
+        stderr_to_stdout: true
+      )
+
+    File.mkdir_p!(Path.join(context.workspace, ".beam_agent/tmp/build"))
+    File.write!(Path.join(context.workspace, ".beam_agent/tmp/build/cache.bin"), "generated")
+
+    assert {:ok, project_id} =
+             BeamAgent.start_project(
+               workspace_root: context.workspace,
+               data_dir: context.data_dir
+             )
+
+    assert {:ok, snapshot} =
+             WorkspaceSnapshot.capture(project_id,
+               workspace_root: context.workspace,
+               data_dir: context.data_dir
+             )
+
+    assert snapshot.files == %{}
+    assert snapshot.git.dirty == false
+
+    File.write!(Path.join(context.workspace, "real-change.txt"), "product change")
+
+    assert {:ok, changed} =
+             WorkspaceSnapshot.capture(project_id,
+               workspace_root: context.workspace,
+               data_dir: context.data_dir
+             )
+
+    assert Map.keys(changed.files) == ["real-change.txt"]
   end
 
   test "language-aware diagnostics report syntax failures without a model", context do
@@ -505,27 +556,25 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
       if System.get_env("BEAM_AGENT_SANDBOX") != "1" do
         outside = Path.join(context.root, "outside-command.txt")
 
-        assert {:ok, denied_result} =
+        assert {:error, {:command_failed, denied_data}} =
                  RunCommand.execute(
                    %{"command" => "printf outside > #{outside}", "timeout_ms" => 5_000},
                    tool_context
                  )
 
-        denied_data = JSON.decode!(denied_result)
-        assert denied_data["ok"] == false
-        assert denied_data["status"] != 0
+        assert denied_data.ok == false
+        assert denied_data.status != 0
         refute File.exists?(outside)
       end
 
-      assert {:ok, piped_result} =
+      assert {:error, {:command_failed, piped_data}} =
                RunCommand.execute(
                  %{"command" => "false | cat", "timeout_ms" => 5_000},
                  tool_context
                )
 
-      piped_data = JSON.decode!(piped_result)
-      assert piped_data["ok"] == false
-      assert piped_data["status"] != 0
+      assert piped_data.ok == false
+      assert piped_data.status != 0
 
       assert {:ok, mix_result} =
                RunCommand.execute(

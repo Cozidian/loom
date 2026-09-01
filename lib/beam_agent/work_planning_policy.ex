@@ -19,14 +19,17 @@ defmodule BeamAgent.WorkPlanningPolicy do
     explicit? = Regex.match?(@explicit_multi_provider, prompt)
     implementation? = classification.change_intent or classification.task_type == :implementation
     multi_endpoint? = length(eligible) >= 2
+    substantial? = implementation? and substantial_implementation?(prompt, classification)
 
     mode =
       cond do
         implementation? and explicit? and multi_endpoint? ->
           :required
 
-        implementation? and strategy == :auto and multi_endpoint? and
-            classification.reasoning == :high ->
+        implementation? and strategy == :auto and multi_endpoint? and substantial? ->
+          :required
+
+        implementation? and strategy == :auto and multi_endpoint? ->
           :advisory
 
         true ->
@@ -41,7 +44,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
       endpoint_count: length(eligible),
       explicit_multi_provider_intent: explicit?,
       suggested_endpoints: suggested_endpoints(eligible),
-      reason: reason(mode, explicit?, multi_endpoint?)
+      reason: reason(mode, explicit?, multi_endpoint?, substantial?)
     }
   end
 
@@ -65,15 +68,26 @@ defmodule BeamAgent.WorkPlanningPolicy do
     }
   end
 
-  defp reason(:required, _explicit?, _multi?),
+  defp substantial_implementation?(prompt, classification) do
+    classification.reasoning == :high or
+      Regex.match?(
+        ~r/\b(?:application|frontend|backend|middleware|service|feature|migration|integration|phoenix|liveview)\b/iu,
+        prompt
+      )
+  end
+
+  defp reason(:required, true, _multi?, _substantial?),
     do: "the user explicitly requested a multi-model implementation"
 
-  defp reason(:advisory, _explicit?, _multi?),
-    do: "complex implementation can benefit from bounded provider specialization"
+  defp reason(:required, false, _multi?, true),
+    do: "substantial automatic implementation requires bounded provider specialization"
 
-  defp reason(:direct, true, false),
+  defp reason(:advisory, _explicit?, _multi?, _substantial?),
+    do: "implementation can benefit from bounded provider specialization"
+
+  defp reason(:direct, true, false, _substantial?),
     do: "multi-model work was requested but fewer than two eligible endpoints are available"
 
-  defp reason(:direct, _explicit?, _multi?),
+  defp reason(:direct, _explicit?, _multi?, _substantial?),
     do: "one coherent worker is the lowest-overhead execution shape"
 end

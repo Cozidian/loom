@@ -12,7 +12,7 @@ defmodule BeamAgent.Tools.RunCommand do
   @impl true
   def description,
     do:
-      "Run a shell command with bounded output/time inside a workspace-write, external-network-denied sandbox. Exit status and output are always returned as diagnostic data."
+      "Run a shell command with bounded output/time inside a workspace-write, external-network-denied sandbox. A non-zero exit status is a failed tool call with diagnostic output."
 
   @impl true
   def input_schema do
@@ -46,10 +46,12 @@ defmodule BeamAgent.Tools.RunCommand do
            Subprocess.run(executable, argv,
              cwd: cwd,
              timeout_ms: timeout,
-             max_output_bytes: 100_000,
+             max_output_bytes: 32_000,
              on_output: output_handler(context)
            ) do
       workspace_delta = workspace_delta(context, baseline)
+
+      changed_file_count = length(workspace_delta.changed_files)
 
       command_result = %{
         ok: result.status == 0,
@@ -58,11 +60,15 @@ defmodule BeamAgent.Tools.RunCommand do
         truncated: result.truncated,
         sandbox: "workspace-write",
         network: "loopback-only",
-        changed_files: workspace_delta.changed_files,
+        changed_files: Enum.take(workspace_delta.changed_files, 200),
+        changed_file_count: changed_file_count,
+        changed_files_truncated: changed_file_count > 200,
         patch_fingerprint: workspace_delta.patch_fingerprint
       }
 
-      {:ok, JSON.encode!(command_result)}
+      if result.status == 0,
+        do: {:ok, JSON.encode!(command_result)},
+        else: {:error, {:command_failed, command_result}}
     else
       false -> {:error, :invalid_command_timeout}
       {:ok, %File.Stat{type: type}} -> {:error, {:not_directory, type}}

@@ -197,7 +197,15 @@ defmodule BeamAgent.Goal.WorkspaceSnapshot do
     absolute = Path.expand(path, workspace_root)
 
     Enum.any?(excluded_roots, &inside?(absolute, &1)) or
+      workspace_runtime_path?(workspace_root, absolute) or
       runtime_path?(workspace_root, absolute, runtime_data_root)
+  end
+
+  defp workspace_runtime_path?(workspace_root, absolute) do
+    case Path.relative_to(absolute, workspace_root) |> Path.split() do
+      [".beam_agent", "tmp" | _rest] -> true
+      _other -> false
+    end
   end
 
   defp runtime_path?(_workspace_root, _absolute, nil), do: false

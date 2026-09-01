@@ -67,6 +67,9 @@ defmodule BeamAgent.TaskClassifier do
          "root cause",
          "end-to-end",
          "web version",
+         "web application",
+         "frontend",
+         "phoenix",
          "integrate"
        ]),
        do: :high,

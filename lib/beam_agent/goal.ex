@@ -83,6 +83,7 @@ defmodule BeamAgent.Goal do
         artifact: nil,
         verification: nil,
         review: nil,
+        review_feedback: nil,
         attempts: 0,
         failure_fingerprints: MapSet.new(),
         cancel_requested: false,
@@ -215,6 +216,10 @@ defmodule BeamAgent.Goal do
     finish_work(state, %{current | review: review}, current.candidate_result)
   end
 
+  defp continue_stage(:reviewing, {:ok, %{status: :warning} = review}, state, current) do
+    finish_work(state, %{current | review: review}, current.candidate_result)
+  end
+
   defp continue_stage(:reviewing, {:ok, %{status: :failed} = review}, state, current) do
     recover_or_finish(state, %{current | review: review}, :review, review)
   end
@@ -249,7 +254,9 @@ defmodule BeamAgent.Goal do
     if artifact && review_enabled?(state.agent_spec) &&
          Reviewer.required?(current.contract, artifact) do
       case launch_stage(state, current, :reviewing, fn ->
-             Reviewer.run(state, current.contract, verification)
+             Reviewer.run(state, current.contract, verification,
+               prior_findings: current.review_feedback
+             )
            end) do
         {:ok, current} -> {:noreply, %{state | phase: :reviewing, current_work: current}}
         {:error, reason} -> finish_work(state, current, {:error, {:review_start_failed, reason}})
@@ -273,12 +280,17 @@ defmodule BeamAgent.Goal do
         attempt = current.attempts + 1
         append_recovery_events(state, current, kind, failure, attempt)
 
+        review_feedback =
+          if kind == :review,
+            do: current.review_feedback || failure,
+            else: current.review_feedback
+
         current = %{
           current
           | attempts: attempt,
             failure_fingerprints: MapSet.put(current.failure_fingerprints, fingerprint),
             artifact: nil,
-            review: nil
+            review_feedback: review_feedback
         }
 
         repair_prompt = repair_prompt(current.contract, kind, failure, attempt)
@@ -512,6 +524,13 @@ defmodule BeamAgent.Goal do
         "contract_id" => current.contract.id,
         "attempt" => attempt,
         "content" => failure_feedback(kind, failure)
+      })
+
+    _ =
+      EventLog.append(state.session_id, :context_stage_boundary, %{
+        "contract_id" => current.contract.id,
+        "kind" => to_string(kind),
+        "attempt" => attempt
       })
   end
 

@@ -301,7 +301,16 @@ defmodule BeamAgent.ModelRouter do
   end
 
   defp score(endpoint, input, classification) do
-    preferred = if endpoint.id == input.preferred_endpoint_id, do: 30, else: 0
+    preferred =
+      cond do
+        endpoint.id != input.preferred_endpoint_id -> 0
+        authoritative_preference?(input) -> 40
+        # Session affinity protects ordinary direct turns from unrelated endpoints in the
+        # project inventory. Competitive implementation markets ignore this router seed and
+        # award from bids below.
+        Map.get(input, :preference_source) == :session_default -> 20
+        true -> 0
+      end
 
     project_preferred =
       if endpoint.id in Map.get(input, :project_preferred_endpoint_ids, []), do: 20, else: 0
@@ -334,7 +343,7 @@ defmodule BeamAgent.ModelRouter do
     latency =
       if Map.get(input, :latency_preference, :interactive) == :interactive do
         case endpoint.measurements[:latency_ms] || endpoint.measurements["latency_ms"] do
-          milliseconds when is_number(milliseconds) -> max(0, 20 - trunc(milliseconds / 250))
+          milliseconds when is_number(milliseconds) -> latency_score(milliseconds)
           _unknown -> 0
         end
       else
@@ -343,6 +352,22 @@ defmodule BeamAgent.ModelRouter do
 
     preferred + project_preferred + available + local_simple + free + strong + context_fit +
       latency
+  end
+
+  defp authoritative_preference?(input) do
+    Map.get(input, :preference_source) in [:manual, :user_pinned, :work_assignment] or
+      Map.get(input, :strategy) == :manual
+  end
+
+  defp latency_score(milliseconds) do
+    cond do
+      milliseconds <= 2_000 -> 20
+      milliseconds <= 5_000 -> 16
+      milliseconds <= 10_000 -> 12
+      milliseconds <= 20_000 -> 8
+      milliseconds <= 40_000 -> 4
+      true -> 0
+    end
   end
 
   defp decision(endpoint, candidates, classification, reason, deterministic_answer \\ nil) do
@@ -394,15 +419,19 @@ defmodule BeamAgent.ModelRouter do
 
   defp apply_evidence_policy(state, %{evidence: evidence} = decision, endpoints) do
     recommended_id = evidence.recommended_endpoint_id
+    exploration_endpoint = exploration_endpoint(decision, evidence, endpoints)
 
     cond do
-      evidence.state != "ready" or is_nil(recommended_id) ->
-        put_in(decision, [:evidence, :mode], "enabled")
-
-      explore?(decision.decision_id, state.exploration_percent) ->
+      explore?(decision.decision_id, state.exploration_percent) and exploration_endpoint ->
         decision
+        |> Map.put(:endpoint, exploration_endpoint)
+        |> Map.put(:selected_endpoint_id, exploration_endpoint.id)
+        |> Map.put(:reason, "bounded exploration of an under-sampled eligible endpoint")
         |> put_in([:evidence, :mode], "enabled")
         |> put_in([:evidence, :selection], "bounded_exploration")
+
+      evidence.state != "ready" or is_nil(recommended_id) ->
+        put_in(decision, [:evidence, :mode], "enabled")
 
       endpoint = Enum.find(endpoints, &(&1.id == recommended_id)) ->
         %{
@@ -422,6 +451,21 @@ defmodule BeamAgent.ModelRouter do
   end
 
   defp apply_evidence_policy(_state, decision, _endpoints), do: decision
+
+  defp exploration_endpoint(decision, evidence, endpoints) do
+    samples =
+      Map.new(evidence.endpoints || [], fn endpoint_evidence ->
+        {value(endpoint_evidence, :endpoint_id, nil),
+         value(endpoint_evidence, :verified_samples, 0)}
+      end)
+
+    candidate_ids = MapSet.new(decision.candidate_endpoint_ids)
+
+    endpoints
+    |> Enum.filter(&MapSet.member?(candidate_ids, &1.id))
+    |> Enum.reject(&(&1.id == decision.selected_endpoint_id))
+    |> Enum.min_by(&{Map.get(samples, &1.id, 0), &1.id}, fn -> nil end)
+  end
 
   defp explore?(decision_id, percentage) do
     <<bucket::unsigned-integer-size(16), _rest::binary>> = :crypto.hash(:sha256, decision_id)

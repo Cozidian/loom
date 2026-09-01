@@ -582,15 +582,24 @@ defmodule BeamAgent.Strategies.ToolLoop do
     prompt = latest_user_prompt(context.session_id)
     requirements = context.agent_spec.model_requirements
 
+    requested_endpoint_id =
+      requirements[:preferred_endpoint_id] || requirements["preferred_endpoint_id"]
+
+    preferred_endpoint_id = requested_endpoint_id || context.provider_profile
+
+    preference_source = preference_source(context, requested_endpoint_id)
+    planning = planning_decision(context)
+
     input =
       %{
         prompt: prompt,
         workspace_root: context.workspace_root,
         strategy: context.model_strategy,
-        preferred_endpoint_id:
-          requirements[:preferred_endpoint_id] || requirements["preferred_endpoint_id"] ||
-            context.provider_profile,
+        preferred_endpoint_id: preferred_endpoint_id,
+        preference_source: preference_source,
         preferred_provider: context.provider,
+        job_role: context.agent_spec.role,
+        market_competition: context.model_strategy == :auto and planning.mode != :direct,
         tools: tool_schemas,
         context_tokens: estimated_context_tokens(context.session_id),
         latency_preference: requirements.latency,
@@ -604,9 +613,17 @@ defmodule BeamAgent.Strategies.ToolLoop do
       |> Map.put(:modalities_required, required_modalities(context.session_id))
 
     with {:ok, auction} <-
-           ProviderBidCoordinator.auction(context.goal_id, context.session_id, input,
+           ProviderBidCoordinator.auction(
+             context.goal_id,
+             context.session_id,
+             input,
              purpose: :work_contract,
-             award_count: 1
+             award_count: 1,
+             pinned_endpoint_ids:
+               if(preference_source in [:manual, :work_assignment],
+                 do: [preferred_endpoint_id],
+                 else: []
+               )
            ),
          route <- auction.route,
          {:ok, route} <- lease_route(context, route),
@@ -621,11 +638,26 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "selected_endpoint_id" => route.selected_endpoint_id,
              "inputs" => route.inputs,
              "reason" => route.reason,
+             "preference_source" => to_string(preference_source),
+             "job_role" => context.agent_spec.role,
              "evidence" => Map.get(route, :evidence),
              "provider_auction_id" => Map.get(route, :provider_auction_id),
              "winning_bid" => Map.get(route, :winning_bid)
            }) do
       {:ok, route}
+    end
+  end
+
+  defp preference_source(context, requested_endpoint_id) do
+    cond do
+      context.model_strategy == :manual ->
+        :manual
+
+      is_binary(context.parent_session_id) and is_binary(requested_endpoint_id) ->
+        :work_assignment
+
+      true ->
+        :session_default
     end
   end
 
@@ -1295,7 +1327,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       obligation =
         case planning.mode do
           :required ->
-            "The runtime requires a validated decomposition because the user explicitly requested multiple models. Call list_models and then delegate_tasks before returning a terminal answer."
+            "The runtime requires a validated decomposition for this substantial implementation. Call list_models and then delegate_tasks before returning a terminal answer."
 
           :advisory ->
             "The runtime marks decomposition as advisory. Use it only when specialization improves the result; otherwise keep one coherent implementation owner."
@@ -1307,6 +1339,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
       """
       # Multi-provider coordination
       Runtime planning mode: #{planning.mode}. #{obligation}
+      Runtime suggested assignments: scaffold=#{planning.suggested_endpoints.scaffold || "none"},
+      coherent implementation=#{planning.suggested_endpoints.implementation || "none"},
+      independent verification=#{planning.suggested_endpoints.verification || "none"}.
       A feature may use different providers for meaningfully different bounded phases. Inspect
       the safe endpoint inventory with list_models, then propose workers through delegate_tasks
       with explicit model requirements. Cheap or local endpoints may fit deterministic
@@ -1340,7 +1375,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
       {"decomposition_required", _names} ->
         base <>
-          "\nThe user explicitly requested multiple providers. Call list_models, then invoke " <>
+          "\nThe runtime requires multiple providers for this substantial request. Call list_models, then invoke " <>
           "delegate_tasks with a validated dependency plan and per-task model requirements."
 
       {_reason, _names} ->
@@ -1481,6 +1516,14 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp format_result({:ok, result}) when is_binary(result), do: {result, nil}
   defp format_result({:ok, result}), do: {inspect(result), nil}
+
+  defp format_result({:error, {:command_failed, data}}) when is_map(data) do
+    {JSON.encode!(data),
+     %{
+       "code" => "command_failed",
+       "detail" => "Command exited with status #{data.status}"
+     }}
+  end
 
   defp format_result({:error, reason}) do
     {"ERROR: " <> inspect(reason), error_envelope(reason)}
