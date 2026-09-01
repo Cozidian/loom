@@ -114,7 +114,7 @@ defmodule BeamAgent.RuntimeEvent do
        do: :lifecycle
 
   defp category(type)
-       when type in ["race_started", "race_candidate_completed"],
+       when type in ["race_started", "race_candidate_started", "race_candidate_completed"],
        do: :lifecycle
 
   defp category(type)
@@ -229,7 +229,16 @@ defmodule BeamAgent.RuntimeEvent do
             ],
        do: :mcp
 
-  defp category(type) when type in ["model_route_selected", "model_route_reused"], do: :routing
+  defp category(type)
+       when type in [
+              "model_route_selected",
+              "model_route_reused",
+              "provider_auction_started",
+              "provider_bid_submitted",
+              "provider_auction_awarded",
+              "provider_auction_settled"
+            ],
+       do: :routing
 
   defp category(type)
        when type in [

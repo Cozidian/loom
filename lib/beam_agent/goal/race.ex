@@ -6,7 +6,15 @@ defmodule BeamAgent.Goal.Race do
   when the supplied deterministic evaluator or consensus rule can justify one.
   """
 
-  alias BeamAgent.{Agent, Goal.Verifier}
+  alias BeamAgent.{
+    Agent,
+    Goal.ModelLease,
+    Goal.ProviderBidCoordinator,
+    Goal.Verifier,
+    ModelEndpoint,
+    ModelRegistry
+  }
+
   alias BeamAgent.Session.EventLog
 
   def run(parent_session_id, candidates, opts \\ [])
@@ -14,13 +22,18 @@ defmodule BeamAgent.Goal.Race do
     justification = Keyword.get(opts, :justification)
 
     with :ok <- validate_candidates(candidates, justification),
-         {:ok, parent} <- Agent.construction_context(parent_session_id) do
+         {:ok, parent} <- Agent.construction_context(parent_session_id),
+         {:ok, auction, candidates} <- assign_providers(parent, candidates, opts) do
       race_id = new_id()
 
       {:ok, _event} =
         EventLog.append(parent_session_id, :race_started, %{
           "race_id" => race_id,
           "candidate_count" => length(candidates),
+          "provider_auction_id" => auction.id,
+          "provider_count" =>
+            auction.awards |> Enum.map(& &1.endpoint.id) |> Enum.uniq() |> length(),
+          "provider_endpoint_ids" => Enum.map(auction.awards, & &1.endpoint.id),
           "justification_fingerprint" => fingerprint(justification)
         })
 
@@ -41,12 +54,28 @@ defmodule BeamAgent.Goal.Race do
 
       case evaluate(results, Keyword.get(opts, :evaluator, :consensus)) do
         {:ok, winner_id, evidence} ->
+          winner = winner_result(results, winner_id)
+
           {:ok, _event} =
             EventLog.append(parent_session_id, :race_winner_selected, %{
               "race_id" => race_id,
               "winner_id" => winner_id,
+              "provider_auction_id" => auction.id,
+              "winner_endpoint_id" => get_in(winner, [:provider_bid, :endpoint_id]),
+              "winner_provider" =>
+                get_in(winner, [:provider_bid, :provider]) &&
+                  to_string(get_in(winner, [:provider_bid, :provider])),
               "evaluation_fingerprint" => fingerprint(inspect(evidence))
             })
+
+          append_settlement(
+            parent.goal_id,
+            parent_session_id,
+            auction,
+            :selected,
+            winner_id,
+            winner
+          )
 
           {:ok, _event} =
             EventLog.append(parent_session_id, :race_collapsed, %{
@@ -67,6 +96,8 @@ defmodule BeamAgent.Goal.Race do
               "merged" => false
             })
 
+          append_settlement(parent.goal_id, parent_session_id, auction, :inconclusive, nil, nil)
+
           {:ok, %{race_id: race_id, status: :inconclusive, winner_id: nil, results: results}}
       end
     end
@@ -76,8 +107,13 @@ defmodule BeamAgent.Goal.Race do
     id = candidate_id(candidate)
     prompt = value(candidate, :prompt) || value(candidate, :goal)
     worker_id = BeamAgent.new_session_id()
-    worker_options = Keyword.get(opts, :worker_options, [])
-    worker_options = Keyword.put(worker_options, :completion_review, :external)
+    provider_assignment = value(candidate, :provider_assignment)
+
+    worker_options =
+      opts
+      |> Keyword.get(:worker_options, [])
+      |> bind_provider(provider_assignment)
+      |> Keyword.put(:completion_review, :external)
 
     proposal =
       candidate
@@ -100,10 +136,13 @@ defmodule BeamAgent.Goal.Race do
         "completion_criteria"
       ])
       |> Map.put_new(:goal, prompt)
+      |> prevent_nested_delegation(parent)
 
     with {:ok, worktree} <- maybe_create_worktree(parent, worker_id, id, opts),
          worker_options <- bind_isolation(worker_options, worker_id, worktree),
-         {:ok, handle} <- BeamAgent.spawn_worker(parent.session_id, proposal, worker_options) do
+         :ok <- append_candidate_started(parent.session_id, race_id, id, provider_assignment),
+         {:ok, handle} <- BeamAgent.spawn_worker(parent.session_id, proposal, worker_options),
+         :ok <- lease_candidate_provider(parent.goal_id, handle.worker_id, provider_assignment) do
       try do
         case BeamAgent.ask(handle.worker_id, prompt) do
           {:ok, content} ->
@@ -116,6 +155,11 @@ defmodule BeamAgent.Goal.Race do
                 "race_id" => race_id,
                 "candidate_id" => id,
                 "worker_id" => handle.worker_id,
+                "provider_auction_id" => provider_assignment.auction_id,
+                "endpoint_id" => provider_assignment.endpoint_id,
+                "provider" => to_string(provider_assignment.provider),
+                "model" => provider_assignment.model,
+                "bid_score" => provider_assignment.score,
                 "result_fingerprint" => fingerprint(content),
                 "verification_status" => verification_status(verification),
                 "worktree_id" => worktree_id(worktree),
@@ -128,6 +172,7 @@ defmodule BeamAgent.Goal.Race do
                content: content,
                result: result,
                verification: verification,
+               provider_bid: provider_assignment,
                worktree: worktree,
                worktree_evidence: worktree_evidence
              }}
@@ -143,6 +188,44 @@ defmodule BeamAgent.Goal.Race do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp prevent_nested_delegation(proposal, parent) do
+    capabilities = value(proposal, :capabilities) || %{}
+
+    tools =
+      case value(capabilities, :tools) do
+        nil -> effective_tool_names(parent)
+        :all -> effective_tool_names(parent)
+        "all" -> effective_tool_names(parent)
+        names when is_list(names) -> Enum.map(names, &to_string/1)
+        name when is_binary(name) -> [name]
+        _other -> []
+      end
+
+    tools =
+      Enum.reject(tools, &(&1 in ["delegate_tasks", "spawn_subagent", "request_capability"]))
+
+    capabilities = capabilities |> Map.delete("tools") |> Map.put(:tools, tools)
+    proposal |> Map.delete("capabilities") |> Map.put(:capabilities, capabilities)
+  end
+
+  defp effective_tool_names(%{capability_envelope: %{scopes: %{tools: :all}}, goal_id: goal_id}) do
+    builtin = Enum.map(BeamAgent.CapabilityCatalog.tool_schemas(), & &1.name)
+
+    mcp =
+      case BeamAgent.MCP.Registry.tool_schemas(goal_id) do
+        schemas when is_list(schemas) -> Enum.map(schemas, & &1.name)
+        _other -> []
+      end
+
+    Enum.uniq(builtin ++ mcp)
+  end
+
+  defp effective_tool_names(%{capability_envelope: %{scopes: %{tools: tools}}})
+       when is_list(tools),
+       do: tools
+
+  defp effective_tool_names(_parent), do: []
 
   defp maybe_create_worktree(parent, worker_id, candidate_id, opts) do
     case Keyword.get(opts, :isolation, :shared) do
@@ -167,6 +250,217 @@ defmodule BeamAgent.Goal.Race do
     worker_options
     |> Keyword.put(:session_id, worker_id)
     |> Keyword.put(:worktree_handle, worktree)
+  end
+
+  defp assign_providers(parent, candidates, _opts) do
+    requirements = parent.agent_spec.model_requirements
+
+    input = %{
+      prompt: candidates |> hd() |> then(&(value(&1, :prompt) || value(&1, :goal))),
+      workspace_root: parent.workspace_root,
+      strategy: :auto,
+      preferred_endpoint_id: parent.provider_profile,
+      preferred_provider: parent.provider,
+      tools: [],
+      context_tokens: 0,
+      latency_preference: requirements.latency,
+      cost_preference: requirements.cost,
+      reasoning_requirement: requirements.reasoning,
+      locality_requirement: requirements.locality,
+      privacy_requirement: requirements.privacy,
+      capability_envelope: parent.capability_envelope,
+      modalities_required: [:text],
+      force_model: true
+    }
+
+    with {:ok, pinned} <- resolve_pinned_endpoints(parent.project_id, candidates),
+         {:ok, auction} <-
+           ProviderBidCoordinator.auction(parent.goal_id, parent.session_id, input,
+             purpose: :provider_race,
+             award_count: length(candidates),
+             pinned_endpoint_ids: pinned
+           ),
+         {:ok, assigned} <- attach_assignments(candidates, auction) do
+      {:ok, auction, assigned}
+    end
+  end
+
+  defp resolve_pinned_endpoints(project_id, candidates) do
+    {:ok, endpoints} = ModelRegistry.list(project_id)
+
+    Enum.reduce_while(candidates, {:ok, []}, fn candidate, {:ok, ids} ->
+      case requested_endpoint(candidate, endpoints) do
+        nil -> {:cont, {:ok, ids}}
+        {:ok, id} -> {:cont, {:ok, [id | ids]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, ids} -> {:ok, ids |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  defp requested_endpoint(candidate, endpoints) do
+    endpoint_id = value(candidate, :endpoint_id) || value(candidate, :provider_profile)
+    provider = value(candidate, :provider)
+
+    cond do
+      is_binary(endpoint_id) ->
+        if Enum.any?(endpoints, &(&1.id == endpoint_id)),
+          do: {:ok, endpoint_id},
+          else: {:error, {:unknown_model_endpoint, endpoint_id}}
+
+      not is_nil(provider) ->
+        case Enum.find(endpoints, &(to_string(&1.provider) == to_string(provider))) do
+          nil -> {:error, {:unknown_model_provider, provider}}
+          endpoint -> {:ok, endpoint.id}
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp attach_assignments(_candidates, %{awards: []}), do: {:error, :provider_auction_empty}
+
+  defp attach_assignments(candidates, auction) do
+    awards_by_id = Map.new(auction.awards, &{&1.endpoint.id, &1})
+
+    candidates
+    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn candidate, {:ok, assigned, used} ->
+      case choose_award(candidate, auction.awards, awards_by_id, used) do
+        nil ->
+          {:halt, {:error, {:no_eligible_provider_for_candidate, candidate_id(candidate)}}}
+
+        award ->
+          assignment =
+            award.bid
+            |> BeamAgent.ProviderBid.public()
+            |> atomize_assignment(award.endpoint, auction)
+
+          {:cont,
+           {:ok, [Map.put(candidate, :provider_assignment, assignment) | assigned],
+            MapSet.put(used, award.endpoint.id)}}
+      end
+    end)
+    |> case do
+      {:ok, assigned, _used} -> {:ok, Enum.reverse(assigned)}
+      error -> error
+    end
+  end
+
+  defp choose_award(candidate, awards, awards_by_id, used) do
+    requested = value(candidate, :endpoint_id) || value(candidate, :provider_profile)
+    requested_provider = value(candidate, :provider)
+
+    cond do
+      is_binary(requested) ->
+        case awards_by_id[requested] do
+          %{endpoint: endpoint} = award -> if eligible?(endpoint, candidate), do: award
+          _missing -> nil
+        end
+
+      not is_nil(requested_provider) ->
+        Enum.find(awards, fn award ->
+          to_string(award.endpoint.provider) == to_string(requested_provider) and
+            eligible?(award.endpoint, candidate)
+        end)
+
+      true ->
+        Enum.find(awards, fn award ->
+          not MapSet.member?(used, award.endpoint.id) and eligible?(award.endpoint, candidate)
+        end) || Enum.find(awards, &eligible?(&1.endpoint, candidate))
+    end
+  end
+
+  defp eligible?(endpoint, candidate) do
+    requirements = value(candidate, :model_requirements) || %{}
+    locality = map_value(requirements, :locality)
+    privacy = map_value(requirements, :privacy)
+
+    (locality in [nil, :any, "any"] or to_string(endpoint.claims.locality) == to_string(locality)) and
+      (privacy not in [:local, "local"] or endpoint.claims.privacy == :local)
+  end
+
+  defp atomize_assignment(public_bid, endpoint, auction) do
+    route =
+      auction.route
+      |> Map.put(:endpoint, endpoint)
+      |> Map.put(:selected_endpoint_id, endpoint.id)
+      |> Map.put(:provider_auction_id, auction.id)
+      |> Map.put(:winning_bid, public_bid)
+      |> Map.put(:reason, "provider race lease awarded from #{public_bid.id}")
+
+    %{
+      auction_id: public_bid.auction_id,
+      bid_id: public_bid.id,
+      endpoint_id: endpoint.id,
+      provider: endpoint.provider,
+      model: endpoint.model,
+      score: public_bid.score,
+      confidence: public_bid.confidence,
+      cost_tier: public_bid.cost_tier,
+      reason: public_bid.reason,
+      endpoint: endpoint,
+      route: route
+    }
+  end
+
+  defp bind_provider(worker_options, %{endpoint: %ModelEndpoint{} = endpoint}) do
+    worker_options
+    |> Keyword.put(:provider, endpoint.provider)
+    |> Keyword.put(:provider_profile, endpoint.id)
+    |> Keyword.put(:provider_options, ModelEndpoint.invocation_options(endpoint))
+    |> Keyword.put(:model_strategy, :manual)
+  end
+
+  defp lease_candidate_provider(goal_id, worker_id, %{route: route}) do
+    case ModelLease.put_new(goal_id, "worker:" <> worker_id, route) do
+      {:ok, _route} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp append_candidate_started(session_id, race_id, candidate_id, assignment) do
+    case EventLog.append(session_id, :race_candidate_started, %{
+           "race_id" => race_id,
+           "candidate_id" => candidate_id,
+           "provider_auction_id" => assignment.auction_id,
+           "endpoint_id" => assignment.endpoint_id,
+           "provider" => to_string(assignment.provider),
+           "model" => assignment.model,
+           "bid_score" => assignment.score
+         }) do
+      {:ok, _event} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp append_settlement(goal_id, session_id, auction, status, winner_id, winner) do
+    ProviderBidCoordinator.settle(
+      goal_id,
+      session_id,
+      auction.id,
+      %{
+        purpose: :provider_race,
+        status: status,
+        winner_id: winner_id,
+        winner_endpoint_id: get_in(winner || %{}, [:provider_bid, :endpoint_id]),
+        winner_provider:
+          case get_in(winner || %{}, [:provider_bid, :provider]) do
+            nil -> nil
+            provider -> to_string(provider)
+          end
+      }
+    )
+  end
+
+  defp winner_result(results, winner_id) do
+    case results[winner_id] do
+      {:ok, result} -> result
+      _other -> %{}
+    end
   end
 
   defp verify_candidate(parent, handle, candidate, opts) do
@@ -307,6 +601,7 @@ defmodule BeamAgent.Goal.Race do
   defp valid_candidate?(_candidate), do: false
   defp candidate_id(candidate), do: value(candidate, :id)
   defp value(map, key), do: map[key] || map[to_string(key)]
+  defp map_value(map, key), do: Map.get(map, key, Map.get(map, to_string(key)))
   defp normalize(content), do: content |> String.trim() |> String.downcase()
   defp fingerprint(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
   defp reason_code(reason) when is_atom(reason), do: to_string(reason)

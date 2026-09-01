@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect auto status new sessions models skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
+  @commands ~w(connect auto status new sessions models race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
 
   def available?(override \\ nil)
 
@@ -366,6 +366,15 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp dispatch_action(
+         %{"type" => "command", "command" => "race", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:race, query})
+    :ok
+  end
+
+  defp dispatch_action(
          %{"type" => "command", "command" => "tree", "query" => _query},
          controller
        ) do
@@ -626,6 +635,44 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: "model_route_reused", data: data}}),
     do: "Model lease reused · #{data["selected_endpoint_id"] || "deterministic"}"
 
+  defp info_entry(%{payload: %{type: "provider_auction_started", data: data}}),
+    do:
+      "Provider market opened · #{data["eligible_count"]} eligible · #{data["requested_awards"]} lease#{plural(data["requested_awards"])}"
+
+  defp info_entry(%{payload: %{type: "provider_bid_submitted", data: data}}) do
+    latency =
+      if data["estimated_latency_ms"], do: " · ~#{data["estimated_latency_ms"]} ms", else: ""
+
+    "Bid · #{data["endpoint_id"]} · score #{data["score"]} · #{confidence_percent(data["confidence"])} confidence#{latency} · #{data["cost_tier"]}"
+  end
+
+  defp info_entry(%{payload: %{type: "provider_auction_awarded", data: data}}) do
+    endpoints = Enum.map_join(data["awards"] || [], ", ", & &1["endpoint_id"])
+    "Provider lease awarded · #{endpoints}"
+  end
+
+  defp info_entry(%{payload: %{type: "provider_auction_settled", data: data}}) do
+    winner = data["winner_endpoint_id"] || "no deterministic winner"
+    "Provider market settled · #{data["status"]} · #{winner}"
+  end
+
+  defp info_entry(%{payload: %{type: "race_started", data: data}}),
+    do:
+      "Provider race started · #{data["provider_count"]} providers · #{data["candidate_count"]} candidates"
+
+  defp info_entry(%{payload: %{type: "race_candidate_started", data: data}}),
+    do: "Candidate #{data["candidate_id"]} · #{data["endpoint_id"]} started"
+
+  defp info_entry(%{payload: %{type: "race_candidate_completed", data: data}}),
+    do:
+      "Candidate #{data["candidate_id"]} · #{data["endpoint_id"]} · #{data["verification_status"]}"
+
+  defp info_entry(%{payload: %{type: "race_winner_selected", data: data}}),
+    do: "Race winner · #{data["winner_endpoint_id"]} · #{data["winner_id"]}"
+
+  defp info_entry(%{payload: %{type: "race_inconclusive"}}),
+    do: "Provider race needs independent judgment"
+
   defp info_entry(%{payload: %{type: "path_lease_denied", data: data}}),
     do: "Write lease conflict · #{data["path"]}"
 
@@ -734,6 +781,7 @@ defmodule BeamAgent.CLI.TUI do
   defp info_entry(%{payload: %{type: type, data: data}})
        when type in [
               "race_started",
+              "race_candidate_started",
               "race_candidate_completed",
               "race_winner_selected",
               "race_collapsed",
@@ -785,6 +833,11 @@ defmodule BeamAgent.CLI.TUI do
     do: " · evidence unavailable"
 
   defp routing_evidence_suffix(_data), do: ""
+
+  defp confidence_percent(value) when is_number(value), do: "#{round(value * 100)}%"
+  defp confidence_percent(_value), do: "unknown"
+  defp plural(1), do: ""
+  defp plural(_value), do: "s"
 
   defp event_verb(type), do: type |> String.split("_") |> List.last()
   defp optional_suffix(nil), do: ""

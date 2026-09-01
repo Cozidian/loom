@@ -38,6 +38,34 @@ func (m model) renderModelsTab() string {
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("ROUTING EVIDENCE"))
 	fmt.Fprintf(&b, "%s\n", bodyStyle.Render(routingEvidenceLine(m.modelsData.Evidence)))
 
+	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("PROVIDER MARKET"))
+	if m.modelsData.Market == nil {
+		fmt.Fprintf(&b, "%s\n", mutedStyle.Render("No auction yet · send a message or use /race GOAL"))
+	} else {
+		market := m.modelsData.Market
+		fmt.Fprintf(&b, "%s\n", bodyStyle.Render(providerMarketSummary(market)))
+		awarded := map[string]bool{}
+		for _, award := range market.Awards {
+			awarded[award.EndpointID] = true
+		}
+		for _, bid := range market.Bids {
+			marker := "  "
+			style := mutedStyle
+			if awarded[bid.EndpointID] {
+				marker = "› "
+				style = styleMint
+			}
+			latency := "latency unknown"
+			if bid.EstimatedLatencyMs > 0 {
+				latency = fmt.Sprintf("~%.0f ms", bid.EstimatedLatencyMs)
+			}
+			fmt.Fprintf(&b, "%s\n", style.Render(fmt.Sprintf(
+				"%s%s · score %d · %.0f%% confidence · %s · %s",
+				marker, bid.EndpointID, bid.Score, bid.Confidence*100, latency, bid.CostTier,
+			)))
+		}
+	}
+
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("SESSION SETTINGS"))
 	settings := m.modelsData.SessionSettings
 	fmt.Fprintf(&b, "%s\n", styleFaint.Render(fmt.Sprintf("approval mode  %s", settings.ApprovalMode)))
@@ -47,6 +75,18 @@ func (m model) renderModelsTab() string {
 	fmt.Fprintf(&b, "\n%s\n", styleFaint.Render("↑/↓ select · esc back to chat"))
 
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+}
+
+func providerMarketSummary(market *providerMarket) string {
+	purpose := strings.ReplaceAll(market.Purpose, "_", " ")
+	return fmt.Sprintf("latest %s · %s · %d bids → %d lease%s", purpose, market.Status, len(market.Bids), len(market.Awards), plural(len(market.Awards)))
+}
+
+func plural(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func modelStatusLabel(endpoint modelEndpoint, activeProfile string) string {
@@ -62,7 +102,11 @@ func modelStatusLabel(endpoint modelEndpoint, activeProfile string) string {
 func routingEvidenceLine(evidence modelEvidence) string {
 	switch evidence.State {
 	case "ready":
-		return fmt.Sprintf("shadow prefers %s", evidence.RecommendedEndpointID)
+		mode := evidence.Mode
+		if mode == "" {
+			mode = "shadow"
+		}
+		return fmt.Sprintf("%s prefers %s", mode, evidence.RecommendedEndpointID)
 	case "insufficient_evidence":
 		return fmt.Sprintf("evidence warming %d/%d verified", evidence.BestVerifiedSamples, evidence.MinimumVerifiedSamples)
 	case "unavailable":

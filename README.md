@@ -18,7 +18,8 @@ It includes:
 - immutable goal/worker capability envelopes and durable scoped permissions;
 - session-owned auto/ask/deny policy with once/always approvals and revocation;
 - goal-supervised local stdio MCP servers with namespaced tools;
-- per-request Auto model routing across all configured profiles;
+- goal-scoped provider auctions and stable model leases across configured profiles;
+- bounded cross-provider races with deterministic winner selection;
 - content-free model/task outcomes with later verification attachment;
 - guarded file discovery, reading, creation, versioned editing, and commands;
 - child agents dynamically supervised beneath their parent session;
@@ -103,7 +104,7 @@ move through the transcript, and `Ctrl+C` to cancel a running turn (or exit when
 idle). Approval dialogs default to deny and offer explicit once or durable
 scoped-always choices.
 
-The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`,
+The useful slash commands remain `/new`, `/sessions`, `/status`, `/models`, `/race GOAL`,
 `/auto`, `/compact`, `/skills`, `/reload`, `/verify`, `/steer MESSAGE`, `/events`, `/tree`, `/clear`,
 and `/exit`. `/verify` runs either `.beam_agent/verification.json` or conservative
 checks discovered from Mix, Go, and Git project files. Ollama, OpenAI, xAI/Grok,
@@ -141,7 +142,20 @@ explicitly requests `view: :internal`.
 including provider/model, locality, health, declared capabilities, verified
 sample count, verified pass rate, call count, and observed latency. Use
 `/models refresh` to run supervised provider health checks, or `/models PROFILE`
-to refresh one endpoint.
+to refresh one endpoint. Its Provider Market section shows the most recent
+content-free auction, every endpoint bid, the awarded leases, confidence,
+latency estimate, and cost tier. During work, the chat reports `providers
+bidding` and `racing N providers` instead of hiding orchestration behind a
+generic spinner.
+
+Use `/race GOAL` when independent attempts are worth the additional cost. The
+runtime requests bids from eligible configured endpoints, awards up to three
+distinct provider leases, runs the candidates independently, and retains one
+winner only when consensus or deterministic verification justifies it. The
+ordinary API also accepts candidate `endpoint_id`, `provider_profile`, or
+`provider` pins through `BeamAgent.race_workers/3`. Pins remain subject to the
+same capability, locality, privacy, health, and budget policy as automatic
+awards.
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected
@@ -233,7 +247,8 @@ available through `BeamAgent.outcomes/2`; verification is attached separately
 with `BeamAgent.attach_verification/3`, and `BeamAgent.export_outcomes/1`
 returns a redacted JSONL export without prompts or model content.
 `BeamAgent.routing_evidence/2` returns project-local empirical summaries and the
-current shadow recommendation.
+current recommendation. Evidence is advisory by default; projects may enable
+confidence-gated routing with bounded exploration.
 
 ## Web, editor, and external clients
 
@@ -258,6 +273,15 @@ implementations with `BeamAgent.speculate_implementations/3`. Candidate checks
 run inside their worktree, ambiguous verified patches remain inconclusive until
 reviewed, every patch is retained for inspection, and no result is merged
 implicitly.
+
+Every model choice first passes through the goal-owned
+`ProviderBidCoordinator`. It starts one short-lived OTP bidder task per eligible
+endpoint, collects secret-free bids from declared capability, cost and latency
+claims plus verified outcome evidence, then awards a bounded lease. Ordinary
+work receives one stable lease; races receive distinct leases where the registry
+has enough eligible providers. Auction, bid, award, candidate, winner, and
+settlement facts are durable runtime events, while prompts and model output are
+never copied into market records.
 
 ## Project instructions and skills
 

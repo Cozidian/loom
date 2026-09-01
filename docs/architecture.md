@@ -139,13 +139,33 @@ for orchestration, rejects unavailable/privacy-incompatible endpoints, and can
 select deterministic ordinary computation. Manual, local-only, and custom
 strategies remain explicit overrides. `RoutingEvidence` compares recent outcomes
 by task, language, and endpoint using minimum verified samples, recency weighting,
-confidence, and a conservative task-to-model attribution rule. It currently
-produces shadow recommendations only: the deterministic selection remains
-authoritative until those recommendations have been evaluated. Durable
+confidence, and a conservative task-to-model attribution rule. Recommendations
+remain shadow-only by default. A project may explicitly enable confidence-gated
+selection with bounded deterministic exploration. Durable
 `model_route_selected` events carry safe decision inputs, candidates, selection,
 reason, and aggregate evidence. `/models` exposes inventory, health, verified
 pass rate, sample count, and observed latency; the Go TUI remains
 presentation-only.
+
+Each goal supervises a `ProviderBidCoordinator` and a bidder `Task.Supervisor`.
+Before a route becomes a lease, the coordinator asks every policy-eligible
+endpoint actor for a content-free quote. A bid contains endpoint/provider/model
+identity, a deterministic fit score, confidence, verified sample count, cost
+tier, and estimated latency. It contains neither prompt text nor credentials.
+Manual routing remains a hard selection constraint; Auto uses the normal router
+policy and evidence, while additional race awards follow ranked eligible bids.
+The coordinator owns recent market state and the session event log records
+`provider_auction_started`, `provider_bid_submitted`,
+`provider_auction_awarded`, and `provider_auction_settled` facts.
+
+`Goal.Race` requests two to four awards, assigns distinct endpoint leases where
+possible, and pins each worker's provider profile before construction. A
+candidate can explicitly request an endpoint or provider, but cannot bypass
+model capability, privacy, locality, health, budget, or authority constraints.
+Race candidate start/completion events retain the bid and endpoint identity;
+the final settlement links the selected candidate back to its provider. The Go
+TUI renders this state and offers `/race GOAL`, but does not select providers or
+own auctions.
 
 All provider execution enters through a versioned `ModelRequest`, including
 ordinary tool-loop steps and context compaction. It explicitly carries request
@@ -483,7 +503,9 @@ acknowledgement race.
 
 Model routing is selected once per `WorkContract` and retained by
 `Goal.ModelLease` through tool steps, verification, and repair attempts. Child
-work contracts may still select a different endpoint. A user can send
+workers without an explicit contract receive a worker-lifetime lease, so their
+provider does not change between tool steps. Child work may still select a
+different endpoint. A user can send
 `BeamAgent.steer/2`, the runtime `steer` command, or `/steer MESSAGE`; Goal puts
 the message into the active worker mailbox and the tool loop applies it before
 the next model decision without cancelling or rebuilding the work.

@@ -252,6 +252,51 @@ defmodule BeamAgent.AgentConstructionTest do
     assert failed["data"]["failure_code"] == "capability_escalation"
   end
 
+  test "absolute child capability paths inside the workspace become relative authority",
+       context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               capabilities: %{tools: ["read_file"], paths: :all}
+             )
+
+    assert {:ok, spec} =
+             AgentConstructor.child(parent_id, %{
+               goal: "Inspect a workspace source file",
+               capabilities: %{
+                 tools: ["read_file"],
+                 paths: [context.workspace]
+               }
+             })
+
+    assert spec.effective_capabilities.scopes.paths == ["."]
+
+    assert :ok =
+             CapabilityEnvelope.authorize(spec.effective_capabilities, %{
+               tools: "read_file",
+               paths: "src/joke_generator.ex"
+             })
+  end
+
+  test "absolute child capability paths outside the workspace are rejected", context do
+    assert {:ok, parent_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    outside = Path.dirname(context.workspace)
+
+    assert {:error, {:capability_path_outside_workspace, ^outside}} =
+             AgentConstructor.child(parent_id, %{
+               goal: "Inspect a path outside the workspace",
+               capabilities: %{tools: ["read_file"], paths: [outside]}
+             })
+  end
+
   test "hard authority fields in an intelligence proposal are rejected", context do
     assert {:ok, parent_id} =
              BeamAgent.start_session(

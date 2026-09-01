@@ -109,6 +109,19 @@ defmodule BeamAgent.CapabilityEnvelope do
   defp allowed?(allowed, value, _scope), do: value in allowed
 
   defp path_match?(prefix, value) do
-    prefix == value or String.starts_with?(value, String.trim_trailing(prefix, "/") <> "/")
+    (prefix == "." and workspace_relative?(value)) or prefix == value or
+      String.starts_with?(value, String.trim_trailing(prefix, "/") <> "/")
+  end
+
+  defp workspace_relative?(value) do
+    if Path.type(value) == :absolute do
+      false
+    else
+      root = Path.join(System.tmp_dir!(), "beam-agent-capability-root")
+      relative = value |> Path.expand(root) |> Path.relative_to(root)
+
+      relative != ".." and not String.starts_with?(relative, "../") and
+        not String.starts_with?(relative, "..\\") and Path.type(relative) != :absolute
+    end
   end
 end

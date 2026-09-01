@@ -254,6 +254,44 @@ func TestModelsSlashCommandForwardsHealthRefresh(t *testing.T) {
 	}
 }
 
+func TestRaceSlashCommandIsDiscoverableAndForwardsTheGoal(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+
+	next, cmd := m.runSlash("/race implement clipboard image paste")
+	if cmd == nil {
+		t.Fatal("expected provider race bridge command")
+	}
+	cmd()
+
+	updated := next.(model)
+	if updated.status != "providers bidding" || len(updated.entries) != 1 {
+		t.Fatalf("expected an immediately visible provider race, got %#v", updated)
+	}
+
+	action, err := newProtocol(&wire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Command != "race" || action.Query != "implement clipboard image paste" {
+		t.Fatalf("unexpected race action: %#v", action)
+	}
+}
+
+func TestRaceSlashCommandDoesNotSilentlyDropAttachments(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.attachments = []attachmentItem{{ID: "attachment-1", Name: "clipboard.png"}}
+
+	next, cmd := m.runSlash("/race inspect this image")
+	if cmd != nil {
+		t.Fatal("attachment race should not be submitted until child attachment propagation exists")
+	}
+	updated := next.(model)
+	if !strings.Contains(updated.notice, "text goals only") {
+		t.Fatalf("expected an honest attachment limitation, got %q", updated.notice)
+	}
+}
+
 func TestProviderPickerSelectsAProfileThroughTheRuntime(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)
@@ -884,6 +922,16 @@ func TestModelsTabRendersProfilesAndSettings(t *testing.T) {
 			BestVerifiedSamples:    2,
 			MinimumVerifiedSamples: 5,
 		},
+		Market: &providerMarket{
+			ID:      "auction-1",
+			Purpose: "provider_race",
+			Status:  "awarded",
+			Bids: []providerBid{
+				{EndpointID: "echo", Score: 90, Confidence: 0.8, EstimatedLatencyMs: 40, CostTier: "free"},
+				{EndpointID: "openai-chatgpt", Score: 82, Confidence: 0.7, EstimatedLatencyMs: 300, CostTier: "balanced"},
+			},
+			Awards: []providerAward{{EndpointID: "echo"}},
+		},
 		SessionSettings: modelSettings{ApprovalMode: "ask", TokenBudget: 32000, MCPServerCount: 3},
 	})
 	m.switchTab(tabModels)
@@ -897,6 +945,41 @@ func TestModelsTabRendersProfilesAndSettings(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(content), []byte("mcp servers    3")) {
 		t.Fatal("expected the session settings to render")
+	}
+	if !bytes.Contains([]byte(content), []byte("latest provider race · awarded · 2 bids → 1 lease")) {
+		t.Fatal("expected the latest provider market to render")
+	}
+	if !bytes.Contains([]byte(content), []byte("echo · score 90 · 80% confidence")) {
+		t.Fatal("expected provider bids to render")
+	}
+}
+
+func TestProviderMarketEventsExplainRaceAndUpdateStatus(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	m.status = "working"
+	m.applyStream(runtimeEvent("provider_auction_started", map[string]any{
+		"eligible_count":   float64(2),
+		"requested_awards": float64(2),
+	}, "session-root", true))
+	if m.status != "providers bidding" {
+		t.Fatalf("expected bidding status, got %q", m.status)
+	}
+	m.applyStream(runtimeEvent("provider_bid_submitted", map[string]any{
+		"endpoint_id":          "claude",
+		"score":                float64(91),
+		"confidence":           0.82,
+		"estimated_latency_ms": float64(420),
+		"cost_tier":            "balanced",
+	}, "session-root", true))
+	m.applyStream(runtimeEvent("race_started", map[string]any{
+		"provider_count":  float64(2),
+		"candidate_count": float64(2),
+	}, "session-root", true))
+	if m.status != "racing 2 providers" {
+		t.Fatalf("expected race status, got %q", m.status)
+	}
+	if got := m.entries[len(m.entries)-2].Content; !strings.Contains(got, "Bid · claude · score 91 · 82% confidence") {
+		t.Fatalf("expected intelligible bid line, got %q", got)
 	}
 }
 

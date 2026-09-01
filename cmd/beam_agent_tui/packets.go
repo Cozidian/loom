@@ -113,7 +113,40 @@ type modelsSnapshot struct {
 	ActiveProfile   string          `json:"active_profile"`
 	Endpoints       []modelEndpoint `json:"endpoints"`
 	Evidence        modelEvidence   `json:"evidence"`
+	Market          *providerMarket `json:"market,omitempty"`
 	SessionSettings modelSettings   `json:"session_settings"`
+}
+
+type providerMarket struct {
+	ID              string          `json:"id"`
+	Purpose         string          `json:"purpose"`
+	Status          string          `json:"status"`
+	RequestedAwards int             `json:"requested_awards"`
+	Bids            []providerBid   `json:"bids"`
+	Awards          []providerAward `json:"awards"`
+}
+
+type providerBid struct {
+	ID                 string  `json:"id"`
+	EndpointID         string  `json:"endpoint_id"`
+	Provider           string  `json:"provider"`
+	Model              string  `json:"model"`
+	Score              int     `json:"score"`
+	Confidence         float64 `json:"confidence"`
+	EstimatedLatencyMs float64 `json:"estimated_latency_ms"`
+	CostTier           string  `json:"cost_tier"`
+	VerifiedSamples    int     `json:"verified_samples"`
+	Reason             string  `json:"reason"`
+}
+
+type providerAward struct {
+	EndpointID string  `json:"endpoint_id"`
+	Provider   string  `json:"provider"`
+	Model      string  `json:"model"`
+	BidID      string  `json:"bid_id"`
+	Score      int     `json:"score"`
+	Confidence float64 `json:"confidence"`
+	Reason     string  `json:"reason"`
 }
 
 type modelEndpoint struct {

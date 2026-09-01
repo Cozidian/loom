@@ -825,6 +825,14 @@ every earlier item must finish before a high-value product or safety slice.
       verified samples, pass rate, call count, and measured latency. Projects
       may explicitly enable confidence-gated evidence routing with deterministic
       bounded exploration, persistent preferences, and endpoint exclusions.
+    - Provider selection is now a goal-scoped market rather than a hidden
+      function call. A supervised coordinator runs one bounded bidder process
+      per eligible endpoint, awards stable model leases, and durably records
+      content-free bid, award, and settlement facts. Cross-provider races assign
+      distinct endpoints where possible and support explicit policy-validated
+      endpoint pins. `/race GOAL`, live bidding/racing status, transcript facts,
+      and the Models tab's Provider Market view make the mechanism discoverable
+      without moving authority into the Go client.
 
 ### Supporting runtime systems
 

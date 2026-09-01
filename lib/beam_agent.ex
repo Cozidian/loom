@@ -127,6 +127,11 @@ defmodule BeamAgent do
   def worker_organizations(goal_id, organization_id \\ :all),
     do: BeamAgent.Goal.OrganizationManager.snapshot(goal_id, organization_id)
 
+  def auction_providers(goal_id, session_id, input, opts \\ []),
+    do: BeamAgent.Goal.ProviderBidCoordinator.auction(goal_id, session_id, input, opts)
+
+  def provider_market(goal_id), do: BeamAgent.Goal.ProviderBidCoordinator.latest(goal_id)
+
   def race_workers(parent_session_id, candidates, opts \\ []),
     do: BeamAgent.Goal.Race.run(parent_session_id, candidates, opts)
 
@@ -436,7 +441,7 @@ defmodule BeamAgent do
 
       {:error, :not_found} ->
         case Names.pid(:session_supervisor, session_id) do
-          {:ok, pid} -> Supervisor.stop(pid, :normal)
+          {:ok, pid} -> stop_supervisor(pid)
           {:error, :not_found} -> :ok
         end
     end
@@ -444,8 +449,14 @@ defmodule BeamAgent do
 
   def stop_goal(goal_id) do
     with {:ok, pid} <- Names.pid(:goal_supervisor, goal_id) do
-      Supervisor.stop(pid, :normal)
+      stop_supervisor(pid)
     end
+  end
+
+  defp stop_supervisor(pid) do
+    Supervisor.stop(pid, :normal)
+  catch
+    :exit, {:noproc, _call} -> :ok
   end
 
   def stop_project(project_id) do

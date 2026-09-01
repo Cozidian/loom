@@ -74,6 +74,7 @@ type packet struct {
 	ActiveProfile       string                  `json:"active_profile,omitempty"`
 	Endpoints           []modelEndpoint         `json:"endpoints,omitempty"`
 	Evidence            modelEvidence           `json:"evidence,omitempty"`
+	Market              *providerMarket         `json:"market,omitempty"`
 	SessionSettings     modelSettings           `json:"session_settings,omitempty"`
 	Sessions            []sessionSummary        `json:"sessions,omitempty"`
 	TurnCount           int                     `json:"turn_count,omitempty"`
@@ -224,6 +225,7 @@ var commands = []commandItem{
 	{ID: "new", Label: "New session", Hint: "/new"},
 	{ID: "sessions", Label: "Durable sessions", Hint: "/sessions"},
 	{ID: "models", Label: "Model registry", Hint: "/models [refresh|PROFILE]"},
+	{ID: "race", Label: "Race providers", Hint: "/race GOAL"},
 	{ID: "skills", Label: "Project skills", Hint: "/skills"},
 	{ID: "reload", Label: "Reload project context", Hint: "/reload"},
 	{ID: "compact", Label: "Compact context", Hint: "/compact"},
@@ -443,7 +445,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.send(packet{Type: "attachment_delete", AttachmentID: attachment.ID})
 			}
 		case "ctrl+c":
-			if m.status == "working" || m.status == "cancelling" {
+			if activeStatus(m.status) {
 				m.status = "cancelling"
 				m.notice = "Cancelling current turn…"
 				m.noticeTone = "warning"
@@ -602,7 +604,7 @@ func (m model) footerLeft() string {
 func (m model) footerRight() string {
 	mark := "●"
 	status := m.status
-	if status == "working" {
+	if activeStatus(status) && status != "cancelling" {
 		mark = "◉"
 	} else if status == "cancelling" {
 		mark = "○"
@@ -615,7 +617,7 @@ func (m model) footerRight() string {
 	if m.approvalMode == "auto" {
 		right = "AUTO  " + right
 	}
-	if m.status == "working" {
+	if activeStatus(m.status) && m.status != "cancelling" {
 		right = "^C cancel   " + right
 	} else if m.status == "cancelling" {
 		right = "cancelling…   " + right
@@ -975,6 +977,30 @@ func (m model) runSlash(command string) (tea.Model, tea.Cmd) {
 		m.notice = ""
 		m.refreshTranscript(true)
 		return m, nil
+	case "/race":
+		if query == "" {
+			m.notice = "Usage: /race GOAL"
+			m.noticeTone = "warning"
+			m.refreshTranscript(true)
+			return m, nil
+		}
+		if m.status != "ready" {
+			m.notice = "Cancel the current turn before starting a provider race"
+			m.noticeTone = "warning"
+			m.refreshTranscript(true)
+			return m, nil
+		}
+		if len(m.attachments) > 0 {
+			m.notice = "Send attached images normally; provider races currently accept text goals only"
+			m.noticeTone = "warning"
+			m.refreshTranscript(true)
+			return m, nil
+		}
+		m.entries = append(m.entries, entry{Kind: "user", Content: "Race providers · " + query, Role: spineUser})
+		m.status = "providers bidding"
+		m.notice = ""
+		m.refreshTranscript(true)
+		return m, m.send(packet{Type: "command", Command: "race", Query: query})
 	case "/model":
 		name = "/status"
 	}
@@ -1235,6 +1261,7 @@ func (m *model) applyBackend(message packet) {
 			ActiveProfile:   message.ActiveProfile,
 			Endpoints:       message.Endpoints,
 			Evidence:        message.Evidence,
+			Market:          message.Market,
 			SessionSettings: message.SessionSettings,
 		}
 		if m.tab != tabModels {
@@ -1335,10 +1362,32 @@ func (m *model) applyRuntimeEvent(event map[string]any) {
 
 	eventType := asString(payload["type"])
 	data := asMap(payload["data"])
+	m.applyMarketStatus(eventType, data)
 	m.applyDurableEvent(eventType, data, sessionID, root)
 
 	if info, role, scopeID := runtimeInfo(eventType, data, sessionID, root); info != "" {
 		m.entries = append(m.entries, entry{Kind: "info", Content: info, Role: role, SessionID: scopeID})
+	}
+}
+
+func (m *model) applyMarketStatus(eventType string, data map[string]any) {
+	switch eventType {
+	case "provider_auction_started":
+		m.status = "providers bidding"
+	case "provider_auction_awarded":
+		if asString(data["purpose"]) == "provider_race" {
+			m.status = "racing providers"
+		} else {
+			m.status = "working"
+		}
+	case "race_started":
+		count := asString(data["provider_count"])
+		if count == "" {
+			count = asString(data["candidate_count"])
+		}
+		m.status = "racing " + count + " providers"
+	case "race_collapsed", "race_inconclusive", "provider_auction_settled":
+		m.status = "working"
 	}
 }
 
@@ -1469,6 +1518,37 @@ func runtimeInfoText(eventType string, data map[string]any, sessionID string, ro
 			selected = "deterministic"
 		}
 		return "Model lease reused · " + selected
+	case "provider_auction_started":
+		return "Provider market opened · " + asString(data["eligible_count"]) + " eligible · " + asString(data["requested_awards"]) + " lease" + pluralCount(data["requested_awards"])
+	case "provider_bid_submitted":
+		latency := ""
+		if value := asString(data["estimated_latency_ms"]); value != "" {
+			latency = " · ~" + value + " ms"
+		}
+		return "Bid · " + asString(data["endpoint_id"]) + " · score " + asString(data["score"]) + " · " + percent(data["confidence"]) + " confidence" + latency + " · " + asString(data["cost_tier"])
+	case "provider_auction_awarded":
+		awards := asSlice(data["awards"])
+		ids := make([]string, 0, len(awards))
+		for _, raw := range awards {
+			ids = append(ids, asString(asMap(raw)["endpoint_id"]))
+		}
+		return "Provider lease awarded · " + strings.Join(ids, ", ")
+	case "provider_auction_settled":
+		winner := asString(data["winner_endpoint_id"])
+		if winner == "" {
+			winner = "no deterministic winner"
+		}
+		return "Provider market settled · " + asString(data["status"]) + " · " + winner
+	case "race_started":
+		return "Provider race started · " + asString(data["provider_count"]) + " providers · " + asString(data["candidate_count"]) + " candidates"
+	case "race_candidate_started":
+		return "Candidate " + asString(data["candidate_id"]) + " · " + asString(data["endpoint_id"]) + " started"
+	case "race_candidate_completed":
+		return "Candidate " + asString(data["candidate_id"]) + " · " + asString(data["endpoint_id"]) + " · " + asString(data["verification_status"])
+	case "race_winner_selected":
+		return "Race winner · " + asString(data["winner_endpoint_id"]) + " · " + asString(data["winner_id"])
+	case "race_inconclusive":
+		return "Provider race needs independent judgment"
 	case "goal_steered":
 		return "Live steering queued for active worker"
 	case "path_lease_denied":
@@ -1515,7 +1595,11 @@ func routingEvidenceSuffix(data map[string]any) string {
 	evidence := asMap(data["evidence"])
 	switch asString(evidence["state"]) {
 	case "ready":
-		return " · shadow prefers " + asString(evidence["recommended_endpoint_id"])
+		mode := asString(evidence["mode"])
+		if mode == "" {
+			mode = "shadow"
+		}
+		return " · " + mode + " prefers " + asString(evidence["recommended_endpoint_id"])
 	case "insufficient_evidence":
 		return " · evidence warming " + asString(evidence["best_verified_samples"]) + "/" + asString(evidence["minimum_verified_samples"]) + " verified"
 	case "unavailable":
@@ -1945,6 +2029,30 @@ func asMap(value any) map[string]any {
 		return map[string]any{}
 	}
 	return result
+}
+
+func asSlice(value any) []any {
+	result, _ := value.([]any)
+	return result
+}
+
+func percent(value any) string {
+	if numeric, ok := number(value); ok {
+		return fmt.Sprintf("%.0f%%", numeric*100)
+	}
+	return "unknown"
+}
+
+func pluralCount(value any) string {
+	if numeric, ok := number(value); ok && numeric == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func activeStatus(status string) bool {
+	return status == "working" || status == "cancelling" || status == "providers bidding" ||
+		status == "racing providers" || strings.HasPrefix(status, "racing ")
 }
 
 func number(value any) (float64, bool) {

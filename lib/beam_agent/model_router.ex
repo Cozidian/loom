@@ -174,7 +174,8 @@ defmodule BeamAgent.ModelRouter do
     modalities_required = Map.get(input, :modalities_required, [:text])
 
     cond do
-      strategy == :auto and classification.deterministic_answer != nil and
+      strategy == :auto and not Map.get(input, :force_model, false) and
+        classification.deterministic_answer != nil and
           modalities_required == [:text] ->
         {:ok,
          decision(

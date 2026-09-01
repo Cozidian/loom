@@ -97,8 +97,6 @@ defmodule BeamAgent.Goal.Reviewer do
       strategy: context.strategy,
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
-      approval_policy: context.approval_policy,
-      approval_handler: context.approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent,
       model_strategy: context.model_strategy,

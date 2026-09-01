@@ -6,7 +6,7 @@ defmodule BeamAgent.Workspace do
   def canonical_root(path) when is_binary(path) and path != "" do
     expanded = Path.expand(path)
 
-    with {:ok, resolved} <- resolve_links(expanded, 0),
+    with {:ok, resolved} <- canonical_path(expanded),
          {:ok, %File.Stat{type: :directory}} <- File.stat(resolved) do
       {:ok, resolved}
     else
@@ -16,6 +16,11 @@ defmodule BeamAgent.Workspace do
   end
 
   def canonical_root(path), do: {:error, {:invalid_workspace, path}}
+
+  def canonical_path(path) when is_binary(path) and path != "",
+    do: path |> Path.expand() |> resolve_links(0)
+
+  def canonical_path(path), do: {:error, {:invalid_workspace_path, path}}
 
   def resolve(root, relative_path) when is_binary(relative_path) and relative_path != "" do
     if Path.type(relative_path) == :absolute do

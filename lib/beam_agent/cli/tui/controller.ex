@@ -579,6 +579,44 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp run_command(:models, state), do: run_command({:models, ""}, state)
 
+  defp run_command({:race, ""}, state) do
+    notify(state, {:notice, :warning, "Usage: /race GOAL"})
+    state
+  end
+
+  defp run_command({:race, _query}, %{current: current} = state) when not is_nil(current) do
+    notify(state, {:notice, :warning, "A turn is already running"})
+    state
+  end
+
+  defp run_command({:race, query}, state) when is_binary(query) do
+    provider_count =
+      case Runtime.models(state.runtime) do
+        {:ok, endpoints} -> endpoints |> length() |> min(3) |> max(2)
+        {:error, _reason} -> 2
+      end
+
+    count = if provider_count == 3, do: "three", else: "two"
+
+    prompt =
+      """
+      Run #{count} competing independent provider candidates for exactly the same request. Keep only the single winner and do not merge their answers.
+
+      User request:
+      #{query}
+      """
+      |> String.trim()
+
+    case Runtime.submit(state.runtime, prompt, []) do
+      :ok ->
+        %{state | current: :running}
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, format_error(reason)})
+        state
+    end
+  end
+
   defp run_command({:models, ""}, state) do
     case Runtime.models(state.runtime) do
       {:ok, endpoints} ->
@@ -592,6 +630,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
           active_profile: state.config["profile"],
           endpoints: endpoints,
           evidence: evidence,
+          market: latest_provider_market(state.goal_id),
           session_settings: model_session_settings(state)
         }
 
@@ -937,6 +976,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
   defp run_command(command, state) do
     notify(state, {:notice, :warning, "Unsupported command: #{command}"})
     state
+  end
+
+  defp latest_provider_market(goal_id) do
+    case BeamAgent.provider_market(goal_id) do
+      {:ok, market} -> market
+      :not_found -> nil
+      {:error, _reason} -> nil
+    end
   end
 
   defp provider_picker(state) do

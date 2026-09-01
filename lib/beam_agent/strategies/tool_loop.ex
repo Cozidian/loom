@@ -9,13 +9,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
     ModelEndpoint,
     ModelInvocation,
     ModelRequest,
-    ModelRouter,
     OutcomeStore,
     RacePolicy,
     ToolRunner
   }
 
-  alias BeamAgent.Goal.{BudgetManager, CapabilityManager, ModelLease}
+  alias BeamAgent.Goal.{BudgetManager, CapabilityManager, ModelLease, ProviderBidCoordinator}
 
   alias BeamAgent.Session.{Context, ConversationContext, EventLog, StreamHub}
 
@@ -151,8 +150,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
       strategy: context.strategy,
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
-      approval_policy: context.approval_policy,
-      approval_handler: context.approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent,
       model_strategy: context.model_strategy,
@@ -553,7 +550,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
       }
       |> Map.put(:modalities_required, required_modalities(context.session_id))
 
-    with {:ok, route} <- ModelRouter.route(context.project_id, input),
+    with {:ok, auction} <-
+           ProviderBidCoordinator.auction(context.goal_id, context.session_id, input,
+             purpose: :work_contract,
+             award_count: 1
+           ),
+         route <- auction.route,
          {:ok, route} <- lease_route(context, route),
          {:ok, _} <-
            EventLog.append(context.session_id, :model_route_selected, %{
@@ -566,7 +568,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "selected_endpoint_id" => route.selected_endpoint_id,
              "inputs" => route.inputs,
              "reason" => route.reason,
-             "evidence" => Map.get(route, :evidence)
+             "evidence" => Map.get(route, :evidence),
+             "provider_auction_id" => Map.get(route, :provider_auction_id),
+             "winning_bid" => Map.get(route, :winning_bid)
            }) do
       {:ok, route}
     end
@@ -575,12 +579,18 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp leased_route(%{work_contract: %{id: work_id}, goal_id: goal_id}),
     do: ModelLease.fetch(goal_id, work_id)
 
-  defp leased_route(_context), do: :not_found
+  defp leased_route(%{goal_id: goal_id, session_id: session_id}),
+    do: ModelLease.fetch(goal_id, worker_lease_id(session_id))
 
   defp lease_route(%{work_contract: %{id: work_id}, goal_id: goal_id}, route),
     do: ModelLease.put_new(goal_id, work_id, route)
 
+  defp lease_route(%{goal_id: goal_id, session_id: session_id}, route),
+    do: ModelLease.put_new(goal_id, worker_lease_id(session_id), route)
+
   defp lease_route(_context, route), do: {:ok, route}
+
+  defp worker_lease_id(session_id), do: "worker:" <> session_id
 
   defp append_reused_route(context, route, turn, step) do
     with {:ok, _event} <-
@@ -1521,8 +1531,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
       strategy: context.strategy,
       data_dir: context.data_dir,
       workspace_root: context.workspace_root,
-      approval_policy: context.approval_policy,
-      approval_handler: context.approval_handler,
       context_window_tokens: context.context_window_tokens,
       compaction_threshold_percent: context.compaction_threshold_percent,
       model_strategy: context.model_strategy,

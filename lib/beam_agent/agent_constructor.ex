@@ -16,7 +16,8 @@ defmodule BeamAgent.AgentConstructor do
     CapabilityEnvelope,
     ProjectContext,
     ResourceBudget,
-    TaskClassifier
+    TaskClassifier,
+    Workspace
   }
 
   alias BeamAgent.MCP.Registry, as: MCPRegistry
@@ -94,6 +95,7 @@ defmodule BeamAgent.AgentConstructor do
          maximum_delegation_depth <- parent_maximum_delegation_depth(parent.agent_spec),
          :ok <- validate_depth(depth, maximum_delegation_depth),
          goal when is_binary(goal) and goal != "" <- value(proposal, :goal),
+         {:ok, proposal} <- normalize_capability_paths(proposal, parent.workspace_root),
          classification <- TaskClassifier.classify(goal, parent.workspace_root),
          {:ok, authority} <-
            AgentConstructionPolicy.evaluate_child(parent.capability_envelope, proposal) do
@@ -181,6 +183,72 @@ defmodule BeamAgent.AgentConstructor do
   end
 
   def child(_parent_session_id, _proposal, _opts), do: {:error, :invalid_agent_proposal}
+
+  defp normalize_capability_paths(proposal, workspace_root) do
+    case value(proposal, :capabilities) do
+      capabilities when is_map(capabilities) ->
+        case value(capabilities, :paths) do
+          paths when is_list(paths) ->
+            with {:ok, normalized} <- normalize_path_list(paths, workspace_root) do
+              {:ok, put_capability_paths(proposal, capabilities, normalized)}
+            end
+
+          path when is_binary(path) and path not in ["all", ""] ->
+            with {:ok, normalized} <- normalize_capability_path(path, workspace_root) do
+              {:ok, put_capability_paths(proposal, capabilities, [normalized])}
+            end
+
+          "" ->
+            {:error, {:invalid_capability_path, ""}}
+
+          _inherited_or_all ->
+            {:ok, proposal}
+        end
+
+      _inherited ->
+        {:ok, proposal}
+    end
+  end
+
+  defp normalize_path_list(paths, workspace_root) do
+    Enum.reduce_while(paths, {:ok, []}, fn path, {:ok, normalized} ->
+      case normalize_capability_path(path, workspace_root) do
+        {:ok, value} -> {:cont, {:ok, [value | normalized]}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, normalized |> Enum.reverse() |> Enum.uniq()}
+      error -> error
+    end
+  end
+
+  defp normalize_capability_path(path, workspace_root) when is_binary(path) and path != "" do
+    with {:ok, expanded} <- Workspace.canonical_path(Path.expand(path, workspace_root)) do
+      relative = Path.relative_to(expanded, workspace_root)
+
+      if workspace_escape?(relative) do
+        {:error, {:capability_path_outside_workspace, path}}
+      else
+        {:ok, if(relative == "", do: ".", else: relative)}
+      end
+    else
+      {:error, reason} -> {:error, {:invalid_capability_path, path, reason}}
+    end
+  end
+
+  defp normalize_capability_path(path, _workspace_root),
+    do: {:error, {:invalid_capability_path, path}}
+
+  defp put_capability_paths(proposal, capabilities, paths) do
+    capabilities = capabilities |> Map.delete("paths") |> Map.put(:paths, paths)
+    proposal |> Map.delete("capabilities") |> Map.put(:capabilities, capabilities)
+  end
+
+  defp workspace_escape?(relative) do
+    relative == ".." or String.starts_with?(relative, "../") or
+      String.starts_with?(relative, "..\\") or Path.type(relative) == :absolute
+  end
 
   defp role(proposal, classification, template) do
     case value(proposal, :role) do

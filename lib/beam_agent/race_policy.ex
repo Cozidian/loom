@@ -2,10 +2,10 @@ defmodule BeamAgent.RacePolicy do
   @moduledoc """
   Runtime-owned decision for race-to-solution.
 
-  Users specify goals. Intelligence does not start races, and there is no user
-  control to request one. This policy decides when competing attempts at the
-  *same* outcome are justified, then `Goal.Race` executes them. Heterogeneous
-  work still belongs to delegation, not a race.
+  Users specify goals and may explicitly request a provider race. Intelligence
+  does not start races on its own. This policy decides when competing attempts
+  at the *same* outcome are justified, then `Goal.Race` executes them.
+  Heterogeneous work still belongs to delegation, not a race.
   """
 
   alias BeamAgent.Goal.BudgetManager
@@ -85,6 +85,7 @@ defmodule BeamAgent.RacePolicy do
   def consider(_prompt, _context), do: :skip
 
   defp build_plan(prompt, text, slots) do
+    goal = user_request(prompt)
     approaches = approaches(text)
     count = candidate_count(text, approaches, slots)
 
@@ -94,7 +95,7 @@ defmodule BeamAgent.RacePolicy do
       |> Enum.map(fn {index, approach} ->
         %{
           id: "candidate-#{index}",
-          goal: prompt,
+          goal: goal,
           role: role(approach),
           instructions: instructions(approach)
         }
@@ -109,6 +110,15 @@ defmodule BeamAgent.RacePolicy do
   end
 
   defp root?(context), do: context[:parent_session_id] in [nil, ""]
+
+  defp user_request(prompt) do
+    case Regex.run(~r/(?:^|\n)\s*User request:\s*\n(?<request>[\s\S]+)\z/u, prompt,
+           capture: ["request"]
+         ) do
+      [request] -> String.trim(request)
+      _other -> prompt
+    end
+  end
 
   defp race_shaped?(text),
     do: contains_any?(text, @exclusive_markers) and contains_any?(text, @competition_markers)
@@ -171,6 +181,7 @@ defmodule BeamAgent.RacePolicy do
   defp instructions(nil) do
     [
       "Attempt this goal independently.",
+      "Do not delegate to subagents; you are the provider attempt being compared.",
       "Return one complete attempt, not a list or comparison."
     ]
   end
@@ -178,6 +189,7 @@ defmodule BeamAgent.RacePolicy do
   defp instructions(approach) do
     [
       "Use only the #{approach} approach.",
+      "Do not delegate to subagents; you are the provider attempt being compared.",
       "Return one complete attempt, not a list or comparison.",
       "Do not consider other candidates."
     ]
