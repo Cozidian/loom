@@ -372,6 +372,65 @@ defmodule BeamAgent.ResourceGovernanceTest do
     assert Enum.count(events, &(&1["type"] == "capability_denied")) == 1
   end
 
+  test "omitted path defaults cannot bypass a scoped capability envelope", context do
+    allowed = Path.join(context.workspace, "allowed")
+    File.mkdir_p!(allowed)
+    File.write!(Path.join(allowed, "inside.txt"), "inside\n")
+
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               approval_policy: :auto,
+               capabilities: %{
+                 tools: ["list_files", "search_files", "run_command"],
+                 paths: ["allowed"],
+                 commands: ["pwd"]
+               }
+             )
+
+    assert {:ok, tool_context} = BeamAgent.Agent.construction_context(root_id)
+
+    assert {:error, {:capability_denied, :paths, "."}} =
+             BeamAgent.ToolRunner.execute(BeamAgent.Tools.ListFiles, %{}, tool_context)
+
+    assert {:error, {:capability_denied, :paths, "."}} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.SearchFiles,
+               %{"query" => "inside"},
+               tool_context
+             )
+
+    assert {:error, {:capability_denied, :paths, "."}} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.RunCommand,
+               %{"command" => "pwd"},
+               tool_context
+             )
+
+    assert {:ok, _listing} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.ListFiles,
+               %{"path" => "allowed"},
+               tool_context
+             )
+
+    assert {:ok, _search} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.SearchFiles,
+               %{"query" => "inside", "path" => "allowed"},
+               tool_context
+             )
+
+    assert {:ok, _command} =
+             BeamAgent.ToolRunner.execute(
+               BeamAgent.Tools.RunCommand,
+               %{"command" => "pwd", "cwd" => "allowed"},
+               tool_context
+             )
+  end
+
   test "resource hierarchies deny confused-deputy authority expansion", context do
     capabilities = %{
       tools: ["spawn_subagent", "request_capability", "git_inspect"],

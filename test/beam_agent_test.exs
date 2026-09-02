@@ -161,9 +161,60 @@ defmodule BeamAgentTest do
     def id, do: :direct_worker_claims_test
 
     @impl true
-    def complete(_messages, _tools, options) do
-      send(options[:test_pid], {:direct_worker_system_prompt, options[:system_prompt]})
+    def complete(_messages, tools, options) do
+      if pid = options[:test_pid] || Process.whereis(:beam_agent_direct_worker_test_observer) do
+        send(pid, {:direct_worker_system_prompt, options[:system_prompt]})
+        send(pid, {:direct_worker_tools, Enum.map(tools, & &1.name)})
+      end
+
       {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+    end
+  end
+
+  defmodule NoopImplementationProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :noop_implementation_test
+
+    @impl true
+    def complete(messages, _tools, options) do
+      turn = options[:beam_turn]
+
+      case List.last(messages) do
+        %{role: :user} ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "noop-read-#{turn}",
+                 name: "read_file",
+                 arguments: %{"path" => "stable.txt"}
+               }
+             ]
+           }}
+
+        %{role: :tool, name: "read_file"} ->
+          {:ok,
+           %{
+             content: nil,
+             tool_calls: [
+               %{
+                 id: "noop-edit-#{turn}",
+                 name: "edit_file",
+                 arguments: %{
+                   "path" => "stable.txt",
+                   "old_text" => "unchanged",
+                   "new_text" => "unchanged"
+                 }
+               }
+             ]
+           }}
+
+        _other ->
+          {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+      end
     end
   end
 
@@ -473,7 +524,8 @@ defmodule BeamAgentTest do
   end
 
   test "implementation workers receive a direct-work completion contract" do
-    :ok = BeamAgent.CapabilityCatalog.register_provider(DirectWorkerClaimsProvider)
+    :ok = register_provider_once(DirectWorkerClaimsProvider)
+    Process.register(self(), :beam_agent_direct_worker_test_observer)
 
     {:ok, root_id} =
       BeamAgent.start_session(
@@ -487,7 +539,8 @@ defmodule BeamAgentTest do
                agent_proposal: %{
                  goal: "Implement the requested bounded change",
                  template: "implementer"
-               }
+               },
+               provider_options: [test_pid: self()]
              )
 
     assert {:error, {:non_final_model_response, :action_not_started, 2}} =
@@ -500,6 +553,86 @@ defmodule BeamAgentTest do
     assert direct_prompt =~ "source-write tool"
     refute direct_prompt =~ "spawn_subagent"
     refute direct_prompt =~ "delegate_tasks"
+  end
+
+  test "delegated implementation leaves retain write tools when their own prompt is substantial" do
+    :ok = register_provider_once(DirectWorkerClaimsProvider)
+    Process.register(self(), :beam_agent_direct_worker_test_observer)
+
+    {:ok, root_id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :direct_worker_claims_test,
+        provider_options: [test_pid: self()],
+        model_strategy: :auto,
+        model_endpoints: [
+          %{
+            id: "primary",
+            provider: :direct_worker_claims_test,
+            provider_module: DirectWorkerClaimsProvider
+          },
+          %{
+            id: "secondary",
+            provider: :direct_worker_claims_test,
+            provider_module: DirectWorkerClaimsProvider
+          }
+        ]
+      )
+
+    assert {:ok, child_id} =
+             BeamAgent.spawn_subagent(root_id,
+               agent_proposal: %{
+                 goal:
+                   "Build an end-to-end Phoenix web version and integrate it with the runtime",
+                 template: "implementer"
+               },
+               provider_options: [test_pid: self()]
+             )
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(
+               child_id,
+               "Build an end-to-end Phoenix web version and integrate it with the runtime"
+             )
+
+    assert_receive {:direct_worker_tools, tools}
+    assert "create_file" in tools
+    assert "apply_patch" in tools
+    refute "delegate_tasks" in tools
+
+    assert {:ok, events} = BeamAgent.events(child_id)
+    decision = Enum.find(events, &(&1["type"] == "work_planning_decided"))
+    assert decision["data"]["mode"] == "required"
+  end
+
+  test "an implementation cannot complete with a successful no-op edit" do
+    :ok = register_provider_once(NoopImplementationProvider)
+    root = data_dir()
+    File.mkdir_p!(root)
+    File.write!(Path.join(root, "stable.txt"), "unchanged")
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: root,
+        workspace_root: root,
+        provider: :noop_implementation_test,
+        approval_policy: :auto,
+        completion_review: :external
+      )
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(id, "implement the requested change")
+
+    assert File.read!(Path.join(root, "stable.txt")) == "unchanged"
+    assert {:ok, goal} = BeamAgent.Goal.status(id)
+    assert goal.last_work.status == :failed
+    assert goal.last_work.artifact.changed_files == []
+
+    assert {:ok, events} = BeamAgent.events(id)
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "goal_work_finished" and event["data"]["status"] == "failed"
+           end)
   end
 
   test "constructed evidence workers can report on implementation without being forced to write" do
@@ -556,7 +689,9 @@ defmodule BeamAgentTest do
         capabilities: capabilities
       )
 
-    assert {:ok, "Blocked: this worker has no source-write or delegation capability."} =
+    assert {:error,
+            {:implementation_blocked, :missing_action_authority,
+             "Blocked: this worker has no source-write or delegation capability."}} =
              BeamAgent.ask(id, "implement the requested feature")
 
     assert_receive {:read_only_system_prompt, system_prompt}
@@ -565,6 +700,10 @@ defmodule BeamAgentTest do
 
     assert {:ok, events} = BeamAgent.events(id)
     refute Enum.any?(events, &(&1["type"] == "model_completion_deferred"))
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "goal_work_finished" and event["data"]["status"] == "failed"
+           end)
   end
 
   test "execution-only tools do not prove that implementation occurred" do

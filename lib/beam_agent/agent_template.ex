@@ -60,7 +60,10 @@ defmodule BeamAgent.AgentTemplate do
     },
     "reviewer" => %{
       role: "Review specialist",
-      instructions: ["Prioritize correctness, security, and missing verification."],
+      instructions: [
+        "Prioritize correctness, security, and missing verification.",
+        "Start the final response with REVIEW_PASS, REVIEW_WARN, or REVIEW_FAIL so the runtime can enforce the review result."
+      ],
       execution_strategy: "review",
       verification_requirements: %{required: true}
     },

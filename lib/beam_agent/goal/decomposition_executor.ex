@@ -2,7 +2,7 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
   @moduledoc "Executes one durable task graph with bounded, evidence-led recovery."
 
   alias BeamAgent.{Agent, DecompositionPlan, FailureDecision, ModelRegistry}
-  alias BeamAgent.Goal.{BudgetManager, OrganizationManager}
+  alias BeamAgent.Goal.{BudgetManager, OrganizationManager, Reviewer}
 
   @doc false
   def run(parent_session_id, plan, opts \\ []),
@@ -276,8 +276,10 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
         endpoint_id = worker_endpoint_id(handle.worker_id)
         verification = worker_verification(handle.worker_id)
 
-        if verification.status == :failed do
-          _ = BeamAgent.cancel_worker(handle, :verification_failed)
+        result_failure = task_result_failure(task, handle.worker_id, content, verification)
+
+        if result_failure do
+          _ = BeamAgent.cancel_worker(handle, result_failure)
 
           fail_attempt(
             parent,
@@ -289,7 +291,7 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
             endpoint_id,
             handle,
             verification,
-            {:verification_failed, verification},
+            result_failure,
             opts,
             notify
           )
@@ -756,6 +758,51 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
       }
     else
       _missing -> %{status: :unverified, source: "not_configured"}
+    end
+  end
+
+  defp task_result_failure(_task, _worker_id, _content, %{status: :failed} = verification),
+    do: {:verification_failed, verification}
+
+  defp task_result_failure(task, worker_id, content, _verification) do
+    cond do
+      review_task?(task) and Reviewer.review_status(content) == :failed ->
+        {:implementation_review_failed, content}
+
+      implementation_task?(task) and worker_changed_files(worker_id) == [] ->
+        {:verification_failed,
+         %{
+           status: :failed,
+           summary: "The delegated implementation produced no workspace patch",
+           changed_files: []
+         }}
+
+      true ->
+        nil
+    end
+  end
+
+  defp review_task?(%{template: "reviewer"}), do: true
+
+  defp review_task?(%{role: role}) when is_binary(role),
+    do: Regex.match?(~r/\b(review(?:er)?|audit(?:or)?)\b/iu, role)
+
+  defp review_task?(_task), do: false
+
+  defp implementation_task?(%{template: "implementer"}), do: true
+
+  defp implementation_task?(%{role: role}) when is_binary(role),
+    do: Regex.match?(~r/\bimplement(?:ation|er)?\b/iu, role)
+
+  defp implementation_task?(_task), do: false
+
+  defp worker_changed_files(worker_id) do
+    with {:ok, events} <- BeamAgent.events(worker_id),
+         event when not is_nil(event) <-
+           Enum.find(Enum.reverse(events), &(&1["type"] == "goal_work_finished")) do
+      event["data"]["changed_files"] || []
+    else
+      _missing -> []
     end
   end
 

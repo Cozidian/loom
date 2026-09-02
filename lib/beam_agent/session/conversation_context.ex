@@ -175,7 +175,8 @@ defmodule BeamAgent.Session.ConversationContext do
          provider_module,
          provider_options,
          system_prompt,
-         tool_schemas
+         tool_schemas,
+         passes \\ 0
        ) do
     case summarize(plan, provider_module, provider_options) do
       {:ok, summary} ->
@@ -185,8 +186,22 @@ defmodule BeamAgent.Session.ConversationContext do
           stats = Map.put(projection.stats, :compacted?, true)
           {:ok, projection.messages, stats}
         else
-          {:error, _reason} = error -> error
-          {:compact, _next_plan} -> {:error, :context_still_over_budget}
+          {:error, _reason} = error ->
+            error
+
+          {:compact, next_plan} when passes < 3 ->
+            resolve_compaction(
+              pid,
+              next_plan,
+              provider_module,
+              provider_options,
+              system_prompt,
+              tool_schemas,
+              passes + 1
+            )
+
+          {:compact, _next_plan} ->
+            {:error, :context_still_over_budget}
         end
 
       {:error, reason} ->
@@ -359,7 +374,8 @@ defmodule BeamAgent.Session.ConversationContext do
     eligible_count = max(0, length(boundaries) - keep_turns)
 
     boundary =
-      stage_boundary || if(eligible_count > 0, do: Enum.at(boundaries, eligible_count - 1))
+      stage_boundary || if(eligible_count > 0, do: Enum.at(boundaries, eligible_count - 1)) ||
+        hard_limit_boundary(boundaries, stats)
 
     case boundary do
       nil ->
@@ -385,6 +401,15 @@ defmodule BeamAgent.Session.ConversationContext do
         }
     end
   end
+
+  # Recent-turn retention is a preference, not permission to send a request
+  # beyond the configured context window. When the first completed turn alone
+  # exceeds the hard limit, compact it before admitting the next request.
+  defp hard_limit_boundary([oldest | _rest], %{estimated_tokens: estimated, window_tokens: window})
+       when estimated >= window,
+       do: oldest
+
+  defp hard_limit_boundary(_boundaries, _stats), do: nil
 
   defp summarize(plan, provider_module, provider_options) do
     options =

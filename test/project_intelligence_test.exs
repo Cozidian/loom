@@ -31,6 +31,9 @@ defmodule BeamAgent.ProjectIntelligenceTest do
     File.mkdir_p!(Path.dirname(test_source))
     File.write!(test_source, "defmodule SampleTest do\nend\n")
 
+    File.mkdir_p!(Path.join(context.workspace, ".tmp/go-build"))
+    File.write!(Path.join(context.workspace, ".tmp/go-build/cache-entry"), "volatile")
+
     assert {:ok, root_id} =
              BeamAgent.start_session(
                data_dir: context.data_dir,
@@ -42,6 +45,7 @@ defmodule BeamAgent.ProjectIntelligenceTest do
     {:ok, goal} = BeamAgent.goal(root_id)
     assert {:ok, first} = BeamAgent.refresh_repository(goal.project_id)
     assert first.file_count == 2
+    refute Map.has_key?(first.files, ".tmp/go-build/cache-entry")
     assert first.files["lib/sample.ex"].symbols == ["Sample", "hello"]
     assert first.files["lib/sample.ex"].dependencies == ["Example.Dependency"]
     assert first.files["lib/sample.ex"].diagnostics == []

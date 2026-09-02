@@ -338,7 +338,9 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
         completion_review: :external
       )
 
-    assert {:ok, answer} = TurnRunner.run(session_id, "create the file", 5_000, fn _ -> :deny end)
+    assert {:error, {:implementation_blocked, :runtime_action_denied, answer}} =
+             TurnRunner.run(session_id, "create the file", 5_000, fn _ -> :deny end)
+
     assert answer =~ "tool_denied"
     refute File.exists?(Path.join(context.workspace, "created-by-agent.txt"))
 

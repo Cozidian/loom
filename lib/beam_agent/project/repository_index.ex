@@ -11,6 +11,7 @@ defmodule BeamAgent.Project.RepositoryIndex do
              ".beam_agent",
              ".agents",
              ".codex",
+             ".tmp",
              "_build",
              "deps",
              ".elixir_ls",

@@ -88,13 +88,22 @@ defmodule BeamAgent.ToolRunner do
   defp resource(tool, arguments) do
     %{
       tools: tool,
-      paths: arguments["path"] || arguments["cwd"],
+      paths: resource_path(tool, arguments),
       commands: command_family(arguments["command"]),
       hosts: host(arguments["url"]),
       git_operations: git_operation(tool, arguments),
       browser_scopes: browser_scope(tool)
     }
   end
+
+  # Tools whose execution defaults to the workspace root must authorize that
+  # implicit root exactly as if the caller had supplied it. Otherwise omitting
+  # `path`/`cwd` bypasses a delegated worker's path envelope.
+  defp resource_path(tool, arguments) when tool in ["list_files", "search_files"],
+    do: arguments["path"] || "."
+
+  defp resource_path("run_command", arguments), do: arguments["cwd"] || "."
+  defp resource_path(_tool, arguments), do: arguments["path"] || arguments["cwd"]
 
   defp command_family(command) when is_binary(command),
     do: command |> String.trim() |> String.split(~r/\s+/, parts: 2) |> List.first()
