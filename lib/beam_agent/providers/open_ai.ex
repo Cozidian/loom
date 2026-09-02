@@ -13,7 +13,7 @@ defmodule BeamAgent.Providers.OpenAI do
     %{
       name: "openai",
       label: "OpenAI",
-      capabilities: [:text_generation, :tool_use, :streaming, :vision],
+      capabilities: [:text_generation, :tool_use, :streaming, :vision, :reasoning],
       modalities: [:text, :image],
       locality: :remote,
       privacy: :provider,
@@ -68,6 +68,11 @@ defmodule BeamAgent.Providers.OpenAI do
         {:ok, "credentials configured; connectivity is checked on the first request"}
       end
     end
+  end
+
+  @impl true
+  def routing_preflight(options) do
+    if chatgpt?(options), do: :ok, else: healthcheck(options)
   end
 
   defp provider_options(options) do

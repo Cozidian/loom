@@ -78,6 +78,46 @@ defmodule BeamAgent.ProviderMarketTest do
     assert [%{endpoint_id: "provider-a"}] = recovered.awards
   end
 
+  test "an endpoint that fails credential preflight cannot bid or receive a lease", context do
+    missing_env =
+      "BEAM_AGENT_MARKET_MISSING_XAI_#{System.unique_integer([:positive])}"
+
+    System.delete_env(missing_env)
+
+    assert {:ok, session_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               provider_profile: "echo",
+               model_strategy: :auto,
+               model_endpoints: [
+                 %{id: "echo", provider: :echo},
+                 %{
+                   id: "grok-no-key",
+                   provider: :xai,
+                   model: "grok-test",
+                   api_key_env: missing_env
+                 }
+               ]
+             )
+
+    assert {:ok, "echo(1): explain this briefly"} =
+             BeamAgent.ask(session_id, "explain this briefly")
+
+    assert {:ok, market} = BeamAgent.provider_market(session_id)
+    assert Enum.map(market.bids, & &1.endpoint_id) == ["echo"]
+    assert [%{endpoint_id: "echo"}] = market.awards
+
+    assert {:ok, events} = BeamAgent.events(session_id)
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "provider_endpoint_rejected" and
+               event["data"]["endpoint_id"] == "grok-no-key" and
+               event["data"]["reason"] =~ "missing_api_key"
+           end)
+  end
+
   test "a tournament assigns distinct provider leases and records the winning provider",
        context do
     {:ok, session_id} = start_market_session(context)

@@ -13,7 +13,7 @@ defmodule BeamAgent.Providers.Anthropic do
     %{
       name: "anthropic",
       label: "Anthropic Claude",
-      capabilities: [:text_generation, :tool_use, :streaming, :vision],
+      capabilities: [:text_generation, :tool_use, :streaming, :vision, :reasoning],
       modalities: [:text, :image],
       locality: :remote,
       privacy: :provider,
@@ -89,6 +89,9 @@ defmodule BeamAgent.Providers.Anthropic do
       {:ok, "credentials configured; connectivity is checked on the first request"}
     end
   end
+
+  @impl true
+  def routing_preflight(options), do: healthcheck(options)
 
   defp request_body(model, messages, tools, options, streaming) do
     body = %{

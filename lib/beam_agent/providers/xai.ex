@@ -12,7 +12,7 @@ defmodule BeamAgent.Providers.XAI do
     %{
       name: "xai",
       label: "xAI (Grok)",
-      capabilities: [:text_generation, :tool_use, :streaming],
+      capabilities: [:text_generation, :tool_use, :streaming, :reasoning],
       modalities: [:text],
       locality: :remote,
       privacy: :provider,
@@ -53,4 +53,7 @@ defmodule BeamAgent.Providers.XAI do
       {:ok, "credentials configured; connectivity is checked on the first request"}
     end
   end
+
+  @impl true
+  def routing_preflight(options), do: healthcheck(options)
 end

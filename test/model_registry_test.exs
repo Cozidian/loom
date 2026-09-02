@@ -107,6 +107,38 @@ defmodule BeamAgent.ModelRegistryTest do
            end)
   end
 
+  test "routing preflight marks a hosted endpoint without credentials unavailable", context do
+    missing_env =
+      "BEAM_AGENT_MISSING_XAI_#{System.unique_integer([:positive])}"
+
+    System.delete_env(missing_env)
+
+    assert {:ok, project_id} =
+             BeamAgent.start_project(
+               workspace_root: context.workspace,
+               model_endpoints: [
+                 %{id: "echo", provider: :echo},
+                 %{
+                   id: "grok-no-key",
+                   provider: :xai,
+                   model: "grok-test",
+                   api_key_env: missing_env
+                 }
+               ]
+             )
+
+    assert {:ok, results} = BeamAgent.ModelRegistry.preflight(project_id)
+    by_endpoint = Map.new(results, &{&1.endpoint_id, &1})
+
+    assert by_endpoint["echo"].status == :available
+    assert by_endpoint["grok-no-key"].status == :unavailable
+    assert by_endpoint["grok-no-key"].reason =~ "missing_api_key"
+    assert by_endpoint["grok-no-key"].reason =~ missing_env
+
+    assert {:ok, endpoints} = BeamAgent.models(project_id)
+    assert Enum.find(endpoints, &(&1.id == "grok-no-key")).health.status == :unavailable
+  end
+
   test "a registry restart restores configured endpoints without restarting goals", context do
     assert {:ok, session_id} =
              BeamAgent.start_session(

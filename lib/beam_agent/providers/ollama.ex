@@ -105,6 +105,9 @@ defmodule BeamAgent.Providers.Ollama do
     end
   end
 
+  @impl true
+  def routing_preflight(options), do: healthcheck(options)
+
   defp message(%{role: :user, content: content} = message) do
     images = Enum.map(Map.get(message, :attachments, []), & &1.data)
 

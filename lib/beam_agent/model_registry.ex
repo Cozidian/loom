@@ -37,6 +37,16 @@ defmodule BeamAgent.ModelRegistry do
     end
   end
 
+  def preflight(project_id, endpoint_id \\ :all) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id),
+         {:ok, supervisor} <- Names.pid(:model_health_supervisor, project_id),
+         {:ok, endpoints} <- GenServer.call(pid, :list),
+         {:ok, targets} <- preflight_targets(endpoints, endpoint_id) do
+      results = run_preflights(supervisor, targets)
+      GenServer.call(pid, {:record_health_results, results})
+    end
+  end
+
   @impl true
   def init(opts) do
     state = %{
@@ -90,6 +100,24 @@ defmodule BeamAgent.ModelRegistry do
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:record_health_results, results}, _from, state) do
+    state =
+      Enum.reduce(results, state, fn %{endpoint_id: endpoint_id, result: result}, state ->
+        put_health(state, endpoint_id, result)
+      end)
+
+    public =
+      Enum.map(results, fn %{endpoint_id: endpoint_id, result: result} ->
+        %{
+          endpoint_id: endpoint_id,
+          status: health_status(result),
+          reason: health_reason_value(result)
+        }
+      end)
+
+    {:reply, {:ok, public}, state}
   end
 
   @impl true
@@ -156,10 +184,74 @@ defmodule BeamAgent.ModelRegistry do
     _kind, _reason -> {:error, :healthcheck_failure}
   end
 
+  defp routing_preflight(endpoint) do
+    module = endpoint.provider_module
+    options = ModelEndpoint.health_options(endpoint)
+
+    if Code.ensure_loaded?(module) and function_exported?(module, :routing_preflight, 1),
+      do: module.routing_preflight(options),
+      else: :ok
+  rescue
+    _error -> {:error, :routing_preflight_exception}
+  catch
+    _kind, _reason -> {:error, :routing_preflight_failure}
+  end
+
+  defp run_preflights(_supervisor, []), do: []
+
+  defp run_preflights(supervisor, targets) do
+    results =
+      Task.Supervisor.async_stream_nolink(
+        supervisor,
+        targets,
+        fn endpoint -> {endpoint.id, routing_preflight(endpoint)} end,
+        ordered: true,
+        max_concurrency: min(length(targets), 8),
+        timeout: 5_000,
+        on_timeout: :kill_task
+      )
+
+    Enum.zip_with(targets, results, fn endpoint, result ->
+      health_result =
+        case result do
+          {:ok, {id, health_result}} when id == endpoint.id -> health_result
+          {:exit, _reason} -> {:error, :routing_preflight_timeout}
+          _other -> {:error, :routing_preflight_failure}
+        end
+
+      %{endpoint_id: endpoint.id, result: health_result}
+    end)
+  end
+
+  defp preflight_targets(endpoints, :all) do
+    {:ok, Enum.filter(endpoints, &(&1.health.status in [:unknown, :checking]))}
+  end
+
+  defp preflight_targets(endpoints, endpoint_id) when is_binary(endpoint_id) do
+    case Enum.find(endpoints, &(&1.id == endpoint_id)) do
+      nil ->
+        {:error, {:unknown_model_endpoint, endpoint_id}}
+
+      %{health: %{status: status}} = endpoint when status in [:unknown, :checking] ->
+        {:ok, [endpoint]}
+
+      _known ->
+        {:ok, []}
+    end
+  end
+
+  defp preflight_targets(_endpoints, endpoint_id),
+    do: {:error, {:unknown_model_endpoint, endpoint_id}}
+
   defp health_status(:ok), do: :available
   defp health_status({:ok, _detail}), do: :available
   defp health_status({:error, _reason}), do: :unavailable
   defp health_status(_other), do: :unavailable
+
+  defp health_reason_value(:ok), do: nil
+  defp health_reason_value({:ok, _detail}), do: nil
+  defp health_reason_value({:error, reason}), do: inspect(reason)
+  defp health_reason_value(other), do: inspect(other)
 
   defp health_reason(reason) when is_atom(reason), do: reason
   defp health_reason(_reason), do: :failed

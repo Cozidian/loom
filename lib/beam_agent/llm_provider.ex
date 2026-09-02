@@ -34,6 +34,7 @@ defmodule BeamAgent.LLMProvider do
               {:ok, response()} | {:error, term()}
   @callback configuration() :: map()
   @callback healthcheck(keyword()) :: :ok | {:ok, String.t()} | {:error, term()}
+  @callback routing_preflight(keyword()) :: :ok | {:ok, String.t()} | {:error, term()}
 
-  @optional_callbacks configuration: 0, healthcheck: 1, stream: 4
+  @optional_callbacks configuration: 0, healthcheck: 1, routing_preflight: 1, stream: 4
 end

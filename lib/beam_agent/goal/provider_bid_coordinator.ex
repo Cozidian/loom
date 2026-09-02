@@ -109,7 +109,9 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
     purpose = Keyword.get(opts, :purpose, :work_contract)
     auction_id = new_id()
 
-    with {:ok, route} <- ModelRouter.route(state.project_id, input) do
+    with {:ok, preflight} <- ModelRegistry.preflight(state.project_id),
+         :ok <- append_preflight_rejections(session_id, preflight),
+         {:ok, route} <- ModelRouter.route(state.project_id, input) do
       if is_nil(route.endpoint) do
         {:ok,
          %{
@@ -175,6 +177,21 @@ defmodule BeamAgent.Goal.ProviderBidCoordinator do
         end
       end
     end
+  end
+
+  defp append_preflight_rejections(session_id, results) do
+    results
+    |> Enum.filter(&(&1.status == :unavailable))
+    |> Enum.reduce_while(:ok, fn result, :ok ->
+      case append(session_id, :provider_endpoint_rejected, %{
+             "endpoint_id" => result.endpoint_id,
+             "stage" => "routing_preflight",
+             "reason" => result.reason
+           }) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp enforce_routing_boundary(_route, %{market_competition: true}, opts), do: opts
