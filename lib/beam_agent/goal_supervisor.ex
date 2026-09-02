@@ -16,7 +16,8 @@ defmodule BeamAgent.GoalSupervisor do
     ProgressMonitor,
     ProviderBidCoordinator,
     ResourceSupervisor,
-    SecretBroker
+    SecretBroker,
+    WorkRunManager
   }
 
   alias BeamAgent.MCP.Registry
@@ -54,6 +55,7 @@ defmodule BeamAgent.GoalSupervisor do
         {CapabilityManager, opts},
         {DelegationManager, opts},
         {OrganizationManager, opts},
+        {WorkRunManager, opts},
         {SecretBroker, opts},
         {ModelLease, opts},
         {Task.Supervisor, name: Names.via(:provider_bid_supervisor, goal_id)},

@@ -217,6 +217,20 @@ Write, command, MCP, and ad-hoc delegation tools are projected only after the
 current turn records a successful organization using at least two endpoint
 leases. This prevents a direct implementation followed by a redundant plan at
 completion time.
+
+Validated plans are owned by `Goal.WorkRunManager`, not by a model turn or a
+temporary worker. `work_run_started` durably records the graph before execution;
+attempt, block, recovery, interruption, and completion events advance its state
+machine. `Goal.DecompositionExecutor` remains the stateless execution engine:
+it runs dependency-ready waves, constructs disposable workers, propagates their
+actual verification facts, and reports checkpoints back to the manager. On
+recovery the manager replays the root log, reconciles the organization view,
+and resumes pending nodes. Per-node attempt limits and the goal retry budget
+bound recovery. `FailureDecision` deterministically selects `retry_same`,
+`rebind`, `repair`, `replan`, `ask`, or `stop`; these decisions never expand authority or
+budget. Public event projection exposes safe lifecycle and decision metadata
+while redacting the persisted plan, result content, and raw error details.
+
 The coordinator owns recent market state and the session event log records
 `provider_auction_started`, `provider_bid_submitted`,
 `provider_auction_awarded`, and `provider_auction_settled` facts.

@@ -74,21 +74,27 @@ defmodule BeamAgent.Project.ResourceScheduler do
           from: from,
           priority: Keyword.get(opts, :priority, 0),
           session_id: Keyword.get(opts, :session_id),
+          parent_session_id: Keyword.get(opts, :parent_session_id),
           requested_at: System.monotonic_time(:millisecond)
         }
 
         state = monitor_owner(state, owner)
 
-        if map_size(pool.active) < pool.limit do
-          {lease, state} = grant(state, request)
-          {:reply, {:ok, lease}, state}
-        else
-          pool = %{pool | queue: insert_queued(pool.queue, request)}
-          state = put_in(state, [:pools, kind], pool)
+        case grant_disposition(pool, request) do
+          {:grant, borrowed_from_session_id} ->
+            request = Map.put(request, :borrowed_from_session_id, borrowed_from_session_id)
+            {lease, state} = grant(state, request)
+            {:reply, {:ok, lease}, state}
 
-          record(request.session_id, :resource_queued, request, %{queue_depth: length(pool.queue)})
+          :queue ->
+            pool = %{pool | queue: insert_queued(pool.queue, request)}
+            state = put_in(state, [:pools, kind], pool)
 
-          {:noreply, state}
+            record(request.session_id, :resource_queued, request, %{
+              queue_depth: length(pool.queue)
+            })
+
+            {:noreply, state}
         end
     end
   end
@@ -144,28 +150,83 @@ defmodule BeamAgent.Project.ResourceScheduler do
       kind: request.kind,
       owner: request.owner,
       session_id: request.session_id,
+      borrowed_from_session_id: request[:borrowed_from_session_id],
       wait_ms: System.monotonic_time(:millisecond) - request.requested_at,
       granted_at: DateTime.utc_now()
     }
 
     state = put_in(state, [:pools, request.kind, :active, lease.id], lease)
-    record(request.session_id, :resource_granted, lease, %{wait_ms: lease.wait_ms})
+    extra = %{wait_ms: lease.wait_ms}
+
+    extra =
+      if lease.borrowed_from_session_id do
+        Map.put(extra, :borrowed_from_session_id, lease.borrowed_from_session_id)
+      else
+        extra
+      end
+
+    record(request.session_id, :resource_granted, lease, extra)
+
     {lease, state}
   end
 
   defp grant_next(state, kind) do
     pool = state.pools[kind]
 
-    case pool.queue do
-      [] ->
+    case pop_grantable(pool) do
+      :none ->
         state
 
-      [request | rest] ->
-        state = put_in(state, [:pools, kind, :queue], rest)
+      {request, borrowed_from_session_id, remaining} ->
+        request = Map.put(request, :borrowed_from_session_id, borrowed_from_session_id)
+        state = put_in(state, [:pools, kind, :queue], remaining)
         {lease, state} = grant(state, request)
         GenServer.reply(request.from, {:ok, lease})
         state
     end
+  end
+
+  # A provider invocation may synchronously execute delegate_tasks while holding
+  # its model lease. Let one direct child borrow capacity from that parent lease
+  # so the parent cannot deadlock waiting for work queued behind itself. The
+  # single-borrow rule keeps the configured limit authoritative for unrelated
+  # work and prevents a fan-out from growing the pool without bound.
+  defp grant_disposition(pool, request) do
+    parent_session_id = request.parent_session_id
+
+    cond do
+      map_size(pool.active) < pool.limit ->
+        {:grant, nil}
+
+      is_binary(parent_session_id) and parent_active?(pool, parent_session_id) and
+          not parent_already_borrowed?(pool, parent_session_id) ->
+        {:grant, parent_session_id}
+
+      true ->
+        :queue
+    end
+  end
+
+  defp parent_active?(pool, parent_session_id) do
+    Enum.any?(pool.active, fn {_id, lease} -> lease.session_id == parent_session_id end)
+  end
+
+  defp parent_already_borrowed?(pool, parent_session_id) do
+    Enum.any?(pool.active, fn {_id, lease} ->
+      lease.borrowed_from_session_id == parent_session_id
+    end)
+  end
+
+  defp pop_grantable(pool) do
+    Enum.reduce_while(Enum.with_index(pool.queue), :none, fn {request, index}, _acc ->
+      case grant_disposition(pool, request) do
+        {:grant, borrowed_from_session_id} ->
+          {:halt, {request, borrowed_from_session_id, List.delete_at(pool.queue, index)}}
+
+        :queue ->
+          {:cont, :none}
+      end
+    end)
   end
 
   defp remove_active(state, kind, lease_id),

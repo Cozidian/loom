@@ -68,6 +68,19 @@ defmodule BeamAgent.DecompositionPlan do
     end)
   end
 
+  def to_map(%__MODULE__{} = plan) do
+    %{
+      "version" => plan.version,
+      "id" => plan.id,
+      "created_at" => plan.created_at && DateTime.to_iso8601(plan.created_at),
+      "tasks" =>
+        plan.tasks
+        |> Map.values()
+        |> Enum.sort_by(& &1.id)
+        |> Enum.map(&stringify/1)
+    }
+  end
+
   defp normalize_tasks(tasks) when is_list(tasks) and tasks != [] do
     tasks
     |> Enum.reduce_while({:ok, [], MapSet.new()}, fn raw, {:ok, acc, ids} ->
@@ -105,6 +118,7 @@ defmodule BeamAgent.DecompositionPlan do
          capabilities: value(raw, :capabilities),
          model_requirements: value(raw, :model_requirements),
          verification_requirements: value(raw, :verification_requirements),
+         maximum_attempts: normalize_maximum_attempts(value(raw, :maximum_attempts)),
          completion_criteria:
            value(raw, :completion_criteria) || "Return a result that satisfies the task goal"
        }}
@@ -242,6 +256,18 @@ defmodule BeamAgent.DecompositionPlan do
   end
 
   defp value(map, key), do: map[key] || map[to_string(key)]
+
+  defp normalize_maximum_attempts(value) when is_integer(value), do: value |> max(1) |> min(4)
+  defp normalize_maximum_attempts(_value), do: nil
+
+  defp stringify(map) when is_map(map) do
+    Map.new(map, fn {key, value} -> {to_string(key), stringify(value)} end)
+  end
+
+  defp stringify(values) when is_list(values), do: Enum.map(values, &stringify/1)
+  defp stringify(nil), do: nil
+  defp stringify(value) when is_atom(value), do: to_string(value)
+  defp stringify(value), do: value
 
   defp new_id do
     "plan-" <> (:crypto.strong_rand_bytes(9) |> Base.url_encode64(padding: false))

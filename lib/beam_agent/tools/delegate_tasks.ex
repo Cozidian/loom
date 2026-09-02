@@ -54,6 +54,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
                 type: "object",
                 properties: %{required: %{type: "boolean"}}
               },
+              maximum_attempts: %{type: "integer", minimum: 1, maximum: 4},
               completion_criteria: %{type: "string"}
             },
             required: ["id", "goal"]
@@ -112,7 +113,10 @@ defmodule BeamAgent.Tools.DelegateTasks do
          %{
            status: result.tasks[id],
            content: content,
-           endpoint_id: value[:endpoint_id]
+           endpoint_id: value[:endpoint_id],
+           attempts: value[:attempts],
+           verification: value[:verification],
+           recovery: value[:recovery]
          }}
       end)
 
@@ -131,6 +135,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
       changed_files: workspace_delta.changed_files,
       patch_fingerprint: workspace_delta.patch_fingerprint,
       used_endpoint_ids: used_endpoint_ids,
+      recovery: result[:recovery],
       tasks: tasks
     })
   end

@@ -141,7 +141,10 @@ defmodule BeamAgent do
   end
 
   def execute_decomposition(parent_session_id, plan, opts \\ []),
-    do: BeamAgent.Goal.DecompositionExecutor.run(parent_session_id, plan, opts)
+    do: BeamAgent.Goal.WorkRunManager.run(parent_session_id, plan, opts)
+
+  def work_runs(goal_id, work_run_id \\ :all),
+    do: BeamAgent.Goal.WorkRunManager.snapshot(goal_id, work_run_id)
 
   def worker_organizations(goal_id, organization_id \\ :all),
     do: BeamAgent.Goal.OrganizationManager.snapshot(goal_id, organization_id)

@@ -138,6 +138,44 @@ defmodule BeamAgent.RuntimeEventViewTest do
     refute JSON.encode!(public) =~ "SECRET_ASSISTANT_TEXT"
   end
 
+  test "public work-run events expose decisions while redacting plans, results, and errors" do
+    event = %{
+      payload: %{
+        type: "work_run_task_attempt_finished",
+        data: %{
+          "work_run_id" => "work-run-1",
+          "task_id" => "inspect",
+          "attempt" => 1,
+          "maximum_attempts" => 2,
+          "status" => "failed",
+          "recovery" => %{
+            "action" => "rebind",
+            "classification" => "transient_provider",
+            "reason_code" => "provider_transport_error",
+            "retryable" => true,
+            "terminal" => false
+          },
+          "plan" => %{"tasks" => [%{"goal" => "SECRET_GOAL"}]},
+          "result_content" => "SECRET_RESULT",
+          "error" => "SECRET_ERROR"
+        }
+      }
+    }
+
+    public = RuntimeEventView.project(event, :public)
+    recovery = public.payload.data["recovery"]
+
+    assert public.payload.data["work_run_id"] == "work-run-1"
+    assert recovery["action"] == "rebind"
+    assert recovery["classification"] == "transient_provider"
+    assert recovery["retryable"]
+    refute recovery["terminal"]
+    assert public.payload.data["plan"]["redacted"]
+    assert public.payload.data["result_content"]["redacted"]
+    assert public.payload.data["error"]["redacted"]
+    refute JSON.encode!(public) =~ "SECRET_"
+  end
+
   test "public checkpoint summaries preserve event types and numeric usage only" do
     event = %{
       payload: %{
