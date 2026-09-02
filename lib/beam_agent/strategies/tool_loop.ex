@@ -774,6 +774,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
       {:non_final, reason} ->
         continue_after_non_final_response(context, turn, step, reason)
+
+      {:blocked, reason} ->
+        fail_turn(context, turn, {:implementation_blocked, reason, content})
     end
   end
 
@@ -789,6 +792,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
       action_required?(context) and future_intent?(content) ->
         {:non_final, :future_intent}
+
+      action_required?(context) and turn_action_blocked_by_runtime?(context, turn) ->
+        {:blocked, :runtime_action_denied}
+
+      action_required?(context) and implementation_tool_names(context, tool_schemas) == [] and
+          not (planning.mode == :required and tool_available?(tool_schemas, "delegate_tasks")) ->
+        {:blocked, :missing_action_authority}
 
       decomposition_recovery == "replan" and
           not turn_action_blocked_by_runtime?(context, turn) ->
@@ -1040,6 +1050,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp action_tool?("await_subagent", result, _context) do
     case JSON.decode(result["content"] || "") do
       {:ok, %{"status" => status}} -> status in ["completed", "succeeded"]
+      _other -> false
+    end
+  end
+
+  defp action_tool?(name, result, _context) when name in ["edit_file", "apply_patch"] do
+    case JSON.decode(result["content"] || "") do
+      {:ok, %{"previous_sha256" => previous, "sha256" => current}} -> previous != current
       _other -> false
     end
   end
@@ -1505,6 +1522,27 @@ defmodule BeamAgent.Strategies.ToolLoop do
     turn = count_events(context.session_id, "turn_started")
     recovery = turn_decomposition_recovery(context, turn)
 
+    if delegated_implementation_worker?(context) do
+      # A delegated implementer is already the leaf selected by a validated
+      # task graph. Requiring it to decompose again removes its write tools
+      # while runtime policy simultaneously forbids recursive implementation
+      # delegation, leaving the worker with no executable path.
+      tool_schemas
+    else
+      enforce_coordinator_planning_gate(tool_schemas, context, planning, turn, recovery)
+    end
+  end
+
+  defp delegated_implementation_worker?(%{
+         parent_session_id: parent_session_id,
+         agent_spec: %{execution_strategy: %{id: "implement"}}
+       })
+       when is_binary(parent_session_id),
+       do: true
+
+  defp delegated_implementation_worker?(_context), do: false
+
+  defp enforce_coordinator_planning_gate(tool_schemas, context, planning, turn, recovery) do
     if recovery == "replan" or
          (planning.mode == :required and turn_delegation(context, turn).endpoint_count < 2) do
       Enum.filter(tool_schemas, &planning_tool?/1)

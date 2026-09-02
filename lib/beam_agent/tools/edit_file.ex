@@ -52,6 +52,7 @@ defmodule BeamAgent.Tools.EditFile do
        JSON.encode!(%{
          path: path,
          bytes: byte_size(updated),
+         previous_sha256: expected,
          sha256: sha256,
          generation_owner: "runtime"
        })}

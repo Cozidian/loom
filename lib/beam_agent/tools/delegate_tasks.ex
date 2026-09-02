@@ -36,7 +36,12 @@ defmodule BeamAgent.Tools.DelegateTasks do
               capabilities: %{
                 type: "object",
                 properties: %{
-                  paths: %{type: "array", items: %{type: "string"}}
+                  paths: %{
+                    type: "array",
+                    items: %{type: "string"},
+                    description:
+                      "Optional authority boundary for every file read and write. Omit when the worker must inspect repository context outside its owned implementation paths."
+                  }
                 }
               },
               model_requirements: %{

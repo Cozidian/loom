@@ -90,10 +90,64 @@ defmodule BeamAgent.WorkRunTest do
     end
   end
 
+  defmodule FalseSuccessProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :work_run_false_success
+
+    @impl true
+    def configuration do
+      %{
+        name: "work_run_false_success",
+        label: "Work run false-success provider",
+        capabilities: [:text_generation, :tool_use, :reasoning],
+        locality: :remote,
+        privacy: :provider,
+        cost_hint: :metered
+      }
+    end
+
+    @impl true
+    def complete(_messages, tools, options) do
+      if pid = options[:test_pid] || Process.whereis(:beam_agent_work_run_test_observer),
+        do: send(pid, {:false_success_tools, Enum.map(tools, & &1.name)})
+
+      {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
+    end
+  end
+
+  defmodule ReviewFailureProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :work_run_review_failure
+
+    @impl true
+    def configuration do
+      %{
+        name: "work_run_review_failure",
+        label: "Work run review-failure provider",
+        capabilities: [:text_generation],
+        locality: :remote,
+        privacy: :provider,
+        cost_hint: :metered
+      }
+    end
+
+    @impl true
+    def complete(_messages, _tools, _options),
+      do:
+        {:ok,
+         %{content: "REVIEW_FAIL\nThe acceptance contract is not satisfied.", tool_calls: []}}
+  end
+
   setup_all do
     :ok = BeamAgent.CapabilityCatalog.register_provider(TransientProvider)
     :ok = BeamAgent.CapabilityCatalog.register_provider(SuccessProvider)
     :ok = BeamAgent.CapabilityCatalog.register_provider(BlockingProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(FalseSuccessProvider)
+    :ok = BeamAgent.CapabilityCatalog.register_provider(ReviewFailureProvider)
     :ok
   end
 
@@ -203,6 +257,112 @@ defmodule BeamAgent.WorkRunTest do
     assert result.results["review"].recovery.reason_code == "dependency_failed"
     assert result.recovery.action == :replan
     assert result.recovery.classification == :task_graph
+  end
+
+  test "a delegated implementation that produces no patch fails and replans", context do
+    Process.register(self(), :beam_agent_work_run_test_observer)
+
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :work_run_false_success,
+               provider_profile: "primary",
+               provider_options: [test_pid: self()],
+               model_strategy: :auto,
+               budget: %{concurrent_workers: 2, retries: 1},
+               model_endpoints: [
+                 %{
+                   id: "primary",
+                   provider: :work_run_false_success,
+                   provider_module: FalseSuccessProvider
+                 },
+                 %{
+                   id: "secondary",
+                   provider: :work_run_false_success,
+                   provider_module: FalseSuccessProvider
+                 }
+               ]
+             )
+
+    assert {:ok, result} =
+             BeamAgent.execute_decomposition(
+               root_id,
+               %{
+                 tasks: [
+                   %{
+                     id: "implementation",
+                     goal:
+                       "Build an end-to-end Phoenix web version and integrate it with the runtime",
+                     template: "implementer",
+                     maximum_attempts: 1,
+                     model_requirements: %{preferred_endpoint_id: "primary"},
+                     verification_requirements: %{required: true}
+                   }
+                 ]
+               },
+               strategy: "implement",
+               worker_options: [
+                 data_dir: context.data_dir,
+                 model_strategy: :auto,
+                 provider: :work_run_false_success,
+                 provider_options: [test_pid: self()]
+               ]
+             )
+
+    assert result.status == :failed
+    assert result.tasks == %{"implementation" => :failed}
+    assert result.results["implementation"].recovery.action == :replan
+
+    assert_receive {:false_success_tools, tools}
+    assert "create_file" in tools
+    assert "apply_patch" in tools
+    refute "delegate_tasks" in tools
+
+    assert {:ok, events} = BeamAgent.events(root_id)
+
+    assert Enum.any?(events, fn event ->
+             event["type"] == "work_run_finished" and event["data"]["status"] == "failed"
+           end)
+  end
+
+  test "a reviewer failure fails the task graph instead of aggregating success", context do
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :work_run_review_failure,
+               provider_profile: "review",
+               model_endpoints: [
+                 %{
+                   id: "review",
+                   provider: :work_run_review_failure,
+                   provider_module: ReviewFailureProvider
+                 }
+               ]
+             )
+
+    assert {:ok, result} =
+             BeamAgent.execute_decomposition(
+               root_id,
+               %{
+                 tasks: [
+                   %{
+                     id: "review",
+                     goal: "Review the implementation against its acceptance contract",
+                     role: "reviewer",
+                     maximum_attempts: 1
+                   }
+                 ]
+               },
+               strategy: "review",
+               worker_options: [data_dir: context.data_dir]
+             )
+
+    assert result.status == :failed
+    assert result.tasks == %{"review" => :failed}
+    assert result.results["review"].recovery.reason_code == "implementation_review_failed"
+    assert result.recovery.action == :replan
   end
 
   test "an interrupted active work run is recovered from its durable checkpoint", context do

@@ -111,6 +111,30 @@ defmodule BeamAgent.ConversationContextTest do
            )
   end
 
+  test "hard context limit overrides recent-turn retention", context do
+    append_turn(context.session_id, 1, "oversized first result", 6_000)
+    {:ok, _} = EventLog.append(context.session_id, :turn_started, %{"turn" => 2})
+    {:ok, _} = EventLog.append(context.session_id, :user_message, %{"content" => "did it work?"})
+
+    assert {:ok, messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               SummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    assert_receive {:summary_source, source, _prompt}
+    assert source =~ "oversized first result"
+    assert stats.compacted?
+
+    projected = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+    assert projected =~ "Durable summary of the oldest completed work"
+    assert projected =~ "did it work?"
+    refute projected =~ String.duplicate("x", 1_000)
+  end
+
   test "reconstructs the same summary projection after restart", context do
     append_turn(context.session_id, 1, "oldest restart objective", 2_000)
     append_turn(context.session_id, 2, "recent restart decision", 200)
