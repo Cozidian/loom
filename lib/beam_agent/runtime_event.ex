@@ -113,6 +113,9 @@ defmodule BeamAgent.RuntimeEvent do
               "organization_task_transitioned",
               "organization_finished",
               "organization_cancelled",
+              "work_run_started",
+              "work_run_task_attempt_started",
+              "work_run_interrupted",
               "work_planning_decided",
               "semantic_planning_observed"
             ],
@@ -259,7 +262,11 @@ defmodule BeamAgent.RuntimeEvent do
        when type in [
               "model_outcome_recorded",
               "task_outcome_recorded",
-              "completion_report_generated"
+              "completion_report_generated",
+              "work_run_task_attempt_finished",
+              "work_run_task_blocked",
+              "work_run_recovery_decided",
+              "work_run_finished"
             ],
        do: :outcome
 

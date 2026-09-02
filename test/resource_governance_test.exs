@@ -229,6 +229,80 @@ defmodule BeamAgent.ResourceGovernanceTest do
     assert Enum.any?(events, &(&1["type"] == "resource_released"))
   end
 
+  test "delegated model work borrows bounded capacity from its waiting parent", context do
+    assert {:ok, root_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo,
+               resource_limits: %{expensive_model: 1}
+             )
+
+    {:ok, goal} = BeamAgent.goal(root_id)
+
+    assert {:ok, parent} =
+             ResourceScheduler.acquire(goal.project_id, :expensive_model, self(),
+               session_id: root_id
+             )
+
+    test_pid = self()
+
+    first_child =
+      Task.async(fn ->
+        result =
+          ResourceScheduler.acquire(goal.project_id, :expensive_model, self(),
+            session_id: "delegated-child-one",
+            parent_session_id: root_id
+          )
+
+        send(test_pid, {:first_child_lease, result})
+
+        receive do
+          :release_child ->
+            {:ok, lease} = result
+            ResourceScheduler.release(goal.project_id, lease.id)
+        end
+      end)
+
+    assert_receive {:first_child_lease, {:ok, first_lease}}
+    assert first_lease.borrowed_from_session_id == root_id
+
+    second_child =
+      Task.async(fn ->
+        result =
+          ResourceScheduler.acquire(goal.project_id, :expensive_model, self(),
+            session_id: "delegated-child-two",
+            parent_session_id: root_id
+          )
+
+        send(test_pid, {:second_child_lease, result})
+
+        receive do
+          :release_child ->
+            {:ok, lease} = result
+            ResourceScheduler.release(goal.project_id, lease.id)
+        end
+      end)
+
+    Process.sleep(20)
+
+    assert {:ok, %{expensive_model: %{active: 2, queued: 1}}} =
+             ResourceScheduler.snapshot(goal.project_id)
+
+    send(first_child.pid, :release_child)
+    assert :ok = Task.await(first_child)
+
+    assert_receive {:second_child_lease, {:ok, second_lease}}
+    assert second_lease.borrowed_from_session_id == root_id
+
+    send(second_child.pid, :release_child)
+    assert :ok = Task.await(second_child)
+    assert :ok = ResourceScheduler.release(goal.project_id, parent.id)
+
+    assert {:ok, %{expensive_model: %{active: 0, queued: 0}}} =
+             ResourceScheduler.snapshot(goal.project_id)
+  end
+
   test "shell output is streamed as bounded runtime deltas", context do
     if :os.type() == {:unix, :darwin} do
       assert {:ok, root_id} =

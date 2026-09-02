@@ -207,6 +207,18 @@ only model inventory, structured decomposition, and read-only inspection tools;
 direct writes, commands, and ad-hoc spawning unlock only after a real
 multi-endpoint plan runs. Delegation only counts as implementation when its measured
 before/after workspace delta contains real changes.
+
+Each validated decomposition now executes as a goal-owned durable work run.
+The root event log checkpoints the complete plan, per-task attempts, dependency
+blocks, endpoint bindings, result fingerprints, verification evidence, and the
+terminal recovery decision. A supervisor restart resumes only unfinished graph
+nodes from those checkpoints. Retry counts are budgeted, attempt counts are
+bounded by the task or execution strategy, and failures resolve through the
+typed actions `retry_same`, `rebind`, `repair`, `replan`, `ask`, or `stop`. A failed graph
+cannot satisfy the planning or implementation completion guards; a `replan`
+decision returns control to structured planning with the failed and blocked
+nodes still inspectable.
+
 The default routing strategy is `auto`: orchestration and difficult work may
 stay on the selected cloud profile while simple child work can route to an
 available local Ollama profile. Use `--model-strategy manual` for the selected

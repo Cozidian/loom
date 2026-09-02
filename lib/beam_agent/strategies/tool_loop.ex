@@ -429,7 +429,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
         BeamAgent.Project.ResourceScheduler.run(
           context.project_id,
           model_pool(route),
-          [session_id: context.session_id, priority: resource_priority(context)],
+          [
+            session_id: context.session_id,
+            parent_session_id: context.parent_session_id,
+            priority: resource_priority(context)
+          ],
           fn -> ModelInvocation.invoke(request, emit) end
         )
 
@@ -776,6 +780,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp completion_guard(context, turn, content, tool_schemas) do
     planning = planning_decision(context)
     delegation = turn_delegation(context, turn)
+    decomposition_recovery = turn_decomposition_recovery(context, turn)
     record_semantic_planning_observation(context, turn, planning, delegation)
 
     cond do
@@ -785,12 +790,19 @@ defmodule BeamAgent.Strategies.ToolLoop do
       action_required?(context) and future_intent?(content) ->
         {:non_final, :future_intent}
 
+      decomposition_recovery == "replan" and
+          not turn_action_blocked_by_runtime?(context, turn) ->
+        {:non_final, :replan_required}
+
       planning.mode == :required and tool_available?(tool_schemas, "delegate_tasks") and
-        delegation.endpoint_count < 2 and not turn_action_blocked_by_runtime?(context, turn) ->
+        delegation.endpoint_count < 2 and
+        not terminal_decomposition_recovery?(decomposition_recovery) and
+          not turn_action_blocked_by_runtime?(context, turn) ->
         {:non_final, :decomposition_required}
 
       action_required?(context) and implementation_tool_names(context, tool_schemas) != [] and
         turn_action_count(context, turn) == 0 and
+        not terminal_decomposition_recovery?(decomposition_recovery) and
           not turn_action_blocked_by_runtime?(context, turn) ->
         {:non_final, :action_not_started}
 
@@ -897,7 +909,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
         data = event["data"] || %{}
 
         event["type"] == "tool_result" and data["turn"] == turn and
-          data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"])
+          data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"]) and
+          successful_decomposition_result?(data["content"])
       end)
 
     worker_endpoint_ids =
@@ -931,6 +944,39 @@ defmodule BeamAgent.Strategies.ToolLoop do
       endpoint_count: length(endpoint_ids)
     }
   end
+
+  defp turn_decomposition_recovery(context, turn) do
+    {:ok, events} = EventLog.events(context.session_id)
+
+    calls =
+      events
+      |> Enum.filter(fn event ->
+        event["type"] == "tool_called" and event["data"]["turn"] == turn and
+          event["data"]["name"] == "delegate_tasks"
+      end)
+      |> MapSet.new(& &1["data"]["tool_call_id"])
+
+    Enum.find_value(Enum.reverse(events), fn event ->
+      data = event["data"] || %{}
+
+      if event["type"] == "tool_result" and data["turn"] == turn and
+           data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"]) do
+        case JSON.decode(data["content"] || "") do
+          {:ok, %{"recovery" => %{"action" => action}}} -> action
+          _other -> nil
+        end
+      end
+    end)
+  end
+
+  defp successful_decomposition_result?(content) do
+    case JSON.decode(content || "") do
+      {:ok, %{"status" => status}} -> status in ["completed", "succeeded"]
+      _other -> false
+    end
+  end
+
+  defp terminal_decomposition_recovery?(action), do: action in ["ask", "stop"]
 
   defp turn_action_blocked_by_runtime?(context, turn) do
     {:ok, events} = EventLog.events(context.session_id)
@@ -975,8 +1021,11 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp action_tool?("delegate_tasks", result, _context) do
     case JSON.decode(result["content"] || "") do
-      {:ok, %{"changed_files" => [_ | _]}} -> true
-      _other -> false
+      {:ok, %{"status" => status, "changed_files" => [_ | _]}} ->
+        status in ["completed", "succeeded"]
+
+      _other ->
+        false
     end
   end
 
@@ -1103,6 +1152,9 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp completion_reason_text("decomposition_required"),
     do: "the required multi-provider decomposition has not been executed"
+
+  defp completion_reason_text("replan_required"),
+    do: "the previous task graph returned a typed replan decision"
 
   defp completion_reason_text("future_intent"),
     do: "the response described future work instead of performing the requested work"
@@ -1378,6 +1430,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
           "\nThe runtime requires multiple providers for this substantial request. Call list_models, then invoke " <>
           "delegate_tasks with a validated dependency plan and per-task model requirements."
 
+      {"replan_required", _names} ->
+        base <>
+          "\nThe previous task graph ended with a typed replan decision. Inspect its failed and blocked tasks, then invoke delegate_tasks with a corrected dependency graph or assignments."
+
       {_reason, _names} ->
         base
     end
@@ -1447,8 +1503,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp enforce_planning_gate(tool_schemas, context) do
     planning = planning_decision(context)
     turn = count_events(context.session_id, "turn_started")
+    recovery = turn_decomposition_recovery(context, turn)
 
-    if planning.mode == :required and turn_delegation(context, turn).endpoint_count < 2 do
+    if recovery == "replan" or
+         (planning.mode == :required and turn_delegation(context, turn).endpoint_count < 2) do
       Enum.filter(tool_schemas, &planning_tool?/1)
     else
       tool_schemas

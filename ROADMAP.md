@@ -1,6 +1,6 @@
 # BeamAgent roadmap
 
-Updated: 2026-08-31
+Updated: 2026-09-02
 
 BeamAgent is evolving into an OTP-native runtime for autonomous software work:
 a fault-tolerant, observable, and concurrent system where specialized processes
@@ -797,6 +797,14 @@ every earlier item must finish before a high-value product or safety slice.
       tool projection to inventory, structured decomposition, and read-only
       evidence; direct mutation and ad-hoc spawning unlock after a successful
       multi-endpoint organization instead of being rejected near completion.
+    - Delivered durable execution slice: validated decompositions are now
+      goal-owned work runs whose plans, per-node attempts, dependency blocks,
+      verification facts, endpoint bindings, interruptions, results, and
+      recovery decisions are checkpointed in the canonical event log. Active
+      runs resume after manager failure, retries consume the goal retry budget,
+      and bounded failures choose a typed `retry_same`, `rebind`, `repair`,
+      `replan`, `ask`, or `stop` action. Failed delegations no longer satisfy planning or
+      implementation completion guards.
 
 16. [x] Support temporary self-forming worker organizations
 
@@ -1127,10 +1135,10 @@ claims:
 - `AgentTemplate`, `ExecutionStrategy`, `AgentConstructionPolicy`, and
   `AgentConstructor` construct versioned specialists while keeping requested
   soft configuration separate from effective hard authority.
-- Goal-owned capability, secret, budget, delegation, organization,
-  decomposition, verification, and race processes provide scoped leases,
-  brokered secret handles, bounded resources, recursive delegation, disposable
-  organizations, automatic evidence, and explicit branch collapse.
+- Goal-owned capability, secret, budget, delegation, organization, durable work
+  run, verification, and race processes provide scoped leases, brokered secret
+  handles, bounded resources, recursive delegation, replayable task graphs,
+  disposable organizations, automatic evidence, and explicit branch collapse.
 - Project-owned model/resource schedulers, context storage, repository index,
   worktree manager, outcome store, and execution-node registry retain reusable
   state and apply backpressure, freshness, ownership, and trust policy.
