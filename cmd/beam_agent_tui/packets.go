@@ -20,17 +20,25 @@ type treeSnapshot struct {
 }
 
 type workBlock struct {
-	ID             string         `json:"id"`
-	WorkerID       string         `json:"worker_id"`
-	State          string         `json:"state"`
-	Phase          string         `json:"phase"`
-	Label          string         `json:"label"`
-	BlockingReason string         `json:"blocking_reason"`
-	Summary        string         `json:"summary"`
-	DurationMs     int64          `json:"duration_ms"`
-	Counts         map[string]int `json:"counts"`
-	Files          []string       `json:"files"`
-	EventIDs       []string       `json:"event_ids"`
+	ID               string         `json:"id"`
+	WorkerID         string         `json:"worker_id"`
+	Role             string         `json:"role"`
+	OwnerWorkerID    string         `json:"owner_worker_id"`
+	EndpointID       string         `json:"endpoint_id"`
+	Provider         string         `json:"provider"`
+	Model            string         `json:"model"`
+	ExecutionNode    string         `json:"execution_node"`
+	AssignmentReason string         `json:"assignment_reason"`
+	RoutingReason    string         `json:"routing_reason"`
+	State            string         `json:"state"`
+	Phase            string         `json:"phase"`
+	Label            string         `json:"label"`
+	BlockingReason   string         `json:"blocking_reason"`
+	Summary          string         `json:"summary"`
+	DurationMs       int64          `json:"duration_ms"`
+	Counts           map[string]int `json:"counts"`
+	Files            []string       `json:"files"`
+	EventIDs         []string       `json:"event_ids"`
 }
 
 type progressSnapshot struct {

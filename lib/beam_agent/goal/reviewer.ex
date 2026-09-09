@@ -117,6 +117,8 @@ defmodule BeamAgent.Goal.Reviewer do
     Inspect the Git diff and relevant source/tests using read-only tools. Do not report tests as
     missing or failed when the runtime evidence says they passed. Prioritize correctness,
     security, missing acceptance criteria, concurrency hazards, and verification gaps.
+    If Git metadata is unavailable, inspect the relevant source and tests directly;
+    an unavailable Git diff is not itself an implementation defect.
 
     #{review_rubric()}
 
@@ -142,9 +144,11 @@ defmodule BeamAgent.Goal.Reviewer do
           &(&1.id == construction.provider_profile or &1.health.status == :unavailable)
         )
         |> Enum.filter(&(not local_only? or &1.claims.locality == :local))
+        # Independence is a fresh read-only worker, not necessarily another model.
+        # Do not force a weak alternate onto the release-critical review path.
+        |> Enum.filter(&(:reasoning in &1.claims.capabilities))
         |> Enum.sort_by(fn endpoint ->
-          {endpoint.claims.locality != :remote, :reasoning not in endpoint.claims.capabilities,
-           endpoint.id}
+          {endpoint.claims.locality != :remote, endpoint.id}
         end)
         |> List.first()
         |> case do
@@ -156,8 +160,6 @@ defmodule BeamAgent.Goal.Reviewer do
         nil
     end
   end
-
-  defp reviewer_requirements(nil), do: %{}
 
   defp reviewer_requirements(endpoint_id) do
     %{

@@ -78,6 +78,9 @@ func (m model) renderWorkBlock(block workBlock, selected, critical bool, width i
 	}
 	glyph, glyphStyle := workBlockGlyph(block)
 	left := fmt.Sprintf("%s %s %s", disclosure, glyphStyle.Render(glyph), block.Label)
+	if block.Role != "" {
+		left += " · " + block.Role
+	}
 	right := block.Summary
 	if block.DurationMs > 0 {
 		right += fmt.Sprintf(" · %.1fs", float64(block.DurationMs)/1000)
@@ -115,6 +118,18 @@ func renderWorkBlockDetails(block workBlock, width int) string {
 		"  " + styleFaint.Render("worker") + "  " + shortSession(block.WorkerID),
 		"  " + styleFaint.Render("phase") + "   " + strings.ReplaceAll(block.Phase, "_", " "),
 	}
+	for _, field := range [][2]string{
+		{"role", block.Role}, {"model", workBlockModel(block)},
+		{"machine", block.ExecutionNode}, {"assignment", block.AssignmentReason},
+		{"routing", block.RoutingReason},
+	} {
+		if field[1] != "" {
+			lines = append(lines, "  "+styleFaint.Render(field[0])+"  "+field[1])
+		}
+	}
+	if block.OwnerWorkerID != "" && block.OwnerWorkerID != block.WorkerID {
+		lines = append(lines, "  "+styleFaint.Render("owner")+"  "+shortSession(block.OwnerWorkerID))
+	}
 	if block.BlockingReason != "" {
 		lines = append(lines, "  "+styleRose.Render("blocked")+" "+block.BlockingReason)
 	}
@@ -123,6 +138,16 @@ func renderWorkBlockDetails(block workBlock, width int) string {
 	}
 	lines = append(lines, "  "+styleFaint.Render("events")+fmt.Sprintf("  %d recorded", len(block.EventIDs)))
 	return lipgloss.NewStyle().Width(max(1, width-2)).Foreground(colDim).Render(strings.Join(lines, "\n"))
+}
+
+func workBlockModel(block workBlock) string {
+	if block.Model != "" && block.EndpointID != "" {
+		return block.EndpointID + " / " + block.Model
+	}
+	if block.Model != "" {
+		return block.Model
+	}
+	return block.EndpointID
 }
 
 type treeLine struct {

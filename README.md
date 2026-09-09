@@ -206,6 +206,22 @@ active/waiting/blocked/stalled totals. The chat also projects live work in one
 compact card, suppressing successful routine tool chatter by default. The
 critical worker and its blocker remain visible, and `c` in the Tree tab cancels
 the focused worker through the runtime without discarding the whole goal.
+
+In `--model-strategy auto`, substantial implementation requests also get
+runtime-assigned assistance when a distinct free/low-cost tool-capable endpoint
+is available. One capable owner keeps the coding task; up to two read-only
+investigators inspect repository conventions and verification gaps concurrently.
+Routine file inventory and README reads run deterministically through the tool
+boundary before helper inference. Each helper has an 8K context cap, a 16K
+reported-token budget and a 90-second lifetime. Failed or unfinished assistance
+does not block completion, and mandatory review is not forced onto a weaker
+model merely for provider diversity. Manual mode leaves automatic assistance off.
+The live work card shows roles, endpoint/model and execution location; expanded
+Tree blocks show ownership, assignment and routing reasons. Execution is local
+in this slice; a local worker may still call a remote model provider.
+See [automatic specialization](docs/automatic-specialization.md) for boundaries
+and evaluation evidence.
+
 For model-aware decomposition, `list_models` exposes only safe endpoint claims
 and `delegate_tasks` accepts soft per-worker model requirements such as a
 preferred endpoint, locality, reasoning, cost, and latency. Each worker receives

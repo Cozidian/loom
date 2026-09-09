@@ -3,6 +3,44 @@ defmodule BeamAgent.RuntimeWorkBlocksTest do
 
   alias BeamAgent.RuntimeWorkBlocks
 
+  test "assignment and routing metadata survive pre-turn events and public replay" do
+    events = [
+      event(1, "agent_spec_applied", %{"role" => "Research specialist"}),
+      event(2, "worker_assignment", %{
+        "worker_id" => "root",
+        "role" => "Repository investigator",
+        "parent_worker_id" => "owner",
+        "selected_endpoint_id" => "local-helper",
+        "policy_reason" => "Bounded free-cost assistance",
+        "execution_node" => "local"
+      }),
+      event(3, "turn_started", %{"turn" => 1}),
+      event(4, "model_route_selected", %{
+        "selected_endpoint_id" => "local-helper",
+        "policy_reason" => "eligible capability fit"
+      }),
+      event(5, "model_response_started", %{
+        "provider_profile" => "local-helper",
+        "provider" => "ollama",
+        "model" => "small"
+      }),
+      event(6, "turn_finished", %{"reason" => "completed"}),
+      event(7, "turn_started", %{"turn" => 2})
+    ]
+
+    public = Enum.map(events, &BeamAgent.RuntimeEventView.project(&1, :public))
+    assert [first, second] = RuntimeWorkBlocks.project(public)
+    assert first.role == "Repository investigator"
+    assert first.owner_worker_id == "owner"
+    assert first.assignment_reason == "Bounded free-cost assistance"
+    assert first.routing_reason == "eligible capability fit"
+    assert first.execution_node == "local"
+    assert first.model == "small"
+    assert second.role == first.role
+    assert second.endpoint_id == first.endpoint_id
+    assert second.state == :active
+  end
+
   test "groups low-level activity into one semantic worker block" do
     events = [
       event(1, "goal_work_started", %{}),

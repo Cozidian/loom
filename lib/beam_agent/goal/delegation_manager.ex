@@ -22,8 +22,12 @@ defmodule BeamAgent.Goal.DelegationManager do
   def progress(goal_id, delegation_id, progress),
     do: call(goal_id, {:progress, delegation_id, progress})
 
-  def start(goal_id, handle, prompt) when is_binary(prompt) and prompt != "",
-    do: call(goal_id, {:start, handle, prompt})
+  def start(goal_id, handle, prompt, opts \\ []) when is_binary(prompt) and prompt != "" do
+    case Keyword.get(opts, :owner) do
+      owner when is_nil(owner) or is_pid(owner) -> call(goal_id, {:start, handle, prompt, owner})
+      _ -> {:error, :invalid_delegation_owner}
+    end
+  end
 
   def await(goal_id, delegation_id, timeout_ms \\ 120_000)
       when is_binary(delegation_id) and is_integer(timeout_ms) and timeout_ms >= 0,
@@ -95,7 +99,8 @@ defmodule BeamAgent.Goal.DelegationManager do
     transition(state, id, :running, :delegation_progressed, %{progress_fingerprint: fingerprint})
   end
 
-  def handle_call({:start, handle, prompt}, _from, state) do
+  def handle_call({:start, handle, prompt, owner}, _from, state)
+      when is_nil(owner) or is_pid(owner) do
     id = handle.delegation_id
 
     case {state.delegations[id], state.runs[id]} do
@@ -116,7 +121,11 @@ defmodule BeamAgent.Goal.DelegationManager do
               state =
                 state
                 |> put_in([:delegations, id], delegation)
-                |> put_in([:runs, id], %{pid: pid, monitor: Process.monitor(pid)})
+                |> put_in([:runs, id], %{
+                  pid: pid,
+                  monitor: Process.monitor(pid),
+                  owner_monitor: if(is_pid(owner), do: Process.monitor(owner))
+                })
 
               record(state, :delegation_started, delegation, %{})
               {:reply, :ok, state}
@@ -233,6 +242,7 @@ defmodule BeamAgent.Goal.DelegationManager do
     case state.runs[id] do
       %{pid: ^pid, monitor: monitor} ->
         Process.demonitor(monitor, [:flush])
+        demonitor_owner(state.runs[id])
         state = %{state | runs: Map.delete(state.runs, id)}
         {reply, state} = finish_async(state, id, result)
         state = reply_awaiters(state, id, reply)
@@ -245,11 +255,24 @@ defmodule BeamAgent.Goal.DelegationManager do
   end
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
-    case Enum.find(state.runs, fn {_id, run} -> run.monitor == monitor end) do
-      {id, _run} ->
+    case Enum.find(state.runs, fn {_id, run} ->
+           run.monitor == monitor or run.owner_monitor == monitor
+         end) do
+      {id, %{owner_monitor: ^monitor}} ->
+        state = stop_run(state, id)
+        delegation = %{state.delegations[id] | status: :cancelled}
+        state = put_in(state, [:delegations, id], delegation)
+        record(state, :delegation_cancelled, delegation, %{reason: :owner_exited})
+        state = reply_awaiters(state, id, {:error, :cancelled})
+        send(self(), {:stop_delegated_session, delegation.worker_id})
+        {:noreply, state}
+
+      {id, run} ->
+        demonitor_owner(run)
         state = %{state | runs: Map.delete(state.runs, id)}
         {reply, state} = finish_async(state, id, {:error, {:runner_exit, reason}})
         state = reply_awaiters(state, id, reply)
+        send(self(), {:stop_delegated_session, state.delegations[id].worker_id})
         {:noreply, state}
 
       nil ->
@@ -340,10 +363,16 @@ defmodule BeamAgent.Goal.DelegationManager do
 
       %{pid: pid, monitor: monitor} ->
         Process.demonitor(monitor, [:flush])
+        demonitor_owner(state.runs[id])
         Process.exit(pid, :shutdown)
         %{state | runs: Map.delete(state.runs, id)}
     end
   end
+
+  defp demonitor_owner(%{owner_monitor: monitor}) when is_reference(monitor),
+    do: Process.demonitor(monitor, [:flush])
+
+  defp demonitor_owner(_run), do: :ok
 
   defp reply_awaiters(state, id, reply) do
     Enum.each(Map.get(state.awaiters, id, []), fn awaiter ->

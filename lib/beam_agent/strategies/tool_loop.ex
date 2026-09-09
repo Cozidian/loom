@@ -63,6 +63,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "attachments" => attachments,
              "file_references" => Enum.map(file_references, &Map.delete(&1, :content))
            }) do
+      # Routine inventory reads are deterministic work, not a model round trip.
+      # Use the same guarded, recorded tool boundary as model-originated calls.
+      Enum.each(BeamAgent.AutomaticSpecialization.seed_calls(context), fn call ->
+        execute_native_tool(context, turn, 0, %{call | id: "#{call.id}-#{turn}"})
+      end)
+
       start_turn(context, prompt, turn)
     end
   end
@@ -92,7 +98,19 @@ defmodule BeamAgent.Strategies.ToolLoop do
         end
 
       :continue ->
-        step(context, turn, 1, nil, 0, true)
+        if BeamAgent.AutomaticSpecialization.applicable?(context, planning) do
+          with {:ok, route} <- route_model(context, available_tool_schemas(context), turn, 1) do
+            BeamAgent.AutomaticSpecialization.run(
+              context,
+              prompt,
+              turn,
+              route.selected_endpoint_id,
+              &step(&1, turn, 1, nil, 0, true)
+            )
+          end
+        else
+          step(context, turn, 1, nil, 0, true)
+        end
     end
   end
 
@@ -231,6 +249,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
            ),
          system_prompt <-
            project_context.system_prompt
+           |> append_prompt(BeamAgent.AutomaticSpecialization.prompt(context))
            |> turn_execution_prompt(context, tool_schemas)
            |> recovery_prompt(
              context,
@@ -499,7 +518,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
   end
 
   defp model_pool(route) do
-    if route.inputs.reasoning == :high, do: :expensive_model, else: :model
+    cheap? = not is_nil(route.endpoint) and route.endpoint.claims.cost_hint in [:free, :low]
+    if route.inputs.reasoning == :high and not cheap?, do: :expensive_model, else: :model
   end
 
   defp maybe_put_provider_conversation(options, session_id) do
@@ -642,6 +662,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "selected_endpoint_id" => route.selected_endpoint_id,
              "inputs" => route.inputs,
              "reason" => route.reason,
+             "policy_reason" => route.reason,
              "preference_source" => to_string(preference_source),
              "job_role" => context.agent_spec.role,
              "evidence" => Map.get(route, :evidence),

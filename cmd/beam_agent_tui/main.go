@@ -1790,6 +1790,15 @@ func (m model) renderLiveWorkProjection() string {
 			critical = "  " + styleRose.Render("critical")
 		}
 		line := fmt.Sprintf("%s  %s · %s%s", style.Render(glyph), block.Label, block.Summary, critical)
+		if block.Role != "" {
+			line = fmt.Sprintf("%s  %s · %s%s", style.Render(glyph), block.Role, block.Label, critical)
+			if routed := workBlockModel(block); routed != "" {
+				line += " · " + styleFaint.Render(routed)
+			}
+			if block.ExecutionNode != "" {
+				line += " @ " + block.ExecutionNode
+			}
+		}
 		if block.BlockingReason != "" {
 			line += " · " + styleRose.Render(block.BlockingReason)
 		}

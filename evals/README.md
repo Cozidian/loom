@@ -53,6 +53,17 @@ Every run retains its isolated workspace, canonical runtime logs, and `report.js
 
 ## Multi-provider acceptance gate
 
+`automatic_specialization.json` tests the runtime-assigned path without asking
+the model to create a provider team. Run it with `--model-strategy auto`, a
+capable owner endpoint and at least one distinct free/low-cost tool-capable
+endpoint. It requires verified completion and multiple actual endpoint leases.
+Helper success/usefulness should also be inspected in the retained worker logs;
+multiple leases alone are not a quality or latency benchmark.
+
+```sh
+mix beam_agent.eval evals/automatic_specialization.json --model YOUR_MODEL --model-strategy auto
+```
+
 `multi_provider_acceptance.json` repeats the same feature-sized task five times
 and fails unless at least four runs complete with deterministic verification and
 actually use multiple endpoint leases. It also rejects permission denials, user
