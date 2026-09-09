@@ -70,6 +70,18 @@ defmodule BeamAgent.ProvidersTest do
       {:ok, %{"thread" => %{"id" => "thread-test"}}}
     end
 
+    def request(client, "model/list", params) do
+      state = Agent.get(client, & &1)
+      send(state.test_pid, {:catalog_requested, params})
+
+      case {state.mode, params["cursor"]} do
+        {:catalog_failure, _} -> {:error, :catalog_unavailable}
+        {:catalog_loop, _} -> {:ok, %{"data" => [], "nextCursor" => "again"}}
+        {_, nil} -> {:ok, %{"data" => [%{"model" => "gpt-test"}], "nextCursor" => "page2"}}
+        {_, "page2"} -> {:ok, %{"data" => [%{"model" => "other-test"}], "nextCursor" => nil}}
+      end
+    end
+
     def request(client, "turn/start", params) do
       state = Agent.get(client, & &1)
       send(state.test_pid, {:codex_turn_started, params})
@@ -828,6 +840,32 @@ defmodule BeamAgent.ProvidersTest do
 
     assert {:error, {:missing_api_key, ^env}} =
              OpenAI.healthcheck(model: "test-model", api_key_env: env)
+  end
+
+  test "ChatGPT health checks validate the configured model against the complete catalogue" do
+    opts = [
+      auth: %{"type" => "chatgpt"},
+      codex_client: CodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    assert {:ok, _} = OpenAI.healthcheck([model: "other-test"] ++ opts)
+    assert_receive {:catalog_requested, %{"cursor" => "page2"}}
+
+    assert {:error, {:chatgpt_model_unavailable, "retired-model", ["gpt-test", "other-test"]}} =
+             OpenAI.healthcheck([model: "retired-model"] ++ opts)
+
+    assert {:error, :catalog_unavailable} =
+             BeamAgent.CodexAppServer.models(
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :catalog_failure]
+             )
+
+    assert {:error, :invalid_model_catalog_cursor} =
+             BeamAgent.CodexAppServer.models(
+               codex_client: CodexClientStub,
+               codex_client_options: [test_pid: self(), mode: :catalog_loop]
+             )
   end
 
   test "Anthropic groups consecutive tool results into one user content block" do

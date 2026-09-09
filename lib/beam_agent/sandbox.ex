@@ -11,22 +11,35 @@ defmodule BeamAgent.Sandbox do
     Path.join([canonical_temp_root(), "beam_agent", digest])
   end
 
-  def command(workspace_root, command) do
+  def command(workspace_root, command, opts \\ []) do
     shell = System.find_executable("zsh") || System.find_executable("sh")
     temporary = temporary_root(workspace_root)
+    network = Keyword.get(opts, :network, "loopback-only")
 
-    with :ok <- File.mkdir_p(temporary) do
-      command = "export TMPDIR=#{shell_quote(temporary)} BEAM_AGENT_SANDBOX=1; #{command}"
+    with :ok <- validate_network(network),
+         :ok <- File.mkdir_p(temporary) do
+      command =
+        "export TMPDIR=#{shell_quote(temporary)} BEAM_AGENT_SANDBOX=1 " <>
+          "BEAM_AGENT_SANDBOX_NETWORK=#{shell_quote(network)} " <>
+          "HEX_HOME=#{shell_quote(Path.join(temporary, "hex"))} " <>
+          "GOCACHE=#{shell_quote(Path.join(temporary, "go-build"))} " <>
+          "npm_config_cache=#{shell_quote(Path.join(temporary, "npm"))}; #{command}"
 
       case {System.get_env("BEAM_AGENT_SANDBOX"), :os.type(), shell} do
         {"1", {:unix, :darwin}, shell} when is_binary(shell) ->
-          {:ok, shell, ["-o", "pipefail", "-lc", command]}
+          inherited_network = System.get_env("BEAM_AGENT_SANDBOX_NETWORK") || "loopback-only"
+
+          # A nested shell inherits its parent's Seatbelt policy. It cannot
+          # widen it or promise a narrower policy that was never installed.
+          if network != inherited_network,
+            do: {:error, :nested_sandbox_network_denied},
+            else: {:ok, shell, ["-o", "pipefail", "-lc", command]}
 
         {_nested, {:unix, :darwin}, shell} when is_binary(shell) ->
           {:ok, "/usr/bin/sandbox-exec",
            [
              "-p",
-             macos_profile(workspace_root, temporary),
+             macos_profile(workspace_root, temporary, network),
              shell,
              "-o",
              "pipefail",
@@ -40,7 +53,10 @@ defmodule BeamAgent.Sandbox do
     end
   end
 
-  defp macos_profile(workspace_root, temporary_root) do
+  defp validate_network(network) when network in ["loopback-only", "external"], do: :ok
+  defp validate_network(_network), do: {:error, :invalid_command_network}
+
+  defp macos_profile(workspace_root, temporary_root, network) do
     workspace = escape_profile(workspace_root)
     temporary = escape_profile(temporary_root)
 
@@ -58,6 +74,7 @@ defmodule BeamAgent.Sandbox do
     (allow network-bind (local ip "localhost:*"))
     (allow network-inbound (local ip "localhost:*"))
     (allow network-outbound (remote ip "localhost:*"))
+    #{if network == "external", do: "(allow network-outbound)", else: ""}
     """
   end
 

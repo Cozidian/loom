@@ -30,6 +30,25 @@ Run the scenarios with the active configured provider:
 mix beam_agent.eval evals/coding.json
 ```
 
+Use `--model MODEL --model-strategy manual` to run a control on an available
+model without changing saved profiles. Manual mode includes the independent
+completion reviewer.
+
+`phoenix_frontend.json` asks the harness to build a real Phoenix frontend over
+a small supplied OTP runtime. It starts with no web dependencies or frontend
+implementation. Acceptance checks render the endpoint and exercise goal
+creation, cancellation, validation and HTML escaping against the actor's state.
+This is a bounded frontend task, not a full web client for BeamAgent.
+
+```sh
+mix beam_agent.eval evals/phoenix_frontend.json --model YOUR_MODEL --model-strategy manual
+```
+
+The live run can take up to ten minutes and needs dependency downloads. The
+model must request `run_command` with `network: "external"`; the normal
+capability/approval boundary controls it. The evaluation uses auto approvals
+inside its isolated fixture workspace and keeps all artifacts and runtime logs.
+
 Every run retains its isolated workspace, canonical runtime logs, and `report.json`. Reports include verified completion, duration, model/tool calls, delegated workers, approval requests, permission denials, repairs, stalls, cancellations, and the contract-scoped workspace artifact.
 
 ## Multi-provider acceptance gate

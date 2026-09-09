@@ -12,6 +12,8 @@ defmodule Mix.Tasks.BeamAgent.Eval do
 
     * `--config PATH` - BeamAgent config (defaults to the normal config path)
     * `--profile NAME` - provider profile to evaluate
+    * `--model MODEL` - model override for this evaluation only
+    * `--model-strategy MODE` - auto, manual, or local_only
     * `--output PATH` - explicit JSON report path
     * `--runs-root PATH` - isolated workspaces and runtime logs directory
     * `--concurrency N` - scenarios to run concurrently (default: 1)
@@ -26,6 +28,8 @@ defmodule Mix.Tasks.BeamAgent.Eval do
   @switches [
     config: :string,
     profile: :string,
+    model: :string,
+    model_strategy: :string,
     output: :string,
     runs_root: :string,
     concurrency: :integer
@@ -54,6 +58,7 @@ defmodule Mix.Tasks.BeamAgent.Eval do
       end
 
     with {:ok, runtime} <- Config.runtime(config, opts[:profile]),
+         runtime <- Config.merge_overrides(runtime, opts),
          {:ok, provider} <- Config.provider_atom(runtime["provider"]),
          {:ok, report} <-
            BeamAgent.Evaluation.run_file(manifest,
@@ -109,6 +114,8 @@ defmodule Mix.Tasks.BeamAgent.Eval do
 
       --config PATH       BeamAgent config (defaults to the normal config path)
       --profile NAME      provider profile to evaluate
+      --model MODEL       model override for this evaluation only
+      --model-strategy MODE auto, manual, or local_only
       --output PATH       explicit JSON report path
       --runs-root PATH    directory for isolated workspaces and runtime logs
       --concurrency N     scenarios to run concurrently (default: 1)

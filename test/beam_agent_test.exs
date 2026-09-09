@@ -602,7 +602,7 @@ defmodule BeamAgentTest do
 
     assert {:ok, events} = BeamAgent.events(child_id)
     decision = Enum.find(events, &(&1["type"] == "work_planning_decided"))
-    assert decision["data"]["mode"] == "required"
+    assert decision["data"]["mode"] == "advisory"
   end
 
   test "an implementation cannot complete with a successful no-op edit" do

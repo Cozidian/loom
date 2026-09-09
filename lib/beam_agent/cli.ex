@@ -1579,6 +1579,16 @@ defmodule BeamAgent.CLI do
     1
   end
 
+  defp error({:chatgpt_model_unavailable, model, available}) do
+    IO.puts(
+      :stderr,
+      "error: ChatGPT model #{inspect(model)} is unavailable; available: #{Enum.join(available, ", ")}. " <>
+        "Run with --model MODEL or update the provider profile."
+    )
+
+    1
+  end
+
   defp error({:invalid_options, invalid}) do
     IO.puts(:stderr, "error: invalid options #{inspect(invalid)}")
     2
