@@ -101,6 +101,25 @@ defmodule BeamAgent.ProvidersTest do
           emit_agent_text(client, state.owner, "hello", ["he", "llo"])
           complete_turn(client, state.owner)
 
+        :reasoning_summary ->
+          for {method, delta} <- [
+                {"item/reasoning/summaryTextDelta", "Checking the public API"},
+                {"item/reasoning/textDelta", "raw-private-reasoning"}
+              ] do
+            send(
+              state.owner,
+              {:codex_app_server, client,
+               {:notification,
+                %{
+                  "method" => method,
+                  "params" => %{"delta" => delta, "itemId" => "reason-1", "summaryIndex" => 0}
+                }}}
+            )
+          end
+
+          emit_agent_text(client, state.owner, "done")
+          complete_turn(client, state.owner)
+
         :serialized_tool ->
           emit_agent_text(
             client,
@@ -716,6 +735,29 @@ defmodule BeamAgent.ProvidersTest do
       end
 
     assert Enum.map(calls, & &1.id) == Enum.map(1..20, &"codex-call-#{&1}")
+  end
+
+  test "ChatGPT transport forwards only public reasoning summaries" do
+    assert {:ok, %{content: "done"}} =
+             OpenAI.stream(
+               [%{role: :user, content: "inspect"}],
+               @tools,
+               [
+                 model: "gpt-test",
+                 auth: %{"type" => "chatgpt", "transport" => "codex_app_server"},
+                 codex_client: CodexClientStub,
+                 codex_client_options: [test_pid: self(), mode: :reasoning_summary]
+               ],
+               fn event -> send(self(), {:summary_event, event}) end
+             )
+
+    assert_receive {:summary_event,
+                    {:reasoning_summary_delta,
+                     %{delta: "Checking the public API", item_id: "reason-1", summary_index: 0}}}
+
+    assert_receive {:summary_event, {:text_delta, "done"}}
+    refute_receive {:summary_event, _}
+    assert_receive {:codex_turn_started, %{"summary" => "concise"}}
   end
 
   test "OpenAI ChatGPT-plan transport returns final text without HTTP credentials" do

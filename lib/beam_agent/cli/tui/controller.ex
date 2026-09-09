@@ -231,7 +231,11 @@ defmodule BeamAgent.CLI.TUI.Controller do
         case BeamAgent.CLI.ProviderManager.commit(state, prepared) do
           {:ok, config} ->
             state = %{state | config: config}
-            notify(state, {:settings_applied, Map.take(config, ~w(profile model model_strategy))})
+
+            notify(
+              state,
+              {:settings_applied, Map.take(config, ~w(profile model model_strategy team_mode))}
+            )
 
             case BeamAgent.CLI.ProviderManager.snapshot(state) do
               {:ok, payload} -> notify(state, {:provider_settings, payload})
@@ -1344,6 +1348,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       workspace_root: config["workspace_root"],
       approval_policy: Config.approval_policy_atom(config["approval_policy"]),
       model_strategy: Config.model_strategy_atom(config["model_strategy"]),
+      team_mode: Config.team_mode_atom(config["team_mode"]),
       approval_handler: self(),
       model_endpoints: config["model_endpoints"] || []
     )

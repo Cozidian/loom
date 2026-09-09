@@ -20,6 +20,13 @@ defmodule BeamAgent.StreamingRuntimeTest do
         emit.({:text_delta, "started"})
         Process.sleep(:infinity)
       else
+        if List.last(messages).content == "summary" do
+          emit.(
+            {:reasoning_summary_delta,
+             %{delta: "Public progress summary", item_id: "reason-1", summary_index: 0}}
+          )
+        end
+
         emit.({:text_delta, "live "})
         emit.({:text_delta, "answer"})
         emit.({:usage, %{"output_tokens" => 2}})
@@ -118,6 +125,36 @@ defmodule BeamAgent.StreamingRuntimeTest do
     assert finished["data"]["usage"]["provider_usage"] == %{}
     assert started["seq"] < finished["seq"]
     assert finished["seq"] < outcome["seq"]
+  end
+
+  test "reasoning summaries are typed live events and remain redacted in the public view",
+       context do
+    {:ok, session_id} =
+      BeamAgent.start_session(data_dir: context.data_dir, provider: :streaming_runtime_test)
+
+    observer = self()
+
+    assert {:ok, "live answer", _} =
+             TurnRunner.run_live(session_id, "summary", 5_000, fn _ -> :deny end, fn event ->
+               send(observer, {:summary_live, event})
+             end)
+
+    assert_receive {:summary_live,
+                    %{
+                      type: :reasoning_summary_delta,
+                      delta: "Public progress summary",
+                      item_id: "reason-1"
+                    }}
+
+    {:ok, events} = BeamAgent.events(session_id)
+
+    assert Enum.any?(events, fn e ->
+             e["type"] == "model_response_checkpoint" and
+               Enum.any?(e["data"]["events"], &(&1["type"] == "reasoning_summary_delta"))
+           end)
+
+    {:ok, public} = BeamAgent.goal_events(session_id)
+    refute JSON.encode!(public) =~ "Public progress summary"
   end
 
   test "dead stream subscribers are removed by process monitoring", context do

@@ -183,6 +183,33 @@ defmodule BeamAgent.AutomaticSpecializationTest do
     assert findings =~ "fixture convention confirmed"
   end
 
+  test "a pinned owner still gets bounded helpers in automatic team mode", ctx do
+    id =
+      start_session(ctx, 1,
+        model_strategy: :manual,
+        team_mode: :auto,
+        provider_options: [model: "capable"]
+      )
+
+    task = Task.async(fn -> BeamAgent.ask(id, "Implement a Phoenix frontend") end)
+    assert_receive {:owner_started, owner, "capable", owner_tools, _}, 5_000
+    assert "create_file" in owner_tools
+    assert_receive {:helper_started, helper, _, "cheap-1", helper_tools}, 5_000
+    refute "create_file" in helper_tools
+    send(helper, :finish)
+    send(owner, :finish)
+    assert {:ok, _} = Task.await(task, 10_000)
+  end
+
+  test "automatic model routing can run solo", ctx do
+    id = start_session(ctx, 1, model_strategy: :auto, team_mode: :solo)
+    task = Task.async(fn -> BeamAgent.ask(id, "Implement a Phoenix frontend") end)
+    assert_receive {:owner_started, owner, "capable", _, _}, 5_000
+    refute_receive {:helper_started, _, _, _, _}, 100
+    send(owner, :finish)
+    assert {:ok, _} = Task.await(task, 10_000)
+  end
+
   test "optional helper failure does not fail the implementation", ctx do
     id = start_session(ctx, 1)
     task = Task.async(fn -> BeamAgent.ask(id, "Implement a Phoenix frontend") end)

@@ -3,6 +3,26 @@ defmodule BeamAgent.WorkPlanningPolicyTest do
 
   alias BeamAgent.{ModelEndpoint, WorkPlanningPolicy}
 
+  test "team mode and owner model routing are independent" do
+    pinned =
+      WorkPlanningPolicy.decide("Build a Phoenix frontend", endpoints(),
+        model_strategy: :manual,
+        team_mode: :auto
+      )
+
+    assert pinned.mode == :advisory
+    assert pinned.team_mode == :auto
+
+    solo =
+      WorkPlanningPolicy.decide("Build a Phoenix frontend", endpoints(),
+        model_strategy: :auto,
+        team_mode: :solo
+      )
+
+    assert solo.mode == :direct
+    assert solo.reason =~ "solo team mode"
+  end
+
   test "explicit multi-model implementation requires a validated decomposition" do
     decision =
       WorkPlanningPolicy.decide(

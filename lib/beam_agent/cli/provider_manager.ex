@@ -36,7 +36,8 @@ defmodule BeamAgent.CLI.ProviderManager do
          revision: revision(stored),
          active_profile: state.config["profile"],
          model: state.config["model"],
-         model_strategy: state.config["model_strategy"]
+         model_strategy: state.config["model_strategy"],
+         team_mode: state.config["team_mode"] || stored["team_mode"]
        }}
     end
   end
@@ -113,12 +114,15 @@ defmodule BeamAgent.CLI.ProviderManager do
   defp change(stored, current, %{"action" => "select", "profile" => name} = request) do
     with {:ok, profile} <- fetch(stored, name),
          mode when mode in ["manual", "auto", "local_only"] <- request["strategy"] || "manual",
+         team when team in ["auto", "solo"] <-
+           request["team_mode"] || stored["team_mode"] || "solo",
          {:ok, next} <-
            Config.put_profile(stored, name, Map.put(profile, "model", nullable(request["model"])),
              force: true
            ),
          {:ok, next} <- Config.use_profile(next, name),
          next <- Map.put(next, "model_strategy", mode),
+         next <- Map.put(next, "team_mode", team),
          {:ok, runtime} <- Config.runtime(next, name) do
       {:ok, next, Map.merge(current, runtime)}
     else

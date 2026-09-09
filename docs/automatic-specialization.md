@@ -8,9 +8,16 @@ It does not add a second orchestration runtime or make the TUI own agent state.
 ## Behavior
 
 - A root implementation request classified as high-reasoning and advisory in
-  `auto` mode may start up to two investigators. Explicit provider-team requests
-  retain their existing decomposition workflow. Small edits and manual mode do
-  not start helpers automatically.
+  `team_mode: auto` may start up to two investigators, independently of model
+  routing. A manually pinned owner can have automatic helpers; an automatically
+  routed owner can run solo. Explicit provider-team requests retain their existing
+  decomposition workflow. Small edits and `team_mode: solo` do not start helpers
+  automatically. Solo does not prohibit explicitly requested delegation or review.
+- CLI: `--model-strategy manual --team-mode auto` pins the owner while enabling
+  bounded assistance. ION exposes both fields in its model selection form.
+  Version-9 settings migrate in memory with legacy behavior preserved: automatic
+  routing gets automatic teams, manual/local-only routing gets solo. No saved
+  settings are rewritten or new helper spending enabled just by loading them.
 - The owner is selected and leased first. Only distinct, healthy/not-unavailable
   endpoints with declared `free` or `low` cost and tool support are considered
   for helpers. Normal endpoint eligibility, exclusions, authority and budget
@@ -46,6 +53,10 @@ location. Work-block projections preserve pre-turn metadata and combine it with
 actual invocation provider/model and routing reasons. The TUI displays roles and
 models in live work and reasons/ownership in expanded Tree blocks. Public event
 views retain safe policy metadata without exposing prompt or helper content.
+
+An `automatic_helpers_decided` event explains how many helpers started, or whether
+there were no suitable cheap endpoints or starts were denied/unavailable. This is
+an observation, not a guarantee of helper usefulness or successful completion.
 
 `local` means the worker process executes on this harness machine, not that the
 model provider is local. Remote worker registration/selection is not network

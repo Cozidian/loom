@@ -15,6 +15,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
   def decide(prompt, endpoints, opts \\ []) when is_binary(prompt) and is_list(endpoints) do
     classification = TaskClassifier.classify(prompt, Keyword.get(opts, :workspace_root))
     strategy = Keyword.get(opts, :model_strategy, :manual)
+    team_mode = Keyword.get(opts, :team_mode) || if(strategy == :auto, do: :auto, else: :solo)
     eligible = Enum.reject(endpoints, &(&1.health.status == :unavailable))
     explicit? = Regex.match?(@explicit_multi_provider, prompt)
     implementation? = classification.change_intent or classification.task_type == :implementation
@@ -25,7 +26,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
         implementation? and explicit? and multi_endpoint? ->
           :required
 
-        implementation? and strategy == :auto and multi_endpoint? ->
+        implementation? and team_mode == :auto and multi_endpoint? ->
           :advisory
 
         true ->
@@ -34,13 +35,18 @@ defmodule BeamAgent.WorkPlanningPolicy do
 
     %{
       version: 1,
+      team_mode: team_mode,
       mode: mode,
       source: :runtime_policy,
       classification: classification,
       endpoint_count: length(eligible),
       explicit_multi_provider_intent: explicit?,
       suggested_endpoints: suggested_endpoints(eligible),
-      reason: reason(mode, explicit?, multi_endpoint?)
+      reason:
+        if(mode == :direct and not explicit? and team_mode == :solo,
+          do: "automatic helpers disabled by solo team mode; model selection is independent",
+          else: reason(mode, explicit?, multi_endpoint?)
+        )
     }
   end
 
