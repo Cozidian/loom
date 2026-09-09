@@ -1952,6 +1952,29 @@ func TestTreeTabRendersAndExpandsRuntimeWorkBlocks(t *testing.T) {
 	}
 }
 
+func TestSpecialistOwnershipAndModelAreVisible(t *testing.T) {
+	m := testModel(&bytes.Buffer{})
+	block := workBlock{
+		ID: "specialist-block", WorkerID: "helper-session", OwnerWorkerID: "owner-session",
+		Role: "Repository investigator", State: "active", Phase: "thinking", Label: "Model working",
+		EndpointID: "local-helper", Model: "small-model", ExecutionNode: "local",
+		AssignmentReason: "Bounded read-only assistance", RoutingReason: "Eligible cheap endpoint",
+	}
+	m.workBlocks = []workBlock{block}
+	live := m.renderLiveWorkProjection()
+	for _, want := range []string{"Repository investigator", "local-helper", "small-model", "@ local"} {
+		if !strings.Contains(live, want) {
+			t.Fatalf("missing %q from live work: %s", want, live)
+		}
+	}
+	details := renderWorkBlockDetails(block, 100)
+	for _, want := range []string{"Bounded read-only assistance", "Eligible cheap endpoint", "owner", shortSession("owner-session")} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("missing %q from details: %s", want, details)
+		}
+	}
+}
+
 func TestDigitKeyTypesIntoComposerWhenNotEmpty(t *testing.T) {
 	m := testModel(&bytes.Buffer{})
 	m.composer.SetValue("port 8")

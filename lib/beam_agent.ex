@@ -121,8 +121,8 @@ defmodule BeamAgent do
 
   def worker_delegations(goal_id), do: BeamAgent.Goal.DelegationManager.list(goal_id)
 
-  def start_worker(%BeamAgent.WorkerHandle{} = handle, prompt) when is_binary(prompt),
-    do: BeamAgent.Goal.DelegationManager.start(handle.goal_id, handle, prompt)
+  def start_worker(%BeamAgent.WorkerHandle{} = handle, prompt, opts \\ []) when is_binary(prompt),
+    do: BeamAgent.Goal.DelegationManager.start(handle.goal_id, handle, prompt, opts)
 
   def await_worker(%BeamAgent.WorkerHandle{} = handle, timeout_ms \\ 120_000),
     do: BeamAgent.Goal.DelegationManager.await(handle.goal_id, handle.delegation_id, timeout_ms)

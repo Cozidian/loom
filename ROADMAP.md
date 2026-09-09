@@ -246,6 +246,22 @@ every earlier item must finish before a high-value product or safety slice.
 
 ### Immediate product priority
 
+- [x] Add automatic specialization with visible ownership
+
+    - Keep one implementation owner; automatically start at most two bounded
+      read-only investigators on distinct eligible free/low-cost endpoints for
+      substantial auto-mode coding tasks. Do not expand tiny edits, manual mode,
+      child workers or explicitly requested provider teams.
+    - Supply routine repository observations through deterministic guarded tools;
+      let the owner collect findings without transferring write ownership.
+    - Enforce worker budgets, owner-exit cleanup and real OTP deadline shutdown;
+      do not serialize cheap helpers through the expensive-model resource pool.
+    - Keep mandatory review capable instead of forcing a weaker alternate model.
+    - Project assignment, model, owner and actual local execution location into
+      live TUI work cards and expandable evidence blocks.
+    - Retain existing races, tournaments and explicit decomposition. Network
+      dispatch and writable remote artifact exchange remain separate work.
+
 - [x] Make ordinary coding requests executable without a mandatory provider team
 
     - Keep one implementation owner with access to its coding tools; allow

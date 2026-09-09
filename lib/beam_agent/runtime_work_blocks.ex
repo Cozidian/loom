@@ -13,7 +13,7 @@ defmodule BeamAgent.RuntimeWorkBlocks do
     events
     |> Enum.filter(&durable?/1)
     |> Enum.sort_by(&sequence/1)
-    |> Enum.reduce(%{blocks: %{}, active: %{}}, &fold/2)
+    |> Enum.reduce(%{blocks: %{}, active: %{}, workers: %{}}, &fold/2)
     |> then(fn state ->
       state.blocks
       |> Map.values()
@@ -27,16 +27,38 @@ defmodule BeamAgent.RuntimeWorkBlocks do
     type = event_type(event)
     data = event_data(event)
 
+    metadata = metadata(type, data)
+
+    state =
+      if is_binary(worker_id) do
+        update_in(
+          state.workers,
+          &Map.update(&1, worker_id, metadata, fn old -> Map.merge(old, metadata) end)
+        )
+      else
+        state
+      end
+
     cond do
       not is_binary(worker_id) ->
         state
 
       type in ["goal_work_started", "turn_started", "delegation_started"] ->
         {state, id} = ensure_block(state, worker_id, event, type, data)
-        update_block(state, id, &apply_event(&1, event, type, data))
+
+        update_block(
+          state,
+          id,
+          &(Map.merge(&1, state.workers[worker_id]) |> apply_event(event, type, data))
+        )
 
       id = state.active[worker_id] ->
-        state = update_block(state, id, &apply_event(&1, event, type, data))
+        state =
+          update_block(
+            state,
+            id,
+            &(Map.merge(&1, state.workers[worker_id]) |> apply_event(event, type, data))
+          )
 
         if terminal?(type) do
           update_in(state.active, &Map.delete(&1, worker_id))
@@ -47,6 +69,42 @@ defmodule BeamAgent.RuntimeWorkBlocks do
       true ->
         state
     end
+  end
+
+  defp metadata(type, data) do
+    fields =
+      case type do
+        "agent_spec_applied" ->
+          %{role: data["role"]}
+
+        "worker_assignment" ->
+          %{
+            role: data["role"],
+            owner_worker_id: data["parent_worker_id"] || data["worker_id"],
+            endpoint_id: data["selected_endpoint_id"],
+            assignment_reason: data["policy_reason"],
+            execution_node: data["execution_node"]
+          }
+
+        "model_route_selected" ->
+          %{
+            endpoint_id: data["selected_endpoint_id"],
+            routing_reason: data["policy_reason"] || data["reason"]
+          }
+
+        "model_response_started" ->
+          %{
+            endpoint_id: data["provider_profile"],
+            provider: data["provider"],
+            model: data["model"]
+          }
+
+        _ ->
+          %{}
+      end
+
+    # Public event views may contain redaction objects instead of strings.
+    Map.filter(fields, fn {_key, value} -> is_binary(value) end)
   end
 
   defp ensure_block(state, worker_id, event, type, data) do
@@ -237,6 +295,14 @@ defmodule BeamAgent.RuntimeWorkBlocks do
     %{
       id: id,
       worker_id: worker_id,
+      role: nil,
+      owner_worker_id: nil,
+      endpoint_id: nil,
+      provider: nil,
+      model: nil,
+      execution_node: nil,
+      assignment_reason: nil,
+      routing_reason: nil,
       state: :active,
       phase: :starting,
       label: "Starting work",

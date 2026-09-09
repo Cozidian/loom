@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "metadata": {
+    "suite": "beam-agent-automatic-specialization",
+    "description": "Coding with runtime-assigned cheap assistance, without a user-authored delegation plan"
+  },
+  "acceptance": {
+    "minimum_verified_completion_rate": 1.0,
+    "minimum_multi_provider_rate": 1.0,
+    "maximum_permission_denials": 0,
+    "maximum_user_interventions": 0,
+    "maximum_stalls": 0
+  },
+  "scenarios": [
+    {
+      "id": "automatic-clipboard",
+      "fixture": "fixtures/clipboard_image_paste",
+      "prompt": "Implement end-to-end clipboard image paste using the contract in README.md. Keep the public API small, reject invalid clipboard items, and make every test pass. Do not weaken or replace the tests.",
+      "timeout_ms": 300000,
+      "checks": [
+        {"id": "tests", "command": "mix test", "timeout_ms": 120000},
+        {"id": "compile", "command": "mix compile --warnings-as-errors", "timeout_ms": 120000}
+      ],
+      "expect": {
+        "files": ["lib/clipboard_fixture/editor.ex"],
+        "file_contains": [
+          {"path": "lib/clipboard_fixture/editor.ex", "text": "image/png"},
+          {"path": "lib/clipboard_fixture/editor.ex", "text": "unsupported_clipboard_item"}
+        ]
+      }
+    }
+  ]
+}

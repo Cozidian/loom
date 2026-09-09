@@ -155,7 +155,21 @@ defmodule BeamAgent.Goal.BudgetManager do
     case {state.allocations[allocation_id], state.owners[allocation_id]} do
       {%{status: :active} = allocation, owner} when is_pid(owner) ->
         record(state, :budget_exhausted, allocation, %{"reason" => "budget_deadline_exceeded"})
-        Process.exit(owner, :shutdown)
+
+        # Session supervisors trap exits, so an ordinary :shutdown signal from
+        # this sibling does not terminate them. Stop through the OTP API in a
+        # supervised cleanup task; never block the accounting mailbox on teardown.
+        with {:ok, supervisor} <- Names.pid(:goal_resource_supervisor, state.goal_id) do
+          DynamicSupervisor.start_child(
+            supervisor,
+            {Task,
+             fn ->
+               _ = BeamAgent.Agent.cancel(allocation.worker_id)
+               BeamAgent.stop_session(allocation.worker_id)
+             end}
+          )
+        end
+
         {:noreply, state}
 
       _other ->

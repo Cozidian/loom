@@ -26,7 +26,7 @@ defmodule BeamAgent.RuntimeEventView do
     race_id tournament_id candidate_id candidate_count winner_id winner_endpoint_id winner_provider discarded_count cancelled_count merged selection_policy selection_source evaluation_fingerprint justification_fingerprint provider_auction_id
     generation added_count changed_count removed_count change hash path command_fingerprint
     worktree_id owner_worker_id base_revision worktree_status changed_file_count patch_fingerprint force
-    contract_id artifact_id expected_artifact phase worker_kind
+    contract_id artifact_id expected_artifact phase worker_kind execution_node
   ))
 
   @safe_container_keys MapSet.new(~w(usage))
