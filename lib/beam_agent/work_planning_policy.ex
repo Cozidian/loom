@@ -10,7 +10,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
 
   alias BeamAgent.TaskClassifier
 
-  @explicit_multi_provider ~r/\b(?:multiple|different|several)\s+(?:configured\s+)?(?:models?|providers?)\b|\b(?:models?|providers?)\s+(?:for|across)\s+(?:different|separate)\b|\b(?:ollama|codex|grok|claude|openai|anthropic|xai)\b.{0,100}\b(?:ollama|codex|grok|claude|openai|anthropic|xai)\b/iu
+  @explicit_multi_provider ~r/\b(?:multiple|different|several)\s+(?:configured\s+)?(?:models?|providers?)\b|\b(?:models?|providers?)\s+(?:for|across)\s+(?:different|separate)\b|\b(?:use|using|with)\s+(?:ollama|codex|grok|claude|openai|anthropic|xai)\b.{0,100}\bfor\b.{0,100}\b(?:ollama|codex|grok|claude|openai|anthropic|xai)\b/iu
 
   def decide(prompt, endpoints, opts \\ []) when is_binary(prompt) and is_list(endpoints) do
     classification = TaskClassifier.classify(prompt, Keyword.get(opts, :workspace_root))
@@ -19,14 +19,10 @@ defmodule BeamAgent.WorkPlanningPolicy do
     explicit? = Regex.match?(@explicit_multi_provider, prompt)
     implementation? = classification.change_intent or classification.task_type == :implementation
     multi_endpoint? = length(eligible) >= 2
-    substantial? = implementation? and substantial_implementation?(prompt, classification)
 
     mode =
       cond do
         implementation? and explicit? and multi_endpoint? ->
-          :required
-
-        implementation? and strategy == :auto and multi_endpoint? and substantial? ->
           :required
 
         implementation? and strategy == :auto and multi_endpoint? ->
@@ -44,7 +40,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
       endpoint_count: length(eligible),
       explicit_multi_provider_intent: explicit?,
       suggested_endpoints: suggested_endpoints(eligible),
-      reason: reason(mode, explicit?, multi_endpoint?, substantial?)
+      reason: reason(mode, explicit?, multi_endpoint?)
     }
   end
 
@@ -68,26 +64,15 @@ defmodule BeamAgent.WorkPlanningPolicy do
     }
   end
 
-  defp substantial_implementation?(prompt, classification) do
-    classification.reasoning == :high or
-      Regex.match?(
-        ~r/\b(?:application|frontend|backend|middleware|service|feature|migration|integration|phoenix|liveview)\b/iu,
-        prompt
-      )
-  end
-
-  defp reason(:required, true, _multi?, _substantial?),
+  defp reason(:required, true, _multi?),
     do: "the user explicitly requested a multi-model implementation"
 
-  defp reason(:required, false, _multi?, true),
-    do: "substantial automatic implementation requires bounded provider specialization"
+  defp reason(:advisory, _explicit?, _multi?),
+    do: "one worker owns implementation; bounded specialists are available when useful"
 
-  defp reason(:advisory, _explicit?, _multi?, _substantial?),
-    do: "implementation can benefit from bounded provider specialization"
-
-  defp reason(:direct, true, false, _substantial?),
+  defp reason(:direct, true, false),
     do: "multi-model work was requested but fewer than two eligible endpoints are available"
 
-  defp reason(:direct, _explicit?, _multi?, _substantial?),
+  defp reason(:direct, _explicit?, _multi?),
     do: "one coherent worker is the lowest-overhead execution shape"
 end

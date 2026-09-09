@@ -129,6 +129,9 @@ defmodule BeamAgent.Goal.Reviewer do
     |> String.trim()
   end
 
+  defp reviewer_endpoint_id(_project_id, %{model_strategy: :manual} = construction),
+    do: construction.provider_profile
+
   defp reviewer_endpoint_id(project_id, construction) do
     local_only? = construction.model_strategy == :local_only
 

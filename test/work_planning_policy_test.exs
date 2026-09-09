@@ -30,12 +30,12 @@ defmodule BeamAgent.WorkPlanningPolicyTest do
     assert decision.explicit_multi_provider_intent
   end
 
-  test "substantial automatic work is required while ordinary work remains direct" do
+  test "substantial automatic work can use specialists without requiring them" do
     assert WorkPlanningPolicy.decide(
              "Build an end-to-end Phoenix web version and integrate it with the runtime",
              endpoints(),
              model_strategy: :auto
-           ).mode == :required
+           ).mode == :advisory
 
     decision =
       WorkPlanningPolicy.decide(
@@ -44,7 +44,7 @@ defmodule BeamAgent.WorkPlanningPolicyTest do
         model_strategy: :auto
       )
 
-    assert decision.mode == :required
+    assert decision.mode == :advisory
     refute decision.explicit_multi_provider_intent
 
     assert WorkPlanningPolicy.decide("Explain the actor model", endpoints(),
@@ -55,6 +55,18 @@ defmodule BeamAgent.WorkPlanningPolicyTest do
   test "small automatic edits are advisory rather than forced into a team" do
     assert WorkPlanningPolicy.decide("Fix a typo in README", endpoints(), model_strategy: :auto).mode ==
              :advisory
+  end
+
+  test "product comparisons do not require a provider organization" do
+    decision =
+      WorkPlanningPolicy.decide(
+        "Implement a Phoenix frontend for this harness with a chat like Codex or Claude",
+        endpoints(),
+        model_strategy: :auto
+      )
+
+    assert decision.mode == :advisory
+    refute decision.explicit_multi_provider_intent
   end
 
   test "the policy does not pretend unavailable providers can form a team" do

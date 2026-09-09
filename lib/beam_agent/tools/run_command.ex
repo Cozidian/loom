@@ -12,7 +12,7 @@ defmodule BeamAgent.Tools.RunCommand do
   @impl true
   def description,
     do:
-      "Run a shell command with bounded output/time inside a workspace-write, external-network-denied sandbox. A non-zero exit status is a failed tool call with diagnostic output."
+      "Run a shell command with bounded output/time inside a workspace-write sandbox. Network defaults to loopback-only; request network=external for dependency downloads, subject to host capability and approval policy. Hex, Go and npm caches are writable under TMPDIR. A non-zero exit status is a failed tool call with diagnostic output."
 
   @impl true
   def input_schema do
@@ -21,6 +21,12 @@ defmodule BeamAgent.Tools.RunCommand do
       properties: %{
         command: %{type: "string"},
         cwd: %{type: "string", description: "Workspace-relative directory; defaults to ."},
+        network: %{
+          type: "string",
+          enum: ["loopback-only", "external"],
+          description:
+            "External outbound access requires unrestricted host authority and a separate approval resource. Defaults to loopback-only."
+        },
         timeout_ms: %{type: "integer", minimum: 100, maximum: 120_000}
       },
       required: ["command"]
@@ -35,13 +41,15 @@ defmodule BeamAgent.Tools.RunCommand do
       when is_binary(command) and command != "" do
     timeout = Map.get(arguments, "timeout_ms", 30_000)
     cwd = Map.get(arguments, "cwd", ".")
+    network = Map.get(arguments, "network", "loopback-only")
 
     baseline = workspace_snapshot(context)
 
     with true <- is_integer(timeout) and timeout in 100..120_000,
          {:ok, cwd} <- FileSupport.resolve(context, cwd),
          {:ok, %File.Stat{type: :directory}} <- File.stat(cwd),
-         {:ok, executable, argv} <- Sandbox.command(context.workspace_root, command),
+         {:ok, executable, argv} <-
+           Sandbox.command(context.workspace_root, command, network: network),
          {:ok, result} <-
            Subprocess.run(executable, argv,
              cwd: cwd,
@@ -59,7 +67,7 @@ defmodule BeamAgent.Tools.RunCommand do
         output: result.output,
         truncated: result.truncated,
         sandbox: "workspace-write",
-        network: "loopback-only",
+        network: network,
         changed_files: Enum.take(workspace_delta.changed_files, 200),
         changed_file_count: changed_file_count,
         changed_files_truncated: changed_file_count > 200,

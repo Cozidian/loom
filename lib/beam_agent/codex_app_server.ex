@@ -43,6 +43,38 @@ defmodule BeamAgent.CodexAppServer do
     end)
   end
 
+  def models(opts \\ []) do
+    with_client(opts, fn client, client_module ->
+      list_models(client, client_module, nil, [], MapSet.new())
+    end)
+  end
+
+  defp list_models(client, client_module, cursor, models, seen) do
+    params = %{"limit" => 100, "includeHidden" => true}
+    params = if cursor, do: Map.put(params, "cursor", cursor), else: params
+
+    with {:ok, %{"data" => page} = result} when is_list(page) <-
+           client_module.request(client, "model/list", params) do
+      models = models ++ page
+
+      case result["nextCursor"] do
+        nil ->
+          {:ok, models}
+
+        next when is_binary(next) ->
+          if MapSet.member?(seen, next),
+            do: {:error, :invalid_model_catalog_cursor},
+            else: list_models(client, client_module, next, models, MapSet.put(seen, next))
+
+        _other ->
+          {:error, :invalid_model_catalog}
+      end
+    else
+      {:error, _reason} = error -> error
+      _other -> {:error, :invalid_model_catalog}
+    end
+  end
+
   def logout(opts \\ []) do
     with_client(opts, fn client, client_module ->
       with {:ok, _result} <- client_module.request(client, "account/logout", %{}) do

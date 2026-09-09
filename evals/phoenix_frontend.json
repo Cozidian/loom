@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "metadata": {
+    "suite": "phoenix-frontend",
+    "description": "Build and verify a multi-file Phoenix frontend over an existing OTP actor API"
+  },
+  "scenarios": [{
+    "id": "phoenix-frontend",
+    "fixture": "fixtures/phoenix_frontend",
+    "prompt": "Implement a Phoenix web app frontend for this harness, following README.md. Keep the existing OTP runtime authoritative. Install the needed dependencies, implement the frontend and its actions, and run the provided acceptance tests. Do not weaken or replace the acceptance tests or runtime. Use run_command with network=external when fetching dependencies; Hex and npm caches are already writable under TMPDIR.",
+    "timeout_ms": 600000,
+    "checks": [
+      {"id": "acceptance", "command": "mix test", "timeout_ms": 120000},
+      {"id": "compile", "command": "mix compile --warnings-as-errors", "timeout_ms": 120000}
+    ],
+    "expect": {"files": ["lib/harness_fixture_web/endpoint.ex", "lib/harness_fixture_web/router.ex", "mix.lock"]}
+  }]
+}

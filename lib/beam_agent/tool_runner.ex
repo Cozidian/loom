@@ -90,7 +90,7 @@ defmodule BeamAgent.ToolRunner do
       tools: tool,
       paths: resource_path(tool, arguments),
       commands: command_family(arguments["command"]),
-      hosts: host(arguments["url"]),
+      hosts: resource_host(tool, arguments),
       git_operations: git_operation(tool, arguments),
       browser_scopes: browser_scope(tool)
     }
@@ -111,6 +111,10 @@ defmodule BeamAgent.ToolRunner do
   defp command_family(_), do: nil
   defp host(url) when is_binary(url), do: URI.parse(url).host
   defp host(_), do: nil
+  # A shell can contact arbitrary hosts, so a finite host allowlist cannot
+  # authorize external shell networking. Keep it distinct from offline grants.
+  defp resource_host("run_command", %{"network" => "external"}), do: "*"
+  defp resource_host(_tool, arguments), do: host(arguments["url"])
   defp git_operation("git_inspect", arguments), do: arguments["operation"]
   defp git_operation(_tool, _arguments), do: nil
   defp browser_scope(tool) when tool in ["browser", "browser_control"], do: "interactive"

@@ -418,6 +418,16 @@ defmodule BeamAgent.VerificationTest do
                  data_dir: context.data_dir,
                  workspace_root: context.workspace,
                  provider: :verification_recovery_and_review_test,
+                 provider_profile: "primary",
+                 model_strategy: :manual,
+                 model_endpoints: [
+                   %{
+                     id: "primary",
+                     provider: :verification_recovery_and_review_test,
+                     provider_module: RecoveryAndReviewProvider
+                   },
+                   %{id: "other", provider: :echo}
+                 ],
                  provider_options: [test_pid: self()],
                  approval_policy: :auto
                )

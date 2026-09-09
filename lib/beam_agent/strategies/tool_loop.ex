@@ -698,8 +698,13 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp provider_module(%{endpoint: endpoint}, _context), do: endpoint.provider_module
   defp provider_options(%{endpoint: nil}, context), do: context.provider_options
 
-  defp provider_options(%{endpoint: _endpoint}, %{model_strategy: :manual} = context),
-    do: context.provider_options
+  defp provider_options(
+         %{endpoint: %{id: endpoint_id, provider: provider}},
+         %{model_strategy: :manual, provider_profile: profile, provider: selected_provider} =
+           context
+       )
+       when provider == selected_provider and (endpoint_id == profile or is_nil(profile)),
+       do: context.provider_options
 
   defp provider_options(%{endpoint: endpoint}, _context),
     do: ModelEndpoint.invocation_options(endpoint)
@@ -793,8 +798,12 @@ defmodule BeamAgent.Strategies.ToolLoop do
       action_required?(context) and future_intent?(content) ->
         {:non_final, :future_intent}
 
-      action_required?(context) and turn_action_blocked_by_runtime?(context, turn) ->
+      action_required?(context) and turn_action_count(context, turn) == 0 and
+          turn_action_blocked_by_runtime?(context, turn) ->
         {:blocked, :runtime_action_denied}
+
+      terminal_decomposition_recovery?(decomposition_recovery) ->
+        {:blocked, :decomposition_failed}
 
       action_required?(context) and implementation_tool_names(context, tool_schemas) == [] and
           not (planning.mode == :required and tool_available?(tool_schemas, "delegate_tasks")) ->
@@ -966,17 +975,18 @@ defmodule BeamAgent.Strategies.ToolLoop do
       end)
       |> MapSet.new(& &1["data"]["tool_call_id"])
 
-    Enum.find_value(Enum.reverse(events), fn event ->
-      data = event["data"] || %{}
+    latest =
+      Enum.find(Enum.reverse(events), fn event ->
+        data = event["data"] || %{}
 
-      if event["type"] == "tool_result" and data["turn"] == turn and
-           data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"]) do
-        case JSON.decode(data["content"] || "") do
-          {:ok, %{"recovery" => %{"action" => action}}} -> action
-          _other -> nil
-        end
-      end
-    end)
+        event["type"] == "tool_result" and data["turn"] == turn and
+          data["is_error"] == false and MapSet.member?(calls, data["tool_call_id"])
+      end)
+
+    case latest && JSON.decode(latest["data"]["content"] || "") do
+      {:ok, %{"recovery" => %{"action" => action}}} -> action
+      _other -> nil
+    end
   end
 
   defp successful_decomposition_result?(content) do
@@ -1396,7 +1406,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       obligation =
         case planning.mode do
           :required ->
-            "The runtime requires a validated decomposition for this substantial implementation. Call list_models and then delegate_tasks before returning a terminal answer."
+            "The user requested multiple providers. Call list_models and then delegate_tasks with a validated decomposition before returning a terminal answer."
 
           :advisory ->
             "The runtime marks decomposition as advisory. Use it only when specialization improves the result; otherwise keep one coherent implementation owner."

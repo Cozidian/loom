@@ -1,6 +1,6 @@
 # BeamAgent roadmap
 
-Updated: 2026-09-02
+Updated: 2026-09-09
 
 BeamAgent is evolving into an OTP-native runtime for autonomous software work:
 a fault-tolerant, observable, and concurrent system where specialized processes
@@ -245,6 +245,41 @@ The phase numbers express architectural dependency groups, not a rule that
 every earlier item must finish before a high-value product or safety slice.
 
 ### Immediate product priority
+
+- [x] Make ordinary coding requests executable without a mandatory provider team
+
+    - Keep one implementation owner with access to its coding tools; allow
+      specialist actors when they help. Require multi-provider decomposition
+      only for an explicit user request, not because a task mentions Phoenix
+      or a frontend. Comparing a product to Codex or Claude is not a request
+      to use both providers.
+    - Preserve manual routing through independent review and bind invocation
+      options to the endpoint actually selected. A reviewer must not send a
+      cloud model name or credentials to a different provider.
+    - Use the latest worker-plan result for recovery. Successful replanning
+      supersedes earlier recovery decisions; failed organizations ending in
+      `ask` or `stop` cannot complete the turn successfully. Preserve denial
+      history without poisoning later approved implementation.
+    - Validate ChatGPT model configuration against the live paginated catalogue.
+      Keep model/strategy overrides available for isolated evaluations.
+    - Allow explicit, capability-checked and approval-controlled outbound
+      command networking for dependency installation, retaining workspace
+      confinement and loopback-only defaults. Provide writable package caches.
+    - Add a Phoenix frontend acceptance scenario over a supplied OTP actor API,
+      covering dependency installation, rendering, goal creation, cancellation,
+      input validation, and HTML escaping. Passing unit tests alone is not
+      evidence that this full live-provider scenario passes.
+
+    Verified 2026-09-09: 369 Elixir tests passed, both CLI binaries rebuilt, and
+    live clipboard and Phoenix evaluations passed with deterministic checks and
+    independent review. See [evidence and limits](docs/coding-usability.md).
+
+- [ ] Prove broader autonomous coding reliability with repeated live evaluations
+
+    Keep the Phoenix acceptance fixture as a bounded product gate. A full web
+    frontend for this repository additionally needs streaming turns, approvals,
+    reconnect/replay, attachments, and cancellation against the actual public
+    runtime API. Do not equate the bounded fixture with that complete product.
 
 - [x] Fix nested and repeated approval delivery and acknowledgement
 

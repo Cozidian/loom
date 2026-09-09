@@ -84,6 +84,22 @@ Or run a single prompt:
 ./beam_agent run "hello"
 ```
 
+For coding work, use a model available to your account. `doctor` validates a
+ChatGPT profile against the app server's live model catalogue. A session model
+override leaves saved profiles intact:
+
+```sh
+./beam_agent run "Implement a Phoenix web app frontend for this harness" \
+  --model YOUR_AVAILABLE_MODEL --model-strategy manual --approval auto
+```
+
+Manual routing keeps both implementation and its independent review on the
+selected profile. Automatic routing may choose specialists, but ordinary coding
+requests keep their edit and command tools even when several providers exist.
+Only an explicit request for multiple providers makes decomposition mandatory.
+`--approval auto` authorizes risky tools for this session; omit it to review
+their requests interactively.
+
 The CLI also exposes durable-session and capability discovery:
 
 ```sh
@@ -269,9 +285,13 @@ Every real LLM sees the same model-callable coding tools:
 - `read_file` records its observed generation in a session actor and returns
   numbered content; `edit_file` and `apply_patch` reject stale or ambiguous
   edits without making the model pass hashes;
-- `run_command` has bounded time/output, returns non-zero exits as diagnostic
-  data, and runs with network denied and writes restricted to the workspace and
-  temporary directories;
+- `run_command` has bounded time/output and reports non-zero exits as failed
+  tool calls with diagnostics. Writes stay inside the workspace and private
+  temporary directory. Networking defaults to loopback-only; `network: "external"`
+  requests outbound access for operations such as dependency installation,
+  subject to unrestricted host capability and a separate approval resource.
+  Offline approvals do not grant external networking. Hex, Go and npm caches
+  use the writable temporary directory;
 - `reload_context` refreshes changed instruction and skill files after approval;
 - `spawn_subagent` dynamically constructs a bounded specialist with attenuated
   authority and reclaims its live worker after recording the result;
