@@ -57,8 +57,18 @@ defmodule Mix.Tasks.BeamAgent.Build do
            into: IO.stream(:stdio, :line)
          ) do
       {_output, 0} ->
-        File.cp!(Path.join(target, "release/beam_agent_ion"), Path.join(root, "beam_agent_ion"))
-        File.chmod!(Path.join(root, "beam_agent_ion"), 0o755)
+        destination = Path.join(root, "beam_agent_ion")
+        temporary = destination <> ".#{System.unique_integer([:positive])}.tmp"
+
+        # Replace the inode atomically: overwriting a running Mach-O executable
+        # can leave macOS using its old cached code signature on the next launch.
+        try do
+          File.cp!(Path.join(target, "release/beam_agent_ion"), temporary)
+          File.chmod!(temporary, 0o755)
+          File.rename!(temporary, destination)
+        after
+          File.rm(temporary)
+        end
 
       {_output, status} ->
         Mix.raise("Rust TUI build failed with status #{status}")

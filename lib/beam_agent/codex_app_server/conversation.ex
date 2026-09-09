@@ -40,11 +40,18 @@ defmodule BeamAgent.CodexAppServer.Conversation do
 
   @impl true
   def handle_call({:invoke, messages, tools, options, emit}, _from, state) do
-    with {:ok, conversation} <- ensure_open(state.conversation, state.options, options),
-         {:ok, response, conversation} <-
-           CodexAppServer.invoke_conversation(conversation, messages, tools, options, emit) do
-      {:reply, {:ok, response}, %{state | conversation: conversation}}
-    else
+    case ensure_open(state.conversation, state.options, options) do
+      {:ok, conversation} ->
+        case CodexAppServer.invoke_conversation(conversation, messages, tools, options, emit) do
+          {:ok, response, updated} ->
+            {:reply, {:ok, response}, %{state | conversation: updated}}
+
+          {:error, reason} ->
+            # Also close a client opened during this call, before it entered state.
+            close(conversation)
+            {:reply, {:error, reason}, %{state | conversation: nil}}
+        end
+
       {:error, reason} ->
         close(state.conversation)
         {:reply, {:error, reason}, %{state | conversation: nil}}

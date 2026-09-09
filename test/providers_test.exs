@@ -242,6 +242,11 @@ defmodule BeamAgent.ProvidersTest do
     def request(_client, "account/read", _params),
       do: {:ok, %{"account" => %{"type" => "chatgpt", "planType" => "plus"}}}
 
+    def request(client, "model/list", _params) do
+      send(Agent.get(client, & &1.test_pid), {:persistent_catalog_requested, client})
+      {:ok, %{"data" => [%{"model" => "gpt-test"}], "nextCursor" => nil}}
+    end
+
     def request(client, "thread/start", params) do
       send(Agent.get(client, & &1.test_pid), {:persistent_thread_started, params})
       {:ok, %{"thread" => %{"id" => "persistent-thread"}}}
@@ -865,6 +870,58 @@ defmodule BeamAgent.ProvidersTest do
              BeamAgent.CodexAppServer.models(
                codex_client: CodexClientStub,
                codex_client_options: [test_pid: self(), mode: :catalog_loop]
+             )
+  end
+
+  test "ChatGPT invocation rejects an unavailable model before starting a native thread or turn" do
+    opts = [
+      model: "retired-model",
+      auth: %{"type" => "chatgpt"},
+      codex_client: CodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    assert {:error, {:chatgpt_model_unavailable, "retired-model", ["gpt-test", "other-test"]}} =
+             OpenAI.complete([%{role: :user, content: "do not send"}], [], opts)
+
+    assert_receive {:catalog_requested, _}
+    refute_receive {:codex_thread_started, _}
+    refute_receive {:codex_turn_started, _}
+  end
+
+  test "an unavailable model closes a newly opened session client and permits a corrected retry" do
+    opts = [
+      model: "retired-model",
+      codex_client: PersistentCodexClientStub,
+      codex_client_options: [test_pid: self()]
+    ]
+
+    conversation =
+      start_supervised!(
+        {BeamAgent.CodexAppServer.Conversation,
+         session_id: "invalid-model-#{System.unique_integer([:positive])}", provider_options: opts}
+      )
+
+    assert {:error, {:chatgpt_model_unavailable, _, _}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "draft"}],
+               [],
+               opts,
+               fn _ -> :ok end
+             )
+
+    assert_receive {:persistent_catalog_requested, client}
+    refute Process.alive?(client)
+    refute_receive {:persistent_thread_started, _}
+
+    assert {:ok, %{content: "reply-1"}} =
+             BeamAgent.CodexAppServer.Conversation.invoke(
+               conversation,
+               [%{role: :user, content: "draft"}],
+               [],
+               Keyword.put(opts, :model, "gpt-test"),
+               fn _ -> :ok end
              )
   end
 

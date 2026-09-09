@@ -153,16 +153,50 @@ pub fn draw(f: &mut Frame, a: &mut App) {
                 if a.connected { MUTED } else { RED },
             ),
             line(
-                "  ^P commands   ^J newline   PgUp history   Esc live   ^C cancel   ^Q exit",
+                "  ^P commands  ^R prompts  ^Y copy  ^J newline  PgUp trail  ^C cancel  ^Q exit",
                 MUTED,
             ),
         ],
     );
-    if let Some(d) = &a.drawer {
-        drawer(f, area, a, d);
+    if let Some(d) = a.drawer.clone() {
+        drawer(f, area, a, &d);
     }
     if a.palette {
         palette(f, area, a);
+    }
+    if a.settings_form.is_some() {
+        settings_form(f, area, a);
+    }
+    if let Some(request) = &a.settings_confirm {
+        let rect = center(area, 82, 11);
+        f.render_widget(Clear, rect);
+        let b = panel("REMOVE PROVIDER PROFILE", RED);
+        let inside = b.inner(rect);
+        f.render_widget(b, rect);
+        text(
+            f,
+            inside,
+            vec![
+                line(
+                    format!("Remove {} from saved configuration?", s(request, "profile")),
+                    ACID,
+                ),
+                line("Active/default profiles cannot be removed.", WHITE),
+                line(
+                    "Stored credentials and session history are not deleted.",
+                    MUTED,
+                ),
+                line(
+                    if a.settings_pending {
+                        "Waiting for runtime…"
+                    } else {
+                        "Enter confirms · Esc cancels"
+                    },
+                    CYAN,
+                ),
+                line(&a.notice, MUTED),
+            ],
+        );
     }
     if let Some(worker) = &a.confirm_cancel {
         let rect = center(area, 72, 10);
@@ -238,10 +272,11 @@ fn header(f: &mut Frame, area: Rect, a: &App) {
             ]),
             line(
                 format!(
-                    "  OTP CONTROL SURFACE    {} / {}    APPROVAL {}",
+                    "  OTP CONTROL SURFACE    {} / {}    APPROVAL {} · ROUTING {}",
                     a.profile,
                     a.model,
-                    a.approval_mode.to_uppercase()
+                    a.approval_mode.to_uppercase(),
+                    a.model_strategy.to_uppercase()
                 ),
                 if a.approval_mode == "auto" {
                     ACID
@@ -588,13 +623,59 @@ fn composer(f: &mut Frame, area: Rect, a: &App) {
             .scroll((sy, sx)),
         inner,
     );
-    if a.view == View::Mission && a.drawer.is_none() && !a.palette && a.approvals.is_empty() {
+    if a.view == View::Mission
+        && a.drawer.is_none()
+        && !a.palette
+        && a.approvals.is_empty()
+        && a.settings_form.is_none()
+        && a.settings_confirm.is_none()
+    {
         f.set_cursor_position((
             inner.x + (col.saturating_sub(sx as usize) as u16).min(inner.width.saturating_sub(1)),
             inner.y + (row.saturating_sub(sy as usize) as u16).min(inner.height.saturating_sub(1)),
         ));
         let matches = a.matches();
-        if !matches.is_empty() {
+        let commands = a.slash_matches();
+        if a.slash_query().is_some() {
+            let height = ((commands.len().clamp(1, 6) + 2) as u16).min(area.y);
+            let rect = Rect::new(
+                area.x + 1,
+                area.y.saturating_sub(height),
+                area.width.saturating_sub(2).min(80),
+                height,
+            );
+            f.render_widget(Clear, rect);
+            let b = panel("COMMANDS / TAB COMPLETE · ENTER SELECT", ACID);
+            let inside = b.inner(rect);
+            f.render_widget(b, rect);
+            let window = inside.height.max(1) as usize;
+            let start = a.command_index.saturating_sub(window - 1);
+            let rows = if commands.is_empty() {
+                vec![line(" No matching command · Esc dismisses", MUTED)]
+            } else {
+                commands
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(window)
+                    .map(|(i, cmd)| {
+                        Line::styled(
+                            format!(
+                                " {} /{cmd:<13} {}",
+                                if i == a.command_index { "▶" } else { " " },
+                                command_hint(cmd)
+                            ),
+                            if i == a.command_index {
+                                strong(ACID)
+                            } else {
+                                style(WHITE)
+                            },
+                        )
+                    })
+                    .collect()
+            };
+            text(f, inside, rows);
+        } else if !matches.is_empty() {
             let height = (matches.len().min(7) + 2) as u16;
             let rect = Rect::new(
                 area.x + 1,
@@ -640,7 +721,7 @@ fn center(area: Rect, width: u16, height: u16) -> Rect {
         h,
     )
 }
-fn drawer(f: &mut Frame, area: Rect, a: &App, d: &Value) {
+fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
     let rect = center(
         area,
         area.width.saturating_sub(8).min(115),
@@ -657,10 +738,47 @@ fn drawer(f: &mut Frame, area: Rect, a: &App, d: &Value) {
     let inner = b.inner(rect);
     f.render_widget(b, rect);
     let rows = a.rows();
+    let zones = split(
+        inner,
+        Direction::Vertical,
+        vec![
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ],
+    );
+    let body = zones[1];
+    let help = if kind == "models" {
+        " Enter chooses model · p manages providers · ^Y copy · Esc back".into()
+    } else if kind == "provider_settings" {
+        " n new · e edit · u use · x remove · l login · r reload · Enter models".into()
+    } else if kind == "model_catalog" {
+        " Enter chooses · m manual model ID · Esc back".into()
+    } else if kind == "provider_kind_picker" {
+        " Choose a provider type · Enter opens form · Esc back".into()
+    } else if kind == "prompt_history" {
+        format!(" Search: {}▏ · Enter recalls, never sends", a.history_query)
+    } else if !rows.is_empty() {
+        " ↑↓ select · Enter inspect · ^Y copy · Esc back".into()
+    } else {
+        " ↑↓ / PgUp PgDn scroll · ^Y copy · Esc back".into()
+    };
+    text(f, zones[0], vec![line(help, MUTED)]);
+    text(f, zones[2], vec![line(&a.notice, CYAN)]);
     let mut lines = vec![];
     if !rows.is_empty() {
-        lines.push(line(" ↑↓ select · Enter inspect/select · Esc close", MUTED));
-        for (i, row) in rows.iter().enumerate() {
+        a.selection = a.selection.min(rows.len() - 1);
+        let window = body.height.max(1) as usize;
+        let mut start = a.drawer_scroll as usize;
+        if a.selection < start {
+            start = a.selection;
+        }
+        if a.selection >= start + window {
+            start = a.selection + 1 - window;
+        }
+        start = start.min(rows.len().saturating_sub(window));
+        a.drawer_scroll = start as u16;
+        for (i, row) in rows.iter().enumerate().skip(start).take(window) {
             let title = match kind {
                 "models" => format!("{} / {}", s(row, "id"), s(row, "model")),
                 "files" => format!(
@@ -671,6 +789,30 @@ fn drawer(f: &mut Frame, area: Rect, a: &App, d: &Value) {
                 ),
                 "sessions" => format!("{}  {}", s(row, "session_id"), s(row, "goal_preview")),
                 "provider_picker" => format!("{}  {}", s(row, "profile"), s(row, "model")),
+                "provider_settings" => format!(
+                    "{} {} / {}  {}  [{}]",
+                    if row["active"] == true { "●" } else { " " },
+                    s(row, "profile"),
+                    s(row, "provider"),
+                    s(row, "model"),
+                    s(row, "auth_mode")
+                ),
+                "provider_kind_picker" => s(row, "provider").into(),
+                "model_catalog" => format!(
+                    "{} {}",
+                    s(row, "model"),
+                    if row["isDefault"] == true {
+                        "· provider default"
+                    } else {
+                        ""
+                    }
+                ),
+                "prompt_history" => s(row, "prompt").replace('\n', " ↵ "),
+                "output_picker" => format!(
+                    "{}  {}",
+                    s(row, "kind"),
+                    s(row, "content").replace('\n', " ↵ ")
+                ),
                 _ => event_label(row),
             };
             lines.push(Line::styled(
@@ -685,6 +827,15 @@ fn drawer(f: &mut Frame, area: Rect, a: &App, d: &Value) {
                 },
             ));
         }
+        text(f, body, lines);
+        return;
+    } else if kind == "model_catalog" {
+        lines.extend(wrapped(s(d, "message"), body.width, WHITE));
+        lines.push(line("Press m to enter a model ID and routing mode", ACID));
+    } else if kind == "prompt_history" || kind == "output_picker" {
+        lines.push(line(" Nothing here yet / no matches", MUTED));
+    } else if kind == "output_detail" {
+        lines = wrapped(s(d, "content"), body.width, WHITE);
     } else if kind == "panel" {
         for row in crate::app::array(d, "lines") {
             lines.extend(wrapped(row.as_str().unwrap_or(""), inner.width, WHITE));
@@ -722,7 +873,131 @@ fn drawer(f: &mut Frame, area: Rect, a: &App, d: &Value) {
             WHITE,
         ));
     }
-    f.render_widget(Paragraph::new(lines).scroll((a.drawer_scroll, 0)), inner);
+    a.drawer_scroll = a.drawer_scroll.min(
+        lines
+            .len()
+            .saturating_sub(body.height as usize)
+            .min(u16::MAX as usize) as u16,
+    );
+    f.render_widget(Paragraph::new(lines).scroll((a.drawer_scroll, 0)), body);
+}
+fn command_hint(cmd: &str) -> &str {
+    match cmd {
+        "auto" => "toggle approval policy",
+        "attach" => "attach an image file",
+        "history" => "recall a previous prompt",
+        "output" => "browse and copy earlier output",
+        "copy" => "copy latest output / all transcript",
+        "race" => "first admissible result wins",
+        "tournament" => "compare candidate solutions",
+        "models" => "choose a model or inspect endpoints",
+        "providers" => "add, edit and select providers/models",
+        "files" => "inspect changed files and diffs",
+        "connect" => "select a configured provider",
+        _ => "runtime command",
+    }
+}
+fn settings_form(f: &mut Frame, area: Rect, a: &App) {
+    let Some(form) = &a.settings_form else {
+        return;
+    };
+    let rect = center(area, 96, 20);
+    f.render_widget(Clear, rect);
+    let b = panel(
+        &format!("{} / {} {}", form.title, form.profile, form.provider),
+        ACID,
+    );
+    let inner = b.inner(rect);
+    f.render_widget(b, rect);
+    let zones = split(
+        inner,
+        Direction::Vertical,
+        vec![
+            Constraint::Length(2),
+            Constraint::Min(2),
+            Constraint::Length(4),
+        ],
+    );
+    text(
+        f,
+        zones[0],
+        vec![
+            line(
+                "Tab/↑↓ fields · ^U clear · ^S save/apply · Esc cancel",
+                CYAN,
+            ),
+            line(
+                if form.action == "select" {
+                    "Saves profile + routing mode; preserves conversation"
+                } else {
+                    "Saves profile + project endpoints; current profile changes apply now"
+                },
+                MUTED,
+            ),
+        ],
+    );
+    let window = zones[1].height.max(1) as usize;
+    let start = form.index.saturating_sub(window - 1);
+    for (row, (i, (name, editor))) in form
+        .fields
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(window)
+        .enumerate()
+    {
+        let line_area = Rect::new(zones[1].x, zones[1].y + row as u16, zones[1].width, 1);
+        let label_width = 14.min(line_area.width.saturating_sub(3));
+        let field_area = Rect::new(
+            line_area.x + label_width,
+            line_area.y,
+            line_area.width.saturating_sub(label_width),
+            1,
+        );
+        text(
+            f,
+            line_area,
+            vec![line(
+                format!("{}{name:<12}", if i == form.index { "›" } else { " " }),
+                if i == form.index { ACID } else { MUTED },
+            )],
+        );
+        let column = UnicodeWidthStr::width(&editor.text[..editor.cursor]);
+        let scroll = column
+            .saturating_sub(field_area.width.saturating_sub(1) as usize)
+            .min(u16::MAX as usize) as u16;
+        f.render_widget(
+            Paragraph::new(clean(&editor.text))
+                .style(style(WHITE))
+                .scroll((0, scroll)),
+            field_area,
+        );
+        if i == form.index && !a.settings_pending {
+            f.set_cursor_position((
+                field_area.x
+                    + column
+                        .saturating_sub(scroll as usize)
+                        .min(field_area.width.saturating_sub(1) as usize)
+                        as u16,
+                field_area.y,
+            ));
+        }
+    }
+    let hint = match form.fields[form.index].0.as_str() {
+        "api_key_env" => "Environment variable NAME only. Never paste an API key here.",
+        "auth_mode" => "environment | chatgpt (OpenAI) | saved (existing credentials)",
+        "strategy" => "manual = pin this model · auto = route automatically · local_only",
+        "base_url" => "Changing address clears saved credential references.",
+        "profile" => "Unique name: letters, digits, dots, underscores, hyphens",
+        _ => "Exact model ID; use the model catalogue where available.",
+    };
+    let mut footer = wrapped(hint, zones[2].width, MUTED);
+    footer.extend(wrapped(
+        &a.notice,
+        zones[2].width,
+        if a.settings_pending { CYAN } else { WHITE },
+    ));
+    text(f, zones[2], footer);
 }
 fn palette(f: &mut Frame, area: Rect, a: &App) {
     let rect = center(area, 68, 17);
@@ -735,9 +1010,13 @@ fn palette(f: &mut Frame, area: Rect, a: &App) {
         line("", WHITE),
     ];
     let items = a.palette_items();
-    let start = a.palette_index.saturating_sub(9);
-    for (i, item) in items.iter().enumerate().skip(start).take(10) {
+    let window = inner.height.saturating_sub(2).max(1) as usize;
+    let start = a.palette_index.saturating_sub(window - 1);
+    for (i, item) in items.iter().enumerate().skip(start).take(window) {
         let hint = match *item {
+            "history" => "search and recall a previous prompt",
+            "output" => "browse and copy earlier output",
+            "copy" => "copy current output to clipboard",
             "race" => "first admissible result wins",
             "tournament" => "compare and select a candidate",
             "auto" => "toggle approval policy — runtime confirms",

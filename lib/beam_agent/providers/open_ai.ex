@@ -53,7 +53,7 @@ defmodule BeamAgent.Providers.OpenAI do
            {:ok, %{"account" => %{"type" => "chatgpt"} = account}} <-
              CodexAppServer.account(options),
            {:ok, models} <- CodexAppServer.models(options),
-           :ok <- validate_model(model, models) do
+           :ok <- CodexAppServer.validate_model(model, models) do
         plan = account["planType"] || "subscription"
         {:ok, "connected through ChatGPT #{plan}"}
       else
@@ -75,18 +75,6 @@ defmodule BeamAgent.Providers.OpenAI do
   @impl true
   def routing_preflight(options) do
     if chatgpt?(options), do: :ok, else: healthcheck(options)
-  end
-
-  defp validate_model(model, models) do
-    available =
-      Enum.flat_map(models, fn
-        %{"model" => name} when is_binary(name) -> [name]
-        _other -> []
-      end)
-
-    if model in available,
-      do: :ok,
-      else: {:error, {:chatgpt_model_unavailable, model, available}}
   end
 
   defp provider_options(options) do

@@ -14,6 +14,7 @@ pub fn command(name: &str, query: &str) -> Value {
 }
 pub const COMMANDS: &[&str] = &[
     "models",
+    "providers",
     "files",
     "sessions",
     "events",
@@ -48,6 +49,16 @@ pub struct Entry {
     pub response: String,
     pub streaming: bool,
 }
+pub struct SettingsForm {
+    pub title: String,
+    pub action: String,
+    pub profile: String,
+    pub provider: String,
+    pub revision: String,
+    pub editing: bool,
+    pub fields: Vec<(String, Editor)>,
+    pub index: usize,
+}
 pub struct App {
     pub initialized: bool,
     pub connected: bool,
@@ -61,6 +72,17 @@ pub struct App {
     pub cursor: u64,
     pub editor: Editor,
     pub last_submission: String,
+    pub prompt_history: VecDeque<String>,
+    pub history_index: Option<usize>,
+    pub history_draft: Option<Editor>,
+    pub history_query: String,
+    pub command_index: usize,
+    pub clipboard: Option<String>,
+    pub settings: Value,
+    pub settings_form: Option<SettingsForm>,
+    pub settings_confirm: Option<Value>,
+    pub settings_pending: bool,
+    pub model_strategy: String,
     pub entries: VecDeque<Entry>,
     pub events: VecDeque<Value>,
     pub workers: Vec<Value>,
@@ -83,6 +105,7 @@ pub struct App {
     pub dismiss_picker: bool,
     pub drawer: Option<Value>,
     pub drawer_scroll: u16,
+    pub drawer_stack: Vec<(Value, usize, u16)>,
     pub confirm_cancel: Option<String>,
     pub notice: String,
     pub outgoing: Vec<Value>,
@@ -105,6 +128,17 @@ impl Default for App {
             cursor: 0,
             editor: Editor::default(),
             last_submission: String::new(),
+            prompt_history: VecDeque::new(),
+            history_index: None,
+            history_draft: None,
+            history_query: String::new(),
+            command_index: 0,
+            clipboard: None,
+            settings: Value::Null,
+            settings_form: None,
+            settings_confirm: None,
+            settings_pending: false,
+            model_strategy: "manual".into(),
             entries: VecDeque::new(),
             events: VecDeque::new(),
             workers: vec![],
@@ -127,6 +161,7 @@ impl Default for App {
             dismiss_picker: false,
             drawer: None,
             drawer_scroll: 0,
+            drawer_stack: vec![],
             confirm_cancel: None,
             notice: String::new(),
             outgoing: vec![],
@@ -138,6 +173,9 @@ impl Default for App {
 
 impl App {
     fn entry(&mut self, kind: &str, text: &str) {
+        if kind == "user" {
+            self.remember_prompt(text);
+        }
         self.entries.push_back(Entry {
             kind: kind.into(),
             text: clean(text),
@@ -154,10 +192,14 @@ impl App {
         }
         self.connected = false;
         self.pending = false;
+        self.settings_pending = false;
         self.resolving = None;
         self.notice = format!("Bridge disconnected · {reason}. Draft preserved; Ctrl+Q exits.");
     }
     pub fn send_failed(&mut self, packet: &Value, reason: &str) {
+        if s(packet, "type") == "provider_settings" {
+            self.settings_pending = false;
+        }
         if s(packet, "type") == "submit" {
             if self.editor.text.is_empty() {
                 self.editor.set(s(packet, "prompt"));
@@ -180,6 +222,12 @@ impl App {
                 self.workspace = s(&p, "workspace").into();
                 self.profile = s(&p, "profile").into();
                 self.model = s(&p, "model").into();
+                self.model_strategy = if s(&p, "model_strategy").is_empty() {
+                    "manual"
+                } else {
+                    s(&p, "model_strategy")
+                }
+                .into();
                 self.approval_mode = s(&p, "approval_mode").into();
                 self.cursor = p["cursor"].as_u64().unwrap_or(0);
                 self.entries.clear();
@@ -316,6 +364,8 @@ impl App {
                 .attachments
                 .retain(|a| s(a, "id") != s(&p, "attachment_id")),
             "session_changed" => {
+                self.leave_history();
+                self.drawer_stack.clear();
                 self.session = s(&p, "session_id").into();
                 self.entries.clear();
                 self.events.clear();
@@ -335,9 +385,43 @@ impl App {
             }
             "models" | "files" | "sessions" | "diff" | "session_detail" | "panel" | "events"
             | "provider_picker" => {
+                self.drawer_stack.clear();
                 self.drawer = Some(p);
                 self.drawer_scroll = 0;
                 self.selection = 0;
+            }
+            "provider_settings" => {
+                self.settings_pending = false;
+                if self.notice.starts_with("Checking provider settings") {
+                    self.notice = "Providers ready · n new · e edit · u use · Enter models".into();
+                }
+                self.settings = p.clone();
+                self.model_strategy = s(&p, "model_strategy").into();
+                self.drawer_stack.clear();
+                self.drawer = Some(p);
+                self.selection = 0;
+                self.drawer_scroll = 0;
+            }
+            "model_catalog" => {
+                self.settings_pending = false;
+                self.notice = "Model catalogue ready · Enter selects · m enters a model ID".into();
+                self.open_drawer(p);
+            }
+            "settings_applied" => {
+                self.settings_pending = false;
+                self.settings_form = None;
+                self.settings_confirm = None;
+                self.profile = s(&p, "profile").into();
+                self.model = s(&p, "model").into();
+                self.model_strategy = s(&p, "model_strategy").into();
+                self.notice = format!(
+                    "Saved · {} / {} · {} routing · conversation preserved",
+                    self.profile, self.model, self.model_strategy
+                );
+            }
+            "settings_failed" => {
+                self.settings_pending = false;
+                self.notice = format!("Settings not applied: {}", s(&p, "message"));
             }
             _ => {} // Forward-compatible with additional backend notifications.
         }
@@ -453,6 +537,7 @@ impl App {
         COMMANDS
             .iter()
             .copied()
+            .chain(["history", "output", "copy"])
             .filter(|c| c.contains(&self.palette_query.to_lowercase()))
             .collect()
     }
@@ -463,17 +548,307 @@ impl App {
             "sessions" => array(d, "sessions"),
             "files" => array(d, "changed"),
             "provider_picker" => array(d, "providers"),
+            "provider_settings" => array(d, "providers"),
+            "provider_kind_picker" => array(d, "kinds"),
+            "model_catalog" => array(d, "models"),
             "events" => array(d, "events"),
+            "output_picker" => array(d, "outputs"),
+            "prompt_history" => self
+                .prompt_history
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, p)| {
+                    p.to_lowercase()
+                        .contains(&self.history_query.to_lowercase())
+                })
+                .map(|(i, p)| json!({"prompt":p,"history_index":i}))
+                .collect(),
             _ => vec![],
         }
     }
     fn clamp_selection(&mut self) {
         self.selection = self.selection.min(self.workers.len().saturating_sub(1));
     }
+    fn remember_prompt(&mut self, prompt: &str) {
+        if !prompt.trim().is_empty() && self.prompt_history.back().is_none_or(|p| p != prompt) {
+            self.prompt_history.push_back(prompt.to_owned());
+            if self.prompt_history.len() > 200 {
+                self.prompt_history.pop_front();
+            }
+        }
+    }
+    pub fn leave_history(&mut self) {
+        self.history_index = None;
+        self.history_draft = None;
+    }
+    fn recall_prompt(&mut self, index: usize) {
+        if let Some(prompt) = self.prompt_history.get(index) {
+            if self.history_draft.is_none() {
+                self.history_draft = Some(self.editor.clone());
+            }
+            self.editor.set(prompt);
+            self.history_index = Some(index);
+            self.dismiss_picker = true;
+            self.notice =
+                "History draft · edit or Enter to send · Down returns to your draft".into();
+        }
+    }
+    fn history_step(&mut self, older: bool) {
+        let next = if older {
+            self.history_index
+                .unwrap_or(self.prompt_history.len())
+                .checked_sub(1)
+        } else {
+            self.history_index.map(|i| i + 1)
+        };
+        if let Some(index) = next {
+            if index < self.prompt_history.len() {
+                self.recall_prompt(index);
+            } else if let Some(draft) = self.history_draft.take() {
+                self.editor = draft;
+                self.history_index = None;
+                self.notice = "Original draft restored".into();
+            }
+        }
+    }
+    pub fn slash_query(&self) -> Option<&str> {
+        if self.dismiss_picker || !self.editor.text.starts_with('/') || self.editor.cursor == 0 {
+            return None;
+        }
+        let query = &self.editor.text[1..self.editor.cursor];
+        (!query.contains(char::is_whitespace)).then_some(query)
+    }
+    pub fn slash_matches(&self) -> Vec<&'static str> {
+        let Some(query) = self.slash_query() else {
+            return vec![];
+        };
+        COMMANDS
+            .iter()
+            .copied()
+            .chain([
+                "help", "history", "output", "copy", "attach", "detach", "resume", "steer",
+                "cancel", "quit",
+            ])
+            .filter(|c| c.starts_with(&query.to_lowercase()))
+            .collect()
+    }
+    fn complete_command(&mut self, name: &str) {
+        let end = self
+            .editor
+            .text
+            .find(char::is_whitespace)
+            .unwrap_or(self.editor.text.len());
+        self.editor.text.replace_range(..end, &format!("/{name}"));
+        self.editor.cursor = name.len() + 1;
+        if self.editor.text.len() == self.editor.cursor {
+            self.editor.insert(" ");
+        }
+        self.dismiss_picker = true;
+        self.command_index = 0;
+    }
+    fn open_drawer(&mut self, value: Value) {
+        if let Some(previous) = self.drawer.take() {
+            self.drawer_stack
+                .push((previous, self.selection, self.drawer_scroll));
+        }
+        self.drawer = Some(value);
+        self.selection = 0;
+        self.drawer_scroll = 0;
+    }
+    fn open_history(&mut self) {
+        self.history_query.clear();
+        self.open_drawer(json!({"type":"prompt_history"}));
+    }
+    fn open_output(&mut self) {
+        let outputs: Vec<_> = self
+            .entries
+            .iter()
+            .rev()
+            .filter(|e| e.kind != "user")
+            .map(|e| json!({"type":"output_detail","kind":e.kind,"content":e.text}))
+            .collect();
+        self.open_drawer(json!({"type":"output_picker","outputs":outputs}));
+    }
+    fn request_settings(&mut self, mut request: Value) {
+        if !self.initialized || !self.connected || self.settings_pending {
+            self.notice = "Wait for the runtime/settings request".into();
+            return;
+        }
+        if self.demo {
+            self.notice = "DEMO · settings are read-only".into();
+            return;
+        }
+        request["type"] = json!("provider_settings");
+        self.settings_pending = true;
+        self.notice = "Checking provider settings…".into();
+        self.outgoing.push(request);
+    }
+    fn provider_form(&mut self, row: &Value, editing: bool) {
+        let mut fields = vec![];
+        for key in ["profile", "model", "base_url", "api_key_env", "auth_mode"] {
+            if editing && key == "profile" {
+                continue;
+            }
+            let mut editor = Editor::default();
+            editor.set(if key == "auth_mode" && s(row, key).is_empty() {
+                "environment"
+            } else {
+                s(row, key)
+            });
+            fields.push((key.to_owned(), editor));
+        }
+        self.settings_form = Some(SettingsForm {
+            title: if editing {
+                "EDIT PROVIDER"
+            } else {
+                "NEW PROVIDER"
+            }
+            .into(),
+            action: "save".into(),
+            profile: s(row, "profile").into(),
+            provider: s(row, "provider").into(),
+            revision: s(&self.settings, "revision").into(),
+            editing,
+            fields,
+            index: 0,
+        });
+    }
+    fn selection_form(&mut self, profile: &str, model: &str, revision: &str) {
+        let mut value = Editor::default();
+        value.set(model);
+        let mut strategy = Editor::default();
+        strategy.set("manual");
+        self.settings_form = Some(SettingsForm {
+            title: "SAVE & USE MODEL".into(),
+            action: "select".into(),
+            profile: profile.into(),
+            provider: String::new(),
+            revision: revision.into(),
+            editing: true,
+            fields: vec![("model".into(), value), ("strategy".into(), strategy)],
+            index: 0,
+        });
+    }
+    fn form_key(&mut self, k: KeyEvent) {
+        if self.settings_pending {
+            return;
+        }
+        if k.code == KeyCode::Esc {
+            self.settings_form = None;
+            return;
+        }
+        let form = self.settings_form.as_mut().unwrap();
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('s') {
+            let fields: serde_json::Map<String, Value> = form
+                .fields
+                .iter()
+                .map(|(key, e)| (key.clone(), json!(e.text)))
+                .collect();
+            let mut request = json!({"action":form.action,"profile":form.profile,"revision":form.revision,"editing":form.editing});
+            if form.action == "select" {
+                request["model"] = fields["model"].clone();
+                request["strategy"] = fields["strategy"].clone();
+            } else {
+                let mut fields = fields;
+                if !form.editing {
+                    request["profile"] = fields.remove("profile").unwrap_or_default();
+                }
+                fields.insert("provider".into(), json!(form.provider));
+                request["fields"] = Value::Object(fields);
+            }
+            self.request_settings(request);
+            return;
+        }
+        match k.code {
+            KeyCode::Tab | KeyCode::Down | KeyCode::Enter => {
+                form.index = (form.index + 1) % form.fields.len()
+            }
+            KeyCode::BackTab | KeyCode::Up => {
+                form.index = (form.index + form.fields.len() - 1) % form.fields.len()
+            }
+            KeyCode::Left => form.fields[form.index].1.left(),
+            KeyCode::Right => form.fields[form.index].1.right(),
+            KeyCode::Home => form.fields[form.index].1.home(),
+            KeyCode::End => form.fields[form.index].1.end(),
+            KeyCode::Backspace => form.fields[form.index].1.backspace(),
+            KeyCode::Delete => form.fields[form.index].1.delete(),
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.fields[form.index].1.set("")
+            }
+            KeyCode::Char(c)
+                if !k
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                form.fields[form.index].1.insert(&c.to_string())
+            }
+            _ => {}
+        }
+    }
+    pub fn copy_output(&mut self, all: bool) {
+        let content = if all {
+            self.entries
+                .iter()
+                .map(|e| format!("{}\n{}", e.kind.to_uppercase(), e.text))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        } else if let Some(d) = &self.drawer {
+            let rows = self.rows();
+            let value = rows.get(self.selection).unwrap_or(d);
+            match s(value, "type") {
+                "output_detail" => s(value, "content").to_owned(),
+                "diff" => s(value, "raw_patch").to_owned(),
+                "panel" => array(value, "lines")
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => serde_json::to_string_pretty(value).unwrap_or_default(),
+            }
+        } else if self.view == View::Swarm {
+            self.workers
+                .get(self.selection)
+                .map(|w| serde_json::to_string_pretty(w).unwrap_or_default())
+                .unwrap_or_default()
+        } else if self.view == View::Ledger {
+            self.events
+                .iter()
+                .rev()
+                .nth(self.selection)
+                .map(|e| serde_json::to_string_pretty(e).unwrap_or_default())
+                .unwrap_or_default()
+        } else {
+            self.entries
+                .iter()
+                .rev()
+                .find(|e| e.kind != "user")
+                .map(|e| e.text.clone())
+                .unwrap_or_default()
+        };
+        if content.is_empty() {
+            self.notice = "Nothing to copy yet · /output browses earlier output".into();
+        } else {
+            self.clipboard = Some(content);
+            self.notice = "Copying output…".into();
+        }
+    }
     pub fn key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('q') {
             self.quit = true;
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('y') {
+            if self.settings_form.is_some() {
+                self.notice = "Close the settings form before copying output".into();
+                return;
+            }
+            if let Some(approval) = self.approvals.front() {
+                self.clipboard = serde_json::to_string_pretty(approval).ok();
+            } else {
+                self.copy_output(false);
+            }
             return;
         }
         if !self.approvals.is_empty() {
@@ -516,10 +891,28 @@ impl App {
             }
             return;
         }
+        if self.settings_form.is_some() {
+            self.form_key(k);
+            return;
+        }
+        if let Some(request) = self.settings_confirm.clone() {
+            if !self.settings_pending {
+                match k.code {
+                    KeyCode::Esc => self.settings_confirm = None,
+                    KeyCode::Enter => self.request_settings(request),
+                    _ => {}
+                }
+            }
+            return;
+        }
         if ctrl && k.code == KeyCode::Char('p') {
             self.palette = !self.palette;
             self.palette_query.clear();
             self.palette_index = 0;
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('r') && !self.palette {
+            self.open_history();
             return;
         }
         if self.palette {
@@ -541,7 +934,13 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(cmd) = self.palette_items().get(self.palette_index).copied() {
                         self.palette = false;
-                        if ["race", "tournament"].contains(&cmd) {
+                        if cmd == "history" {
+                            self.open_history();
+                        } else if cmd == "output" {
+                            self.open_output();
+                        } else if cmd == "copy" {
+                            self.copy_output(false);
+                        } else if ["race", "tournament"].contains(&cmd) {
                             self.editor.set(&format!("/{cmd} "));
                             self.view = View::Mission;
                         } else {
@@ -554,24 +953,155 @@ impl App {
             return;
         }
         if self.drawer.is_some() {
+            let kind = self
+                .drawer
+                .as_ref()
+                .map(|d| s(d, "type"))
+                .unwrap_or("")
+                .to_owned();
+            if kind == "models" && k.code == KeyCode::Char('p') {
+                self.request_settings(json!({"action":"list"}));
+                return;
+            }
+            if kind == "provider_settings" {
+                let selected = self.rows().get(self.selection).cloned();
+                match k.code {
+                    KeyCode::Char('n') => {
+                        self.open_drawer(
+                            json!({"type":"provider_kind_picker","kinds":self.settings["kinds"]}),
+                        );
+                        return;
+                    }
+                    KeyCode::Char('e') => {
+                        if let Some(row) = selected {
+                            self.provider_form(&row, true);
+                        }
+                        return;
+                    }
+                    KeyCode::Char('r') => {
+                        self.request_settings(json!({"action":"list"}));
+                        return;
+                    }
+                    KeyCode::Char('u') => {
+                        if let Some(row) = selected {
+                            let revision = s(&self.settings, "revision").to_owned();
+                            self.selection_form(s(&row, "profile"), s(&row, "model"), &revision);
+                        }
+                        return;
+                    }
+                    KeyCode::Char('x') => {
+                        if let Some(row) = selected {
+                            self.settings_confirm = Some(
+                                json!({"action":"delete","profile":row["profile"],"revision":self.settings["revision"],"confirmed":true}),
+                            );
+                        }
+                        return;
+                    }
+                    KeyCode::Char('l') => {
+                        if let Some(row) = selected {
+                            self.dispatch("connect", &format!("profile:{}", s(&row, "profile")));
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            if kind == "model_catalog" && k.code == KeyCode::Char('m') {
+                let d = self.drawer.clone().unwrap();
+                self.selection_form(
+                    s(&d, "profile"),
+                    s(&d, "configured_model"),
+                    s(&d, "revision"),
+                );
+                return;
+            }
+            let row_count = self.rows().len();
+            let history = self
+                .drawer
+                .as_ref()
+                .is_some_and(|d| s(d, "type") == "prompt_history");
             match k.code {
                 KeyCode::Esc => {
-                    self.drawer = None;
-                    self.selection = 0;
+                    if let Some((value, selection, scroll)) = self.drawer_stack.pop() {
+                        self.drawer = Some(value);
+                        self.selection = selection;
+                        self.drawer_scroll = scroll;
+                    } else {
+                        self.drawer = None;
+                        self.selection = 0;
+                    }
                 }
                 KeyCode::Down => {
-                    self.selection = (self.selection + 1).min(self.rows().len().saturating_sub(1));
-                    self.drawer_scroll = self.drawer_scroll.saturating_add(1);
+                    if row_count > 0 {
+                        self.selection = (self.selection + 1).min(row_count - 1);
+                    } else {
+                        self.drawer_scroll = self.drawer_scroll.saturating_add(1);
+                    }
                 }
                 KeyCode::Up => {
-                    self.selection = self.selection.saturating_sub(1);
-                    self.drawer_scroll = self.drawer_scroll.saturating_sub(1);
+                    if row_count > 0 {
+                        self.selection = self.selection.saturating_sub(1);
+                    } else {
+                        self.drawer_scroll = self.drawer_scroll.saturating_sub(1);
+                    }
+                }
+                KeyCode::PageDown if row_count > 0 => {
+                    self.selection = (self.selection + 10).min(row_count - 1)
+                }
+                KeyCode::PageUp if row_count > 0 => {
+                    self.selection = self.selection.saturating_sub(10)
                 }
                 KeyCode::PageDown => self.drawer_scroll = self.drawer_scroll.saturating_add(10),
                 KeyCode::PageUp => self.drawer_scroll = self.drawer_scroll.saturating_sub(10),
+                KeyCode::Home => {
+                    self.selection = 0;
+                    self.drawer_scroll = 0;
+                }
+                KeyCode::End if row_count > 0 => self.selection = row_count - 1,
+                KeyCode::Char(c) if history && !ctrl => {
+                    self.history_query.push(c);
+                    self.selection = 0;
+                    self.drawer_scroll = 0;
+                }
+                KeyCode::Backspace if history => {
+                    self.history_query.pop();
+                    self.selection = 0;
+                    self.drawer_scroll = 0;
+                }
                 KeyCode::Enter => {
                     if let Some(row) = self.rows().get(self.selection) {
+                        if history {
+                            if let Some(index) = row["history_index"].as_u64() {
+                                self.recall_prompt(index as usize);
+                            }
+                            self.drawer = None;
+                            self.drawer_stack.clear();
+                            self.view = View::Mission;
+                            return;
+                        }
                         let kind = s(self.drawer.as_ref().unwrap(), "type");
+                        if kind == "provider_kind_picker" {
+                            self.provider_form(row, false);
+                            return;
+                        }
+                        if kind == "models" || kind == "provider_settings" {
+                            let profile = if kind == "models" {
+                                s(row, "id")
+                            } else {
+                                s(row, "profile")
+                            };
+                            self.request_settings(json!({"action":"catalog","profile":profile}));
+                            return;
+                        }
+                        if kind == "model_catalog" {
+                            let d = self.drawer.clone().unwrap();
+                            self.selection_form(
+                                s(&d, "profile"),
+                                s(row, "model"),
+                                s(&d, "revision"),
+                            );
+                            return;
+                        }
                         let cmd = match kind {
                             "models" => "models",
                             "files" => "files",
@@ -585,9 +1115,8 @@ impl App {
                             "provider_picker" => format!("profile:{}", s(row, "profile")),
                             _ => s(row, "id").to_owned(),
                         };
-                        if ["models", "events"].contains(&kind) {
-                            self.drawer = Some(row.clone());
-                            self.drawer_scroll = 0;
+                        if ["models", "events", "output_picker"].contains(&kind) {
+                            self.open_drawer(row.clone());
                             return;
                         }
                         if !cmd.is_empty() && !query.is_empty() {
@@ -619,6 +1148,7 @@ impl App {
                 self.notice = "Requesting cancellation…".into();
             } else {
                 self.editor.set("");
+                self.leave_history();
             }
             return;
         }
@@ -651,6 +1181,35 @@ impl App {
             }
             return;
         }
+        let commands = self.slash_matches();
+        if !commands.is_empty() {
+            let selected = commands[self.command_index.min(commands.len() - 1)];
+            match k.code {
+                KeyCode::Down => {
+                    self.command_index = (self.command_index + 1).min(commands.len() - 1);
+                    return;
+                }
+                KeyCode::Up => {
+                    self.command_index = self.command_index.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.complete_command(selected);
+                    return;
+                }
+                KeyCode::Enter
+                    if k.modifiers.is_empty() && self.slash_query() != Some(selected) =>
+                {
+                    self.complete_command(selected);
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.dismiss_picker = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         let matches = self.matches();
         if !matches.is_empty() {
             match k.code {
@@ -662,7 +1221,7 @@ impl App {
                     self.picker_index = self.picker_index.saturating_sub(1);
                     return;
                 }
-                KeyCode::Tab | KeyCode::Enter => {
+                KeyCode::Tab | KeyCode::Enter if k.modifiers.is_empty() => {
                     self.editor
                         .insert_reference(&matches[self.picker_index.min(matches.len() - 1)]);
                     self.picker_index = 0;
@@ -687,20 +1246,36 @@ impl App {
             KeyCode::Char('a') if ctrl => self.editor.home(),
             KeyCode::Char('e') if ctrl => self.editor.end(),
             KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                self.leave_history();
                 self.editor.insert(&c.to_string());
                 self.dismiss_picker = false;
                 self.picker_index = 0;
+                self.command_index = 0;
             }
             KeyCode::Backspace => {
+                self.leave_history();
                 self.editor.backspace();
                 self.dismiss_picker = false;
                 self.picker_index = 0;
+                self.command_index = 0;
             }
             KeyCode::Delete => self.editor.delete(),
             KeyCode::Left => self.editor.left(),
             KeyCode::Right => self.editor.right(),
             KeyCode::Home => self.editor.home(),
             KeyCode::End => self.editor.end(),
+            KeyCode::Up
+                if self.history_index.is_some()
+                    || !self.editor.text[..self.editor.cursor].contains('\n') =>
+            {
+                self.history_step(true)
+            }
+            KeyCode::Down
+                if self.history_index.is_some()
+                    || !self.editor.text[self.editor.cursor..].contains('\n') =>
+            {
+                self.history_step(false)
+            }
             KeyCode::Up => self.editor.vertical(false),
             KeyCode::Down => self.editor.vertical(true),
             KeyCode::PageUp => {
@@ -718,7 +1293,7 @@ impl App {
         }
     }
     fn submit(&mut self) {
-        if !self.initialized || !self.connected || self.pending {
+        if !self.initialized || !self.connected || self.pending || self.settings_pending {
             self.notice = "Waiting for the runtime · draft preserved".into();
             return;
         }
@@ -728,9 +1303,21 @@ impl App {
         }
         if let Some(rest) = text.strip_prefix('/') {
             let (name, query) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
-            if name == "help" {
+            if name == "history" {
+                self.editor.set("");
+                self.open_history();
+            } else if name == "output" {
+                self.open_output();
+            } else if name == "copy" {
+                if !query.is_empty() && query.trim() != "all" {
+                    self.notice =
+                        "Use /copy for latest output or /copy all for the transcript".into();
+                    return;
+                }
+                self.copy_output(query.trim() == "all");
+            } else if name == "help" {
                 self.drawer = Some(
-                    json!({"type":"panel","title":"KEYMAP / FIELD MANUAL","lines":["F1 mission · F2 actors · F3 ledger","Enter send / steer · Ctrl+J newline · bracketed paste stays a draft","@path selects a repository reference; Enter selects before submitting","Ctrl+P command palette · /race GOAL · /tournament GOAL","/models /files /sessions /connect /auto /verify /new","Ctrl+C cancel active turn · F2 then Ctrl+X cancel selected actor","Approvals default to deny; arrows choose; Enter requests; runtime acknowledges","PageUp/PageDown scroll · Esc return to live · Ctrl+Q exit","/attach PATH imports a PNG/JPEG/GIF/WebP file; /detach ID removes it","Auto mode and model settings remain runtime-owned"]}),
+                    json!({"type":"panel","title":"KEYMAP / FIELD MANUAL","lines":["F1 mission · F2 actors · F3 ledger","Enter send / steer · Ctrl+J newline · bracketed paste stays a draft","@path selects a repository reference; Enter selects before submitting","/prefix offers commands; Tab or Enter completes a partial command without executing","Up/Down recall prompts at draft boundaries; Ctrl+R searches history","Ctrl+Y copies output or the inspected record · /output browses older output · /copy all copies the transcript","Ctrl+P command palette · /race GOAL · /tournament GOAL","/models /files /sessions /connect /auto /verify /new","Ctrl+C cancel active turn · F2 then Ctrl+X cancel selected actor","Approvals default to deny; arrows choose; Enter requests; runtime acknowledges","PageUp/PageDown scroll · Esc return to live · Ctrl+Q exit","/attach PATH imports a PNG/JPEG/GIF/WebP file; /detach ID removes it","Auto mode and model settings remain runtime-owned"]}),
                 );
             } else if name == "quit" {
                 self.quit = true;
@@ -753,9 +1340,11 @@ impl App {
                 return;
             }
         } else if self.busy {
+            self.remember_prompt(&text);
             self.outgoing.push(command("steer", &text));
             self.notice = "Steering sent to the active owner".into();
         } else {
+            self.remember_prompt(&text);
             self.outgoing
                 .push(json!({"type":"submit","prompt":text,"attachments":self.attachments}));
             self.last_submission = text;
@@ -763,9 +1352,14 @@ impl App {
             self.notice = "Submitting to the runtime…".into();
         }
         self.editor.set("");
+        self.leave_history();
         self.following = true;
     }
     fn dispatch(&mut self, name: &str, query: &str) {
+        if name == "providers" {
+            self.request_settings(json!({"action":"list"}));
+            return;
+        }
         if !self.initialized || !self.connected {
             self.notice = "Runtime not connected".into();
             return;

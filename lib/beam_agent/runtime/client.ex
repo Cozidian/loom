@@ -10,6 +10,9 @@ defmodule BeamAgent.Runtime.Client do
   def bootstrap(client), do: GenServer.call(client, :bootstrap)
   def snapshot(client), do: GenServer.call(client, :snapshot)
 
+  def configure_provider(client, settings, endpoints, removed_ids),
+    do: GenServer.call(client, {:configure_provider, settings, endpoints, removed_ids})
+
   def submit(client, prompt, attachment_ids \\ []),
     do: GenServer.call(client, {:submit, prompt, attachment_ids})
 
@@ -231,6 +234,18 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call(:approval_policy, _from, state),
     do: {:reply, {:ok, state.approval_policy}, state}
+
+  def handle_call(
+        {:configure_provider, settings, endpoints, removed_ids},
+        _from,
+        %{current: nil} = state
+      ) do
+    {:reply, BeamAgent.Goal.configure_provider(state.goal_id, settings, endpoints, removed_ids),
+     state}
+  end
+
+  def handle_call({:configure_provider, _, _, _}, _from, state),
+    do: {:reply, {:error, :goal_busy}, state}
 
   def handle_call({:set_approval_policy, policy}, _from, state) do
     case BeamAgent.set_goal_approval_policy(state.goal_id, policy) do

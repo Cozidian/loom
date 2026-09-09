@@ -8,6 +8,9 @@ use serde_json::json;
 fn key(a: &mut App, code: KeyCode) {
     a.key(KeyEvent::new(code, KeyModifiers::NONE));
 }
+fn ctrl(a: &mut App, c: char) {
+    a.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
 fn ready() -> App {
     let mut a = App::default();
     a.apply(json!({"type":"init","session_id":"root","workspace":"/tmp/project","entries":[],"approval_mode":"ask"}));
@@ -21,6 +24,127 @@ fn render(a: &mut App, w: u16, h: u16) -> String {
         .map(|y| (0..w).map(|x| b[(x, y)].symbol()).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn settings(a: &mut App) {
+    a.apply(json!({"type":"provider_settings","revision":"rev1","model_strategy":"auto",
+        "providers":[{"profile":"cloud","provider":"openai","model":"old-model","api_key_env":"OPENAI_API_KEY","auth_mode":"environment"}],
+        "kinds":[{"provider":"echo","model":null}]}));
+}
+
+#[test]
+fn model_selection_uses_catalogue_and_explicit_save_without_submitting() {
+    let mut a = ready();
+    a.editor.set("unfinished draft");
+    a.apply(json!({"type":"models","endpoints":[{"id":"cloud","model":"old-model"}]}));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        json!({"type":"provider_settings","action":"catalog","profile":"cloud"})
+    );
+    a.apply(json!({"type":"model_catalog","profile":"cloud","revision":"rev1","models":[{"model":"new-model","displayName":"New model"}]}));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.outgoing.is_empty());
+    let form = a.settings_form.as_ref().unwrap();
+    assert_eq!(form.fields[0].1.text, "new-model");
+    assert_eq!(form.fields[1].1.text, "manual");
+    key(&mut a, KeyCode::Enter);
+    assert!(a.outgoing.is_empty());
+    ctrl(&mut a, 's');
+    let packet = a.outgoing.pop().unwrap();
+    assert_eq!(packet["action"], "select");
+    assert_eq!(packet["model"], "new-model");
+    assert_eq!(packet["strategy"], "manual");
+    assert_eq!(packet["revision"], "rev1");
+    assert!(a.settings_pending);
+    ctrl(&mut a, 's');
+    assert!(a.outgoing.is_empty());
+    assert_eq!(a.model, "");
+    a.apply(json!({"type":"settings_applied","profile":"cloud","model":"new-model","model_strategy":"manual"}));
+    assert_eq!(a.model, "new-model");
+    assert_eq!(a.session, "root");
+    assert_eq!(a.editor.text, "unfinished draft");
+    assert!(a.settings_form.is_none());
+}
+
+#[test]
+fn provider_forms_add_edit_cancel_and_confirm_deletion() {
+    let mut a = ready();
+    settings(&mut a);
+    key(&mut a, KeyCode::Char('n'));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.settings_form.is_some());
+    for c in "local".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    ctrl(&mut a, 's');
+    let packet = a.outgoing.pop().unwrap();
+    assert_eq!(packet["profile"], "local");
+    assert_eq!(packet["fields"]["provider"], "echo");
+    assert_eq!(packet["fields"]["auth_mode"], "environment");
+    assert_eq!(packet["editing"], false);
+    a.apply(json!({"type":"settings_failed","message":"Profile already exists"}));
+    assert!(!a.settings_pending);
+    assert!(a.settings_form.is_some());
+    assert!(render(&mut a, 100, 30).contains("Profile already exists"));
+    key(&mut a, KeyCode::Esc);
+    settings(&mut a);
+    key(&mut a, KeyCode::Char('e'));
+    assert_eq!(a.settings_form.as_ref().unwrap().fields[0].0, "model");
+    ctrl(&mut a, 'u');
+    for c in "edited-model".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    ctrl(&mut a, 's');
+    let packet = a.outgoing.pop().unwrap();
+    assert_eq!(packet["editing"], true);
+    assert_eq!(packet["fields"]["model"], "edited-model");
+    assert!(packet["fields"].get("api_key").is_none());
+    a.apply(json!({"type":"settings_applied","profile":"cloud","model":"edited-model","model_strategy":"auto"}));
+    settings(&mut a);
+    key(&mut a, KeyCode::Char('x'));
+    assert!(a.settings_confirm.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(a.outgoing.is_empty());
+    key(&mut a, KeyCode::Char('x'));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.outgoing.pop().unwrap()["action"], "delete");
+}
+
+#[test]
+fn manual_model_form_can_set_auto_and_survives_disconnect_and_small_terminals() {
+    let mut a = ready();
+    a.apply(json!({"type":"model_catalog","profile":"cloud","revision":"rev1","models":[],"configured_model":"old-model","discovery":"manual"}));
+    key(&mut a, KeyCode::Char('m'));
+    for (w, h) in [(160, 45), (80, 24), (40, 12), (20, 6)] {
+        render(&mut a, w, h);
+    }
+    key(&mut a, KeyCode::Tab);
+    ctrl(&mut a, 'u');
+    for c in "auto".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    ctrl(&mut a, 's');
+    assert_eq!(a.outgoing.pop().unwrap()["strategy"], "auto");
+    a.disconnected("test".into());
+    assert!(!a.settings_pending);
+    key(&mut a, KeyCode::Esc);
+    assert!(a.settings_form.is_none());
+}
+
+#[test]
+fn providers_command_and_models_shortcut_request_runtime_settings() {
+    let mut a = ready();
+    a.editor.set("/providers");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        json!({"type":"provider_settings","action":"list"})
+    );
+    settings(&mut a);
+    a.apply(json!({"type":"models","endpoints":[]}));
+    key(&mut a, KeyCode::Char('p'));
+    assert_eq!(a.outgoing.pop().unwrap()["action"], "list");
 }
 
 #[test]
@@ -217,4 +341,146 @@ fn another_workers_approval_ack_does_not_unlock_the_pending_decision() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.outgoing.len(), 1);
     assert_eq!(a.resolving.as_deref(), Some("a"));
+}
+
+#[test]
+fn menu_help_stays_pinned_and_selection_only_scrolls_at_the_edge() {
+    for (kind, field) in [
+        ("events", "events"),
+        ("models", "endpoints"),
+        ("files", "changed"),
+        ("sessions", "sessions"),
+        ("provider_picker", "providers"),
+    ] {
+        let mut a = ready();
+        let rows: Vec<_> = (0..40).map(|i| json!({"type":format!("row{i:02}"),"id":format!("row{i:02}"),"path":format!("row{i:02}"),"session_id":format!("row{i:02}"),"profile":format!("row{i:02}")})).collect();
+        a.apply(json!({"type":kind,field:rows}));
+        let before = render(&mut a, 100, 24);
+        let help_row = before.lines().position(|l| l.contains("Esc back")).unwrap();
+        key(&mut a, KeyCode::Down);
+        let after = render(&mut a, 100, 24);
+        assert_eq!(a.selection, 1);
+        assert_eq!(a.drawer_scroll, 0);
+        assert_eq!(after.lines().nth(help_row), before.lines().nth(help_row));
+        assert!(after.contains("row00"));
+        key(&mut a, KeyCode::End);
+        let end = render(&mut a, 100, 24);
+        assert!(end.contains("row39"));
+        assert_eq!(end.lines().nth(help_row), before.lines().nth(help_row));
+        key(&mut a, KeyCode::Down);
+        assert_eq!(end, render(&mut a, 100, 24));
+        key(&mut a, KeyCode::Home);
+        render(&mut a, 100, 24);
+        assert_eq!(a.drawer_scroll, 0);
+    }
+}
+
+#[test]
+fn detail_scroll_is_bounded_and_escape_returns_to_selected_event() {
+    let mut a = ready();
+    a.apply(json!({"type":"events","events":[{"type":"first"},{"type":"second","data":"a"}]}));
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    for _ in 0..100 {
+        key(&mut a, KeyCode::PageDown);
+    }
+    assert!(render(&mut a, 100, 24).contains("second"));
+    assert_eq!(a.drawer_scroll, 0);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.selection, 1);
+    assert_eq!(a.drawer.as_ref().unwrap()["type"], "events");
+}
+
+#[test]
+fn prompt_history_loads_runtime_prompts_preserves_draft_and_never_sends_on_recall() {
+    let mut a = ready();
+    a.apply(json!({"type":"init","entries":[{"kind":"user","content":"old 👩‍💻"},{"kind":"assistant","content":"not a prompt"},{"kind":"user","content":"recent\nmultiline"}]}));
+    a.editor.set("unfinished");
+    a.editor.cursor = 3;
+    key(&mut a, KeyCode::Up);
+    assert_eq!(a.editor.text, "recent\nmultiline");
+    key(&mut a, KeyCode::Up);
+    assert_eq!(a.editor.text, "old 👩‍💻");
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    assert_eq!(a.editor.text, "unfinished");
+    assert_eq!(a.editor.cursor, 3);
+    assert!(a.outgoing.is_empty());
+    ctrl(&mut a, 'r');
+    key(&mut a, KeyCode::Char('o'));
+    key(&mut a, KeyCode::Char('l'));
+    key(&mut a, KeyCode::Char('d'));
+    assert_eq!(a.rows().len(), 1);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.editor.text, "old 👩‍💻");
+    assert!(a.outgoing.is_empty());
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.outgoing[0]["prompt"], "old 👩‍💻");
+}
+
+#[test]
+fn failed_prompts_are_recallable_and_multiline_arrows_still_edit() {
+    let mut a = ready();
+    a.editor.set("retry me");
+    key(&mut a, KeyCode::Enter);
+    a.apply(json!({"type":"turn_finished","ok":false,"error":"model rejected"}));
+    a.outgoing.clear();
+    key(&mut a, KeyCode::Up);
+    assert_eq!(a.editor.text, "retry me");
+    assert!(a.outgoing.is_empty());
+    a.leave_history();
+    a.editor.set("first\nsecond");
+    key(&mut a, KeyCode::Up);
+    assert_eq!(a.editor.text, "first\nsecond");
+    assert_eq!(a.editor.cursor, 5);
+    assert!(a.history_index.is_none());
+}
+
+#[test]
+fn slash_completion_supports_prefixes_and_selection_without_execution() {
+    let mut a = ready();
+    a.editor.set("/a");
+    assert_eq!(a.slash_matches(), vec!["auto", "attach"]);
+    assert!(render(&mut a, 100, 24).contains("/auto"));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.editor.text, "/auto ");
+    assert!(a.outgoing.is_empty());
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.outgoing[0],
+        json!({"type":"command","command":"auto","query":""})
+    );
+    assert_eq!(a.approval_mode, "ask");
+    a.editor.set("/a existing args");
+    a.editor.cursor = 2;
+    a.dismiss_picker = false;
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Tab);
+    assert_eq!(a.editor.text, "/attach existing args");
+    a.editor.set("/doesnotexist");
+    a.dismiss_picker = false;
+    assert!(a.slash_matches().is_empty());
+    key(&mut a, KeyCode::Tab);
+    assert_eq!(a.editor.text, "/doesnotexist");
+}
+
+#[test]
+fn copying_is_explicit_full_text_and_local_only() {
+    let mut a = ready();
+    a.apply(json!({"type":"stream","event":{"type":"text_delta","response_id":"r","delta":"Result 👩‍💻\nwith code"}}));
+    assert!(a.clipboard.is_none());
+    ctrl(&mut a, 'y');
+    assert_eq!(a.clipboard.take().unwrap(), "Result 👩‍💻\nwith code");
+    assert!(a.outgoing.is_empty());
+    a.editor.set("/output");
+    key(&mut a, KeyCode::Enter);
+    key(&mut a, KeyCode::Enter);
+    ctrl(&mut a, 'y');
+    assert_eq!(a.clipboard.take().unwrap(), "Result 👩‍💻\nwith code");
+    assert!(a.outgoing.is_empty());
+    a.apply(json!({"type":"approval_requested","approval":{"approval_id":"a","arguments":{"command":"inspect me"}}}));
+    ctrl(&mut a, 'y');
+    assert!(a.clipboard.take().unwrap().contains("inspect me"));
+    assert!(a.outgoing.is_empty());
+    assert!(a.resolving.is_none());
 }

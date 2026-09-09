@@ -52,6 +52,11 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  def configure_provider(session_id, settings) do
+    with {:ok, pid} <- Names.pid(:agent, session_id),
+         do: GenServer.call(pid, {:configure_provider, settings})
+  end
+
   def spec(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :agent_spec)
@@ -126,6 +131,8 @@ defmodule BeamAgent.Agent do
         current_turn: nil
       }
 
+      state = BeamAgent.ProviderSettings.restore(state, existing)
+
       if state.parent_session_id == nil and
            not Enum.any?(existing, fn event ->
              event["type"] == "agent_constructed" and
@@ -150,8 +157,8 @@ defmodule BeamAgent.Agent do
         EventLog.append(session_id, :agent_started, %{
           "pid" => inspect(self()),
           "recovered" => Enum.any?(existing, &(&1["type"] == "agent_started")),
-          "provider" => to_string(provider),
-          "provider_profile" => Keyword.get(opts, :provider_profile),
+          "provider" => to_string(state.provider),
+          "provider_profile" => state.provider_profile,
           "model" => state.provider_options[:model],
           "project_id" => state.project_id,
           "goal_id" => state.goal_id
@@ -189,6 +196,23 @@ defmodule BeamAgent.Agent do
     do: {:reply, {:error, :invalid_message}, state}
 
   def handle_call(:status, _from, state), do: {:reply, {:ok, state.status}, state}
+
+  def handle_call(
+        {:configure_provider, settings},
+        _from,
+        %{current_turn: nil, parent_session_id: nil} = state
+      ) do
+    with {:ok, settings} <- BeamAgent.ProviderSettings.normalize(settings),
+         {:ok, _} <- EventLog.append(state.session_id, :provider_settings_changed, settings) do
+      _ = BeamAgent.Goal.ModelLease.release(state.goal_id, "worker:" <> state.session_id)
+      {:reply, :ok, BeamAgent.ProviderSettings.apply_to_state(state, settings)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:configure_provider, _settings}, _from, state),
+    do: {:reply, {:error, :agent_busy_or_delegated}, state}
 
   def handle_call(:runtime_identity, _from, state) do
     identity =

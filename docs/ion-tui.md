@@ -62,12 +62,41 @@ decision. Up/Down scroll long arguments without changing the decision. Esc
 selects deny but does not submit it. `/auto` uses the existing
 runtime policy toggle; the header reflects the acknowledged policy.
 
+**Recall and copy.** Up recalls previous prompts at the first draft line; Down
+advances through recalled prompts and restores your original draft and cursor.
+Inside a multiline draft, the arrows still move between lines. Ctrl+R opens a
+searchable history drawer; Enter recalls a prompt for editing, never submits it.
+History includes up to 200 prompts from runtime replay and this client session,
+including failed submissions. It does not create a separate on-disk history file.
+
+Ctrl+Y copies the latest output in Mission, the selected actor/event, or the
+record in an open dossier. `/output` browses earlier output (including errors);
+Enter inspects it and Ctrl+Y copies its full text. `/copy all` copies the retained
+transcript. Copying is explicit and never executes a runtime action. Native
+clipboard helpers are used on macOS (`pbcopy`) and on Linux when `wl-copy` or
+`xclip` is available. SSH/other terminals use OSC52; terminal clipboard permission
+is required. The status says when a request was sent rather than claiming it was
+acknowledged. Set `BEAM_AGENT_ION_CLIPBOARD=osc52` to force that transport. Native
+copies are limited to 1 MiB and terminal copies to 100 KB.
+
+Typing `/a` offers `/auto` and `/attach`. Tab completes the selected command;
+Enter completes a partial command without executing it. Enter on a complete
+command executes it. Arguments and pasted multiline text are preserved. Esc
+dismisses completion. Dossier help stays pinned; arrow keys move the selection
+without scrolling until it reaches the viewport edge. Esc from a locally opened
+record returns to its previous list and selection.
+
 ## Controls
 
 | Key or command | Action |
 | --- | --- |
 | F1 / F2 / F3 | Mission / Actors / Ledger; close an open dossier with Esc first |
 | Ctrl+P | Search command deck |
+| `/prefix`, Tab | Complete slash commands (Up/Down select suggestions) |
+| Up/Down at draft boundaries | Recall prompts and restore the original draft |
+| Ctrl+R, `/history` | Search prompt history; Enter recalls without submitting |
+| Ctrl+Y, `/copy` | Copy latest output or selected/open record |
+| `/output`, `/copy all` | Browse earlier output / copy the retained transcript |
 | Enter in Mission | Submit when idle; steer while running |
 | Ctrl+J | Insert newline (Alt/Shift+Enter also work when the terminal distinguishes them) |
 | Bracketed paste | Insert multiline draft without submitting it |
@@ -77,16 +106,39 @@ runtime policy toggle; the header reflects the acknowledged policy.
 | Esc | Close overlay, leave actor/ledger view, or resume following live output |
 | Ctrl+C | Request active-turn cancellation, or clear an idle draft |
 | Ctrl+Q | Exit from any surface, including a pending approval |
-| `/models`, `/connect` | Inspect runtime endpoints; choose a saved provider profile |
+| `/models` | Enter on an endpoint opens model selection; `p` opens provider management |
+| `/providers` | Add, edit, use, log in to, or remove saved provider profiles |
+| `/connect` | Existing authentication flow (can start a new session) |
 | `/sessions`, `/resume ID`, `/new` | Inspect, resume, or create a session; `r` resumes an open session dossier |
 | `/attach PATH`, `/detach ID` | Import an image file (up to 10 MiB), or remove a draft attachment |
 | `/verify`, `/budget`, `/status` | Existing runtime verification and operational views |
 | `/help` | In-app field manual |
 
-Model inspection does not silently change model selection. Profiles are selected
-through the existing `connect` action; the runtime remains responsible for
-automatic routing. All other operational commands in the command deck likewise
-delegate to the existing API.
+### Providers and models
+
+`/models` → Enter on a saved endpoint → Enter on a model → **Ctrl+S** saves
+and applies the choice. The form defaults to `manual` routing: the chosen model
+is pinned. Change the strategy field to `auto` or `local_only` to let the runtime
+route work again. The header shows the active routing mode.
+
+ChatGPT/Codex and Ollama offer live catalogues. For other adapters, press `m` in
+the catalogue to enter an exact model ID; model access is checked on invocation.
+Runtime-only endpoints without a saved profile cannot be edited here.
+
+In `/providers`: `n` adds a profile (choose a provider type first), `e` edits,
+`u` selects its configured model, `l` starts the existing login flow, `r` reloads,
+and `x` opens removal confirmation. Enter browses its models. Forms use Tab/Up/Down
+to select fields, Ctrl+U to clear, Ctrl+S to save, and Esc to cancel. API-key fields
+accept **environment variable names**, never raw keys. Existing saved credentials
+can be retained; changing the endpoint clears their reference. Removing a profile
+does not delete its keychain credentials or session history.
+
+Selecting a model or editing the active profile preserves the current session
+and conversation and applies to subsequent turns. These mutations require idle
+work and are persisted by Elixir, not the frontend. Saved endpoints are shared
+within the project; unrelated dynamically registered endpoints are preserved.
+Stale forms are rejected—cancel, reload, and retry. Active/default profiles cannot
+be removed. Adding a profile does not activate it automatically.
 
 ## Startup and protocol
 
@@ -99,7 +151,11 @@ CLI launches its frontend. First-frame timing is not end-to-end launch timing.
 The transport is identical to `cmd/beam_agent_tui/main.go` and
 `BeamAgent.CLI.TUI`: fd 3 receives and fd 4 sends four-byte big-endian length
 prefixed UTF-8 JSON packets, with a 16 MiB maximum frame. stdin/stdout belong only
-to the terminal. No backend API changes or provider calls are introduced.
+to the terminal. Provider management adds `provider_settings` actions and
+`provider_settings`, `model_catalog`, `settings_applied`, and `settings_failed`
+notifications to the same bridge. Existing Go-client messages are unchanged.
+Discovery is read-only and runs off the controller; no model inference is used
+to populate a catalogue. Settings saves are acknowledged by the runtime.
 
 Separate reader/writer threads and bounded queues keep bridge I/O off the render
 thread. Invalid frames and EOF produce an offline state; unsent submissions and
@@ -120,7 +176,10 @@ The PTY test runs the real binary with a protocol fixture. It checks first paint
 before init, early drafting, submit/stream/steer packets, approval acknowledgement,
 paste safety, reference selection, exit and restoration of terminal modes.
 Rust tests cover protocol corruption, Unicode editing, replay filtering,
-backpressure recovery, approval reconciliation and responsive views/overlays.
+backpressure recovery, approval reconciliation, pinned menus, clipboard payloads,
+prompt recall, slash completion, provider forms and responsive views/overlays. The PTY test also
+checks history, command completion and OSC52 output without overwriting the
+tester's actual clipboard.
 
 To exercise the **actual Elixir bridge**, run in a terminal:
 
@@ -131,6 +190,21 @@ BEAM_AGENT_TUI_BIN=./beam_agent_ion mix run cmd/beam_agent_ion/tests/runtime_smo
 Submit any prompt: the deterministic Echo provider responds without credentials
 or model charges. Try `/models`, then Ctrl+Q. The fixture uses its own temporary
 workspace and durable state and removes them after normal exit.
+
+## ChatGPT model availability
+
+A saved API model name is not proof of access through a ChatGPT login. Before
+opening a new native thread, the backend now validates the exact configured
+model against the installed Codex App Server's paginated `model/list` catalogue.
+This follows [OpenAI's model discovery guidance](https://learn.chatgpt.com/docs/app-server#list-models-modellist).
+Existing threads are reused without repeating the check on every tool response.
+Unavailable-model errors list the catalogue and explain `--model MODEL`; nested
+provider JSON errors are unwrapped into readable messages in both TUIs.
+
+If a saved model is rejected, select an available model explicitly using
+`BEAM_AGENT_TUI_BIN="$PWD/beam_agent_ion" ./beam_agent --model MODEL`, or update
+the saved provider profile through `/models` or `/providers`. No model or account
+configuration is silently changed.
 
 ## Current boundaries
 

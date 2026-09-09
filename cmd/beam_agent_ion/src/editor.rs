@@ -1,6 +1,6 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Editor {
     pub text: String,
     pub cursor: usize,

@@ -28,6 +28,9 @@ defmodule BeamAgent.Goal do
   def status(goal_id), do: call(goal_id, :status)
   def cancel(goal_id), do: call(goal_id, :cancel)
 
+  def configure_provider(goal_id, settings, endpoints, removed_ids),
+    do: call(goal_id, {:configure_provider, settings, endpoints, removed_ids})
+
   def submit(goal_id, prompt, attachment_ids \\ [], timeout \\ :infinity)
       when is_binary(prompt) and is_list(attachment_ids),
       do: call(goal_id, {:submit, prompt, attachment_ids}, timeout)
@@ -56,6 +59,23 @@ defmodule BeamAgent.Goal do
   @impl true
   def handle_call(:snapshot, _from, state), do: {:reply, {:ok, state}, state}
   def handle_call(:status, _from, state), do: {:reply, {:ok, goal_status(state)}, state}
+
+  def handle_call(
+        {:configure_provider, settings, endpoints, removed_ids},
+        _from,
+        %{current_work: nil} = state
+      ) do
+    with :ok <- validate_endpoints(endpoints),
+         :ok <- Agent.configure_provider(state.session_id, settings),
+         :ok <- BeamAgent.ModelRegistry.reconcile(state.project_id, endpoints, removed_ids) do
+      {:reply, :ok, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:configure_provider, _, _, _}, _from, state),
+    do: {:reply, {:error, :goal_busy}, state}
 
   def handle_call({:submit, prompt, attachment_ids}, from, %{current_work: nil} = state) do
     objective = if String.trim(prompt) == "", do: "Process the attached user input", else: prompt
@@ -613,6 +633,17 @@ defmodule BeamAgent.Goal do
       _other -> 0
     end
   end
+
+  defp validate_endpoints(endpoints) when is_list(endpoints) do
+    Enum.reduce_while(endpoints, :ok, fn spec, :ok ->
+      case BeamAgent.ModelEndpoint.new(spec) do
+        {:ok, _} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_endpoints(_), do: {:error, :invalid_model_endpoints}
 
   defp goal_status(state) do
     %{

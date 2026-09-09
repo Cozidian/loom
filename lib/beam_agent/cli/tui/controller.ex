@@ -23,6 +23,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
     do: GenServer.cast(controller, {:decide, approval_id, decision})
 
   def command(controller, command), do: GenServer.cast(controller, {:command, command})
+  def settings(controller, request), do: GenServer.cast(controller, {:settings, request})
 
   @impl true
   def init(opts) do
@@ -46,6 +47,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       compacting?: false,
       auth_session: nil,
       auth_target_profile: nil,
+      settings_task: nil,
       work_projection_timer: nil
     }
 
@@ -89,7 +91,10 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   @impl true
-  def handle_cast({:submit, prompt, attachment_ids}, %{current: nil, verification: nil} = state)
+  def handle_cast(
+        {:submit, prompt, attachment_ids},
+        %{current: nil, verification: nil, settings_task: nil} = state
+      )
       when is_binary(prompt) and is_list(attachment_ids) do
     case Runtime.submit(state.runtime, prompt, attachment_ids) do
       :ok ->
@@ -159,7 +164,112 @@ defmodule BeamAgent.CLI.TUI.Controller do
     {:noreply, run_command(command, state)}
   end
 
+  def handle_cast({:settings, _request}, %{settings_task: task} = state) when not is_nil(task) do
+    notify(state, {:settings_failed, "A settings request is already running"})
+    {:noreply, state}
+  end
+
+  def handle_cast({:settings, request}, state) when is_map(request) do
+    if request["action"] in ["list", "catalog"] or
+         (state.current == nil and state.verification == nil and not state.compacting? and
+            state.auth_session == nil) do
+      owner = self()
+      ref = make_ref()
+
+      {:ok, pid} =
+        Task.start(fn ->
+          result =
+            case request["action"] do
+              "list" -> BeamAgent.CLI.ProviderManager.snapshot(state)
+              "catalog" -> BeamAgent.CLI.ProviderManager.catalog(state, request["profile"])
+              _ -> BeamAgent.CLI.ProviderManager.prepare(state, request)
+            end
+
+          send(owner, {:settings_result, ref, result})
+        end)
+
+      timer = Process.send_after(self(), {:settings_timeout, ref}, 20_000)
+
+      {:noreply,
+       %{
+         state
+         | settings_task: %{
+             pid: pid,
+             monitor: Process.monitor(pid),
+             ref: ref,
+             timer: timer,
+             action: request["action"]
+           }
+       }}
+    else
+      notify(
+        state,
+        {:settings_failed,
+         "Finish or cancel active work/login before changing providers or models"}
+      )
+
+      {:noreply, state}
+    end
+  end
+
   @impl true
+  def handle_info({:settings_result, ref, result}, %{settings_task: %{ref: ref} = task} = state) do
+    Process.cancel_timer(task.timer)
+    Process.demonitor(task.monitor, [:flush])
+    state = %{state | settings_task: nil}
+
+    case {task.action, result} do
+      {"list", {:ok, payload}} ->
+        notify(state, {:provider_settings, payload})
+        {:noreply, state}
+
+      {"catalog", {:ok, payload}} ->
+        notify(state, {:model_catalog, payload})
+        {:noreply, state}
+
+      {_, {:ok, prepared}} ->
+        case BeamAgent.CLI.ProviderManager.commit(state, prepared) do
+          {:ok, config} ->
+            state = %{state | config: config}
+            notify(state, {:settings_applied, Map.take(config, ~w(profile model model_strategy))})
+
+            case BeamAgent.CLI.ProviderManager.snapshot(state) do
+              {:ok, payload} -> notify(state, {:provider_settings, payload})
+              {:error, reason} -> notify(state, {:settings_failed, format_error(reason)})
+            end
+
+            {:noreply, state}
+
+          {:error, reason} ->
+            notify(state, {:settings_failed, format_error(reason)})
+            {:noreply, state}
+        end
+
+      {_, {:error, reason}} ->
+        notify(state, {:settings_failed, format_error(reason)})
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:settings_timeout, ref}, %{settings_task: %{ref: ref} = task} = state) do
+    Process.exit(task.pid, :kill)
+    Process.demonitor(task.monitor, [:flush])
+    notify(state, {:settings_failed, "Provider discovery timed out; settings were not changed"})
+    {:noreply, %{state | settings_task: nil}}
+  end
+
+  def handle_info({:settings_result, _, _}, state), do: {:noreply, state}
+  def handle_info({:settings_timeout, _}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:DOWN, monitor, :process, _, reason},
+        %{settings_task: %{monitor: monitor} = task} = state
+      ) do
+    Process.cancel_timer(task.timer)
+    notify(state, {:settings_failed, "Settings request failed: #{inspect(reason, limit: 3)}"})
+    {:noreply, %{state | settings_task: nil}}
+  end
+
   def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
     notify(state, {:stream, event})
     state = schedule_work_projection(state, event)
@@ -387,6 +497,11 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   @impl true
   def terminate(_reason, state) do
+    if state.settings_task do
+      Process.cancel_timer(state.settings_task.timer)
+      Process.exit(state.settings_task.pid, :kill)
+    end
+
     if state.runtime_monitor, do: Process.demonitor(state.runtime_monitor, [:flush])
     if state.runtime, do: Runtime.disconnect(state.runtime)
 
@@ -394,6 +509,16 @@ defmodule BeamAgent.CLI.TUI.Controller do
       do: BeamAgent.Auth.cancel(state.auth_session)
 
     :ok
+  end
+
+  defp run_command(_command, %{settings_task: task} = state) when not is_nil(task) do
+    notify(state, {:notice, :warning, "Wait for the settings request to finish"})
+    state
+  end
+
+  defp run_command(:providers, state) do
+    settings(self(), %{"action" => "list"})
+    state
   end
 
   defp run_command(:reload, state) do
@@ -1290,7 +1415,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
   defp auto_fallback(policy, _config), do: policy
 
-  defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
+  defp format_error(reason), do: BeamAgent.CLI.ErrorFormatter.format(reason)
 
   defp soft_fetch(fun) do
     case fun.() do

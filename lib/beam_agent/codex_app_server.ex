@@ -49,6 +49,19 @@ defmodule BeamAgent.CodexAppServer do
     end)
   end
 
+  @doc false
+  def validate_model(model, models) do
+    available =
+      Enum.flat_map(models, fn
+        %{"model" => name} when is_binary(name) -> [name]
+        _other -> []
+      end)
+
+    if model in available,
+      do: :ok,
+      else: {:error, {:chatgpt_model_unavailable, model, available}}
+  end
+
   defp list_models(client, client_module, cursor, models, seen) do
     params = %{"limit" => 100, "includeHidden" => true}
     params = if cursor, do: Map.put(params, "cursor", cursor), else: params
@@ -274,6 +287,8 @@ defmodule BeamAgent.CodexAppServer do
 
   defp start_thread(client, client_module, tools, options) do
     with {:ok, model} <- BeamAgent.Providers.Support.require_option(options, :model),
+         {:ok, models} <- list_models(client, client_module, nil, [], MapSet.new()),
+         :ok <- validate_model(model, models),
          {:ok, result} <-
            client_module.request(client, "thread/start", %{
              "model" => model,
