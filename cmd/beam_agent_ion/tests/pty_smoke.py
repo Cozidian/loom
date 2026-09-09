@@ -93,6 +93,18 @@ def run(binary):
         type_text("\r")
         assert action() == {"type": "submit", "prompt": "early draft", "attachments": []}
         send({"type": "turn_started", "prompt": "early draft"})
+        send({"type": "stream", "event": {"type": "runtime_event", "durability": "durable", "goal_seq": 1,
+              "scope": {"session_id": "smoke-root", "root?": True},
+              "payload": {"type": "tool_called", "data": {"tool_call_id": "read-1", "name": "read_file", "arguments": {"path": "ACTIVITY_FIXTURE.ex"}}}}})
+        wait_screen("ACTIVITY_FIXTURE.ex")
+        send({"type": "stream", "event": {"type": "runtime_event", "durability": "durable", "goal_seq": 2,
+              "scope": {"session_id": "smoke-root", "root?": True},
+              "payload": {"type": "tool_result", "data": {"tool_call_id": "read-1", "name": "read_file", "content": "TOOL_DETAIL_FIXTURE", "is_error": False}}}})
+        type_text("\x14")
+        wait_screen("TOOL_DETAIL_FIXTURE")
+        type_text("\x14")
+        send({"type": "stream", "event": {"type": "reasoning_summary_delta", "response_id": "r", "item_id": "summary-1", "summary_index": 0, "delta": "PUBLIC_SUMMARY_FIXTURE"}})
+        wait_screen("PUBLIC_SUMMARY_FIXTURE")
         send({"type": "stream", "event": {"type": "text_delta", "response_id": "r", "delta": "ORBITAL_RESULT"}})
         wait_screen("ORBITAL_RESULT")
         type_text("keep it small\r")
@@ -150,6 +162,7 @@ def run(binary):
         packet = action()
         assert packet["action"] == "select" and packet["model"] == "new-model"
         assert packet["strategy"] == "manual" and packet["revision"] == "r1"
+        assert packet["team_mode"] == "solo"
         send({"type": "settings_applied", "profile": "echo", "model": "new-model", "model_strategy": "manual"})
         time.sleep(0.15)
         type_text("\x1b")

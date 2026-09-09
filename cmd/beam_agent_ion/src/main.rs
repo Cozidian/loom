@@ -104,7 +104,12 @@ fn main() -> io::Result<()> {
         let mut exit_started = None;
         let mut dirty = true;
         let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
+        let mut activity_tick = Instant::now();
         loop {
+            if a.busy && activity_tick.elapsed() >= Duration::from_secs(1) {
+                dirty = true;
+                activity_tick = Instant::now();
+            }
             if dirty {
                 terminal.draw(|f| ui::draw(f, &mut a))?;
                 dirty = false;

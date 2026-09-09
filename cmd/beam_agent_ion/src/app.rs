@@ -2,6 +2,7 @@ use crate::editor::{Editor, clean};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::time::Instant;
 
 pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
@@ -83,6 +84,12 @@ pub struct App {
     pub settings_confirm: Option<Value>,
     pub settings_pending: bool,
     pub model_strategy: String,
+    pub team_mode: String,
+    pub activity: String,
+    pub last_activity: Option<Instant>,
+    pub tool_count: usize,
+    pub expand_tools: bool,
+    pub active_tools: Vec<(String, Instant)>,
     pub entries: VecDeque<Entry>,
     pub events: VecDeque<Value>,
     pub workers: Vec<Value>,
@@ -139,6 +146,12 @@ impl Default for App {
             settings_confirm: None,
             settings_pending: false,
             model_strategy: "manual".into(),
+            team_mode: "solo".into(),
+            activity: String::new(),
+            last_activity: None,
+            tool_count: 0,
+            expand_tools: false,
+            active_tools: vec![],
             entries: VecDeque::new(),
             events: VecDeque::new(),
             workers: vec![],
@@ -231,6 +244,11 @@ impl App {
                 self.approval_mode = s(&p, "approval_mode").into();
                 self.cursor = p["cursor"].as_u64().unwrap_or(0);
                 self.entries.clear();
+                self.team_mode = p["team_mode"].as_str().unwrap_or("solo").into();
+                self.active_tools.clear();
+                self.tool_count = 0;
+                self.activity.clear();
+                self.last_activity = None;
                 for e in array(&p, "entries") {
                     self.entry(
                         s(&e, "kind"),
@@ -240,6 +258,17 @@ impl App {
                             s(&e, "content")
                         },
                     );
+                    if s(&e, "kind") == "tool"
+                        && let Some(last) = self.entries.back_mut()
+                    {
+                        last.response = s(&e, "id").into();
+                        last.text = format!(
+                            "{} · {}\n{}",
+                            s(&e, "status"),
+                            s(&e, "name"),
+                            s(&e, "content")
+                        );
+                    }
                 }
                 self.workers = array(&p, "work_blocks");
                 self.progress = p["progress"].clone();
@@ -258,6 +287,9 @@ impl App {
             }
             "turn_started" => {
                 self.busy = true;
+                self.active_tools.clear();
+                self.tool_count = 0;
+                self.signal("Preparing work");
                 self.pending = false;
                 self.attachments.clear();
                 let prompt = s(&p, "prompt");
@@ -272,6 +304,8 @@ impl App {
             }
             "turn_finished" => {
                 self.busy = false;
+                self.active_tools.clear();
+                self.signal("Turn finished");
                 self.pending = false;
                 for e in &mut self.entries {
                     e.streaming = false;
@@ -364,6 +398,11 @@ impl App {
                 .attachments
                 .retain(|a| s(a, "id") != s(&p, "attachment_id")),
             "session_changed" => {
+                self.active_tools.clear();
+                self.activity.clear();
+                self.last_activity = None;
+                self.tool_count = 0;
+                self.team_mode = p["team_mode"].as_str().unwrap_or("solo").into();
                 self.leave_history();
                 self.drawer_stack.clear();
                 self.session = s(&p, "session_id").into();
@@ -391,6 +430,9 @@ impl App {
                 self.selection = 0;
             }
             "provider_settings" => {
+                if let Some(mode) = p["team_mode"].as_str() {
+                    self.team_mode = mode.into();
+                }
                 self.settings_pending = false;
                 if self.notice.starts_with("Checking provider settings") {
                     self.notice = "Providers ready · n new · e edit · u use · Enter models".into();
@@ -408,6 +450,9 @@ impl App {
                 self.open_drawer(p);
             }
             "settings_applied" => {
+                if let Some(mode) = p["team_mode"].as_str() {
+                    self.team_mode = mode.into();
+                }
                 self.settings_pending = false;
                 self.settings_form = None;
                 self.settings_confirm = None;
@@ -415,8 +460,8 @@ impl App {
                 self.model = s(&p, "model").into();
                 self.model_strategy = s(&p, "model_strategy").into();
                 self.notice = format!(
-                    "Saved · {} / {} · {} routing · conversation preserved",
-                    self.profile, self.model, self.model_strategy
+                    "Saved · {} / {} · {} routing · {} team · conversation preserved",
+                    self.profile, self.model, self.model_strategy, self.team_mode
                 );
             }
             "settings_failed" => {
@@ -445,7 +490,9 @@ impl App {
                     }
                     self.cursor = seq;
                 }
-                self.durable(s(&e["payload"], "type"), &e["payload"]["data"], root);
+                let mut data = e["payload"]["data"].clone();
+                data["_worker"] = e["scope"]["session_id"].clone();
+                self.durable(s(&e["payload"], "type"), &data, root);
                 self.events.push_back(e.clone());
                 while self.events.len() > 1200 {
                     self.events.pop_front();
@@ -453,6 +500,7 @@ impl App {
             }
             "durable_event" => self.durable(s(&e["event"], "type"), &e["event"]["data"], true),
             "text_delta" => {
+                self.signal("Receiving model response");
                 let id = s(e, "response_id");
                 let delta = clean(s(e, "delta"));
                 if let Some(entry) = self
@@ -474,16 +522,90 @@ impl App {
                 }
             }
             "response_finished" => {
+                self.signal("Model response finished");
                 for entry in &mut self.entries {
                     if entry.response == s(e, "response_id") {
                         entry.streaming = false;
                     }
                 }
             }
+            "reasoning_summary_delta" => {
+                self.signal("Receiving reasoning summary");
+                let id = format!(
+                    "summary:{}:{}:{}",
+                    s(e, "response_id"),
+                    s(e, "item_id"),
+                    e["summary_index"]
+                );
+                if let Some(entry) = self
+                    .entries
+                    .iter_mut()
+                    .rev()
+                    .find(|entry| entry.response == id)
+                {
+                    let remaining = 16_000usize.saturating_sub(entry.text.chars().count());
+                    entry
+                        .text
+                        .extend(clean(s(e, "delta")).chars().take(remaining));
+                } else {
+                    self.entry(
+                        "reasoning",
+                        &s(e, "delta").chars().take(16_000).collect::<String>(),
+                    );
+                    self.entries.back_mut().unwrap().response = id;
+                }
+            }
+            "command_output_delta" => {
+                self.signal("Receiving command output");
+                let delta: String = clean(s(e, "delta")).chars().take(8_192).collect();
+                if let Some(entry) = self
+                    .entries
+                    .back_mut()
+                    .filter(|entry| entry.kind == "command")
+                {
+                    if entry.text.len() < 16_000 {
+                        entry.text.push_str(&delta);
+                    }
+                } else {
+                    self.entry("command", &delta);
+                }
+            }
             _ => {}
         }
     }
     fn durable(&mut self, kind: &str, data: &Value, root: bool) {
+        match kind {
+            "tool_called" | "tool_result" => self.tool_event(kind, data, root),
+            "work_planning_decided" if root => {
+                self.entry("info", &format!("Team decision · {}", s(data, "reason")));
+                self.signal("Planning work");
+            }
+            "automatic_helpers_decided" if root => {
+                self.entry("info", &format!("Team · {}", s(data, "reason")));
+            }
+            "worker_stall_suspected" => {
+                self.entry(
+                    "info",
+                    "No recent worker signal · waiting is not proof of a stall",
+                );
+            }
+            "worker_progress_resumed" => {
+                self.signal("Worker activity resumed");
+            }
+            "verification_started" => {
+                self.signal("Running verification");
+            }
+            "verification_finished" => {
+                self.signal("Verification finished · inspect results");
+            }
+            "model_response_started" if root => {
+                self.signal("Waiting for provider");
+            }
+            "command_output_delta" => {
+                self.signal("Receiving command output");
+            }
+            _ => {}
+        }
         if kind == "assistant_message" && root && !s(data, "content").is_empty() {
             let content = clean(s(data, "content"));
             if let Some(last) = self
@@ -513,6 +635,83 @@ impl App {
         if kind == "model_response_started" && root {
             self.model = s(data, "model").into();
             self.profile = s(data, "provider_profile").into();
+        }
+    }
+
+    fn signal(&mut self, activity: &str) {
+        self.activity = clean(activity);
+        self.last_activity = Some(Instant::now());
+    }
+
+    fn tool_event(&mut self, kind: &str, data: &Value, root: bool) {
+        let worker = if s(data, "_worker").is_empty() {
+            self.session.as_str()
+        } else {
+            s(data, "_worker")
+        };
+        let id = format!("{worker}:{}", s(data, "tool_call_id"));
+        let name = s(data, "name");
+        let label = if root {
+            name.to_owned()
+        } else {
+            format!("helper · {name}")
+        };
+        if kind == "tool_called" {
+            let args = &data["arguments"];
+            let target = ["path", "command", "query"]
+                .iter()
+                .find_map(|key| args[*key].as_str())
+                .unwrap_or("");
+            let target: String = clean(target).chars().take(240).collect();
+            let label = format!("{label} {target}");
+            self.signal(&format!("Running {label}"));
+            self.entry("tool", &format!("… {label}"));
+            self.entries.back_mut().unwrap().response = id.clone();
+            if self.active_tools.len() < 128 {
+                self.active_tools.push((id, Instant::now()));
+            }
+        } else {
+            self.tool_count += 1;
+            let elapsed = self
+                .active_tools
+                .iter()
+                .position(|(key, _)| key == &id)
+                .map(|i| self.active_tools.remove(i).1.elapsed().as_secs_f64());
+            let failed =
+                data["is_error"] == true || (!data["error"].is_null() && data["error"] != false);
+            let mark = if failed { "!" } else { "✓" };
+            let duration = elapsed.map(|s| format!(" · {s:.1}s")).unwrap_or_default();
+            let result = if failed && !data["error"].is_null() {
+                &data["error"]
+            } else {
+                &data["content"]
+            };
+            let detail = result
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| result.to_string());
+            let detail: String = clean(&detail).chars().take(8_000).collect();
+            if let Some(entry) = self
+                .entries
+                .iter_mut()
+                .rev()
+                .find(|e| e.kind == "tool" && e.response == id)
+            {
+                let title = entry
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim_start_matches("… ");
+                entry.text = format!("{mark} {title}{duration}\n{detail}");
+            } else {
+                self.entry("tool", &format!("{mark} {label}{duration}\n{detail}"));
+            }
+            self.signal(if self.active_tools.is_empty() {
+                "Waiting for provider"
+            } else {
+                "Tools running"
+            });
         }
     }
     pub fn matches(&self) -> Vec<String> {
@@ -719,6 +918,8 @@ impl App {
         value.set(model);
         let mut strategy = Editor::default();
         strategy.set("manual");
+        let mut team = Editor::default();
+        team.set(&self.team_mode);
         self.settings_form = Some(SettingsForm {
             title: "SAVE & USE MODEL".into(),
             action: "select".into(),
@@ -726,7 +927,11 @@ impl App {
             provider: String::new(),
             revision: revision.into(),
             editing: true,
-            fields: vec![("model".into(), value), ("strategy".into(), strategy)],
+            fields: vec![
+                ("model".into(), value),
+                ("strategy".into(), strategy),
+                ("team_mode".into(), team),
+            ],
             index: 0,
         });
     }
@@ -749,6 +954,7 @@ impl App {
             if form.action == "select" {
                 request["model"] = fields["model"].clone();
                 request["strategy"] = fields["strategy"].clone();
+                request["team_mode"] = fields["team_mode"].clone();
             } else {
                 let mut fields = fields;
                 if !form.editing {
@@ -835,6 +1041,14 @@ impl App {
     }
     pub fn key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl
+            && k.code == KeyCode::Char('t')
+            && self.settings_form.is_none()
+            && self.approvals.is_empty()
+        {
+            self.expand_tools = !self.expand_tools;
+            return;
+        }
         if ctrl && k.code == KeyCode::Char('q') {
             self.quit = true;
             return;

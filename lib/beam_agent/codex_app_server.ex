@@ -317,6 +317,7 @@ defmodule BeamAgent.CodexAppServer do
         [%{"type" => "text", "text" => transcript(messages, options)}] ++ image_inputs(messages),
       "approvalPolicy" => "never",
       "sandboxPolicy" => %{"type" => "readOnly"},
+      "summary" => "concise",
       "environments" => []
     }
 
@@ -333,6 +334,22 @@ defmodule BeamAgent.CodexAppServer do
 
   defp await_turn(client, client_module, thread, emit, state) do
     receive do
+      {:codex_app_server, ^client,
+       {:notification,
+        %{"method" => "item/reasoning/summaryTextDelta", "params" => %{"delta" => delta} = params}}}
+      when is_binary(delta) ->
+        # Forward only the public summary channel, never raw reasoning text.
+        emit.(
+          {:reasoning_summary_delta,
+           %{
+             delta: delta,
+             item_id: params["itemId"],
+             summary_index: params["summaryIndex"] || 0
+           }}
+        )
+
+        await_turn(client, client_module, thread, emit, state)
+
       {:codex_app_server, ^client,
        {:notification, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => delta}}}}
       when is_binary(delta) ->

@@ -106,11 +106,43 @@ defmodule BeamAgent.ProviderManagerTest do
                   {:ok, context} <- Agent.construction_context(state.session_id) do
                context.provider_profile == "other" and
                  context.provider_options[:model] == "recovered-model" and
-                 context.model_strategy == :local_only
+                 context.model_strategy == :local_only and context.team_mode == :auto
              else
                _ -> false
              end
            end)
+  end
+
+  test "selecting a model preserves team mode unless explicitly changed", state do
+    assert {:ok, config} =
+             ProviderManager.mutate(
+               state,
+               Map.put(select(state, "other", "pinned"), "team_mode", "auto")
+             )
+
+    state = %{state | config: config}
+    assert {:ok, config} = ProviderManager.mutate(state, select(state, "other", "another"))
+    assert config["model_strategy"] == "manual"
+    assert config["team_mode"] == "auto"
+    assert {:ok, context} = Agent.construction_context(state.session_id)
+    assert context.team_mode == :auto
+    assert {:ok, saved} = Config.load(state.config_path)
+    assert saved["team_mode"] == "auto"
+  end
+
+  test "legacy manual configuration migrates to solo without writing the file", state do
+    {:ok, saved} = Config.load(state.config_path)
+
+    legacy =
+      saved
+      |> Map.put("version", 9)
+      |> Map.put("model_strategy", "manual")
+      |> Map.delete("team_mode")
+
+    File.write!(state.config_path, JSON.encode!(legacy))
+    assert {:ok, migrated} = Config.load(state.config_path)
+    assert migrated["team_mode"] == "solo"
+    assert File.read!(state.config_path) == JSON.encode!(legacy)
   end
 
   test "stale preparation cannot overwrite a subsequent save", state do

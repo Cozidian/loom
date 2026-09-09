@@ -363,6 +363,17 @@ defmodule BeamAgent.Session.StreamHub do
         usage: ModelUsage.normalize(usage)
       })
 
+  defp normalize_live_event(response_id, {:reasoning_summary_delta, summary}, response)
+       when is_map(summary),
+       do:
+         live_metadata(
+           response,
+           Map.merge(
+             Map.take(summary, [:delta, :item_id, :summary_index]),
+             %{type: :reasoning_summary_delta, response_id: response_id}
+           )
+         )
+
   defp normalize_live_event(response_id, event, response),
     do:
       live_metadata(response, %{
@@ -381,6 +392,9 @@ defmodule BeamAgent.Session.StreamHub do
 
   defp checkpoint_event(%{type: :text_delta, delta: delta}),
     do: %{"type" => "text_delta", "delta" => delta}
+
+  defp checkpoint_event(%{type: :reasoning_summary_delta} = event),
+    do: Map.take(event, [:type, :delta, :item_id, :summary_index])
 
   defp checkpoint_event(%{type: :tool_call_delta, delta: delta}),
     do: %{"type" => "tool_call_delta", "delta" => delta}

@@ -11,6 +11,7 @@ stored =
   |> Map.put("active_profile", "echo")
   |> Map.put("profiles", %{"echo" => profile})
   |> Map.put("model_strategy", "manual")
+  |> Map.put("team_mode", "solo")
   |> Map.put("data_dir", Path.join(root, "runtime"))
 
 config_path = Path.join(root, "config.json")
@@ -21,6 +22,7 @@ config_path = Path.join(root, "config.json")
     provider: :echo,
     provider_profile: "echo",
     model_strategy: :manual,
+    team_mode: :solo,
     model_endpoints: [%{id: "echo", provider: :echo}],
     workspace_root: root,
     data_dir: Path.join(root, "runtime")
@@ -33,6 +35,7 @@ config = %{
   "workspace_root" => root,
   "approval_policy" => "ask",
   "model_strategy" => "manual",
+  "team_mode" => "solo",
   "data_dir" => Path.join(root, "runtime"),
   "context_window_tokens" => 128_000,
   "compaction_threshold_percent" => 80

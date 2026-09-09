@@ -8,7 +8,7 @@ defmodule BeamAgent.AutomaticSpecialization do
   @deadline_ms 90_000
 
   def applicable?(context, planning) do
-    context.model_strategy == :auto and is_nil(context.parent_session_id) and
+    Map.get(planning, :team_mode, :solo) == :auto and is_nil(context.parent_session_id) and
       planning.mode == :advisory and planning.classification.change_intent and
       planning.classification.reasoning == :high and
       CapabilityEnvelope.authorize(context.capability_envelope, %{tools: "spawn_subagent"}) == :ok
@@ -40,6 +40,22 @@ defmodule BeamAgent.AutomaticSpecialization do
       |> Enum.flat_map(fn {endpoint, index} ->
         start_helper(context, prompt, turn, endpoint, index, length(endpoints))
       end)
+
+    EventLog.append(context.session_id, :automatic_helpers_decided, %{
+      "helper_count" => length(handles),
+      "candidate_count" => length(endpoints),
+      "reason" =>
+        cond do
+          endpoints == [] ->
+            "No distinct available low/free-cost tool-capable helper endpoint"
+
+          handles == [] ->
+            "Helper candidates could not start under current authority/resources; owner continues"
+
+          true ->
+            "#{length(handles)} bounded read-only helper(s); owner retains implementation"
+        end
+    })
 
     if handles != [] do
       record_assignment(

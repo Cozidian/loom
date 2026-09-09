@@ -91,6 +91,8 @@ defmodule BeamAgent.CLI.TUI do
       profile: config["profile"],
       model: config["model"] || "built-in",
       model_strategy: config["model_strategy"],
+      team_mode:
+        config["team_mode"] || if(config["model_strategy"] == "auto", do: "auto", else: "solo"),
       approval_mode: approval_mode(bootstrap, config),
       approvals: json_safe(Map.get(bootstrap, :pending_approvals, [])),
       attachments: json_safe(Map.get(bootstrap, :attachments, [])),
@@ -250,6 +252,7 @@ defmodule BeamAgent.CLI.TUI do
   def notification_payload({:session_changed, session_id, config, attachments}) do
     %{
       type: "session_changed",
+      team_mode: config["team_mode"],
       session_id: session_id,
       provider: config["provider"],
       profile: config["profile"],

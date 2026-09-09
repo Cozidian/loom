@@ -297,7 +297,47 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
     } else {
         vec![area]
     };
-    let left = columns[0];
+    let zones = split(
+        columns[0],
+        Direction::Vertical,
+        vec![Constraint::Length(4), Constraint::Min(1)],
+    );
+    let live = panel("LIVE ACTIVITY / ^T EXPAND TOOLS", CYAN);
+    let live_inner = live.inner(zones[0]);
+    f.render_widget(live, zones[0]);
+    let elapsed = a.last_activity.map(|t| t.elapsed().as_secs());
+    let status = if !a.connected {
+        "Disconnected"
+    } else if !a.approvals.is_empty() {
+        "Waiting for your approval"
+    } else if !a.activity.is_empty() {
+        &a.activity
+    } else {
+        "Ready for work"
+    };
+    text(
+        f,
+        live_inner,
+        vec![
+            line(status, CYAN),
+            line(
+                format!(
+                    "{} tools finished · {} team{}",
+                    a.tool_count,
+                    a.team_mode,
+                    if a.busy {
+                        elapsed
+                            .map(|s| format!(" · {s}s since last activity"))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    }
+                ),
+                MUTED,
+            ),
+        ],
+    );
+    let left = zones[1];
     let b = panel(
         if a.following {
             "WORK TRAIL / LIVE"
@@ -328,6 +368,14 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
     } else {
         let mut lines = vec![];
         for e in &a.entries {
+            if (e.kind == "tool" || e.kind == "command") && !a.expand_tools {
+                lines.extend(wrapped(
+                    e.text.lines().next().unwrap_or(""),
+                    inner.width.saturating_sub(2),
+                    MUTED,
+                ));
+                continue;
+            }
             let (name, color) = match e.kind.as_str() {
                 "user" => ("YOU / INTENT", ACID),
                 "assistant" => (
@@ -340,6 +388,8 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
                 ),
                 "error" => ("RUNTIME / ATTENTION", RED),
                 "tool" => ("TOOL / EVIDENCE", MUTED),
+                "command" => ("COMMAND / OUTPUT", MUTED),
+                "reasoning" => ("MODEL / REASONING SUMMARY", VIOLET),
                 _ => ("RUNTIME", VIOLET),
             };
             lines.push(line(format!("  ━ {name}"), color));
@@ -987,6 +1037,9 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
         "api_key_env" => "Environment variable NAME only. Never paste an API key here.",
         "auth_mode" => "environment | chatgpt (OpenAI) | saved (existing credentials)",
         "strategy" => "manual = pin this model · auto = route automatically · local_only",
+        "team_mode" => {
+            "auto = allow bounded helpers · solo = no automatic helpers. Independent of model routing."
+        }
         "base_url" => "Changing address clears saved credential references.",
         "profile" => "Unique name: letters, digits, dots, underscores, hyphens",
         _ => "Exact model ID; use the model catalogue where available.",

@@ -217,6 +217,7 @@ defmodule BeamAgent.SessionSupervisor do
         parent.compaction_threshold_percent
       )
       |> Keyword.put_new(:model_strategy, parent.model_strategy)
+      |> Keyword.put_new(:team_mode, Map.get(parent, :team_mode, :solo))
       |> Keyword.put(:capability_envelope, spec.effective_capabilities)
       |> Keyword.put(:agent_spec, spec)
 

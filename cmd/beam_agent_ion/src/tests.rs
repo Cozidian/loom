@@ -32,6 +32,124 @@ fn settings(a: &mut App) {
         "kinds":[{"provider":"echo","model":null}]}));
 }
 
+fn durable_event(a: &mut App, seq: u64, worker: &str, kind: &str, data: serde_json::Value) {
+    a.apply(json!({"type":"stream","event":{"type":"runtime_event","durability":"durable","goal_seq":seq,
+        "scope":{"session_id":worker,"root?":worker=="root"},"payload":{"type":kind,"data":data}}}));
+}
+
+#[test]
+fn mission_tracks_tools_without_model_commentary_and_deduplicates_replay() {
+    let mut a = ready();
+    a.apply(json!({"type":"turn_started","prompt":"Build Phoenix"}));
+    durable_event(
+        &mut a,
+        1,
+        "root",
+        "work_planning_decided",
+        json!({"reason":"Pinned owner; automatic team"}),
+    );
+    durable_event(
+        &mut a,
+        2,
+        "root",
+        "tool_called",
+        json!({"tool_call_id":"read1","name":"read_file","arguments":{"path":"lib/router.ex"}}),
+    );
+    assert!(a.activity.contains("lib/router.ex"));
+    assert!(render(&mut a, 100, 30).contains("lib/router.ex"));
+    durable_event(
+        &mut a,
+        3,
+        "root",
+        "tool_result",
+        json!({"tool_call_id":"read1","name":"read_file","content":"PRIVATE_TOOL_DETAIL","is_error":false,"error":null}),
+    );
+    assert_eq!(a.tool_count, 1);
+    assert!(a.active_tools.is_empty());
+    assert_eq!(a.entries.iter().filter(|e| e.kind == "tool").count(), 1);
+    assert!(!render(&mut a, 100, 30).contains("PRIVATE_TOOL_DETAIL"));
+    ctrl(&mut a, 't');
+    assert!(render(&mut a, 100, 30).contains("PRIVATE_TOOL_DETAIL"));
+    durable_event(
+        &mut a,
+        3,
+        "root",
+        "tool_result",
+        json!({"tool_call_id":"read1","name":"read_file"}),
+    );
+    assert_eq!(a.tool_count, 1);
+    assert_eq!(a.activity, "Waiting for provider");
+    a.last_activity = Some(std::time::Instant::now() - std::time::Duration::from_secs(65));
+    assert!(render(&mut a, 100, 30).contains("65s since last activity"));
+    a.apply(json!({"type":"turn_finished","ok":true}));
+    assert!(!render(&mut a, 100, 30).contains("since last activity"));
+}
+
+#[test]
+fn helper_tools_do_not_collide_with_owner_and_errors_are_visible() {
+    let mut a = ready();
+    for (seq, worker) in [(1, "root"), (2, "helper")] {
+        durable_event(
+            &mut a,
+            seq,
+            worker,
+            "tool_called",
+            json!({"tool_call_id":"same","name":"read_file","arguments":{"path":"README.md"}}),
+        );
+    }
+    durable_event(
+        &mut a,
+        3,
+        "helper",
+        "tool_result",
+        json!({"tool_call_id":"same","name":"read_file","is_error":true,"error":"denied"}),
+    );
+    assert_eq!(a.active_tools.len(), 1);
+    assert!(a.entries.iter().any(|e| e.text.starts_with("! helper")));
+    assert!(a.entries.iter().any(|e| e.text.starts_with("… read_file")));
+}
+
+#[test]
+fn summaries_and_command_output_are_separate_from_final_answers() {
+    let mut a = ready();
+    for delta in ["Checking ", "the API"] {
+        a.apply(json!({"type":"stream","event":{"type":"reasoning_summary_delta","response_id":"r1","item_id":"i1","summary_index":0,"delta":delta}}));
+    }
+    assert_eq!(a.entries.back().unwrap().text, "Checking the API");
+    assert_eq!(a.entries.back().unwrap().kind, "reasoning");
+    a.apply(
+        json!({"type":"stream","event":{"type":"command_output_delta","delta":"3 tests passed"}}),
+    );
+    assert!(render(&mut a, 100, 30).contains("3 tests passed"));
+    durable_event(
+        &mut a,
+        1,
+        "root",
+        "assistant_message",
+        json!({"content":"Done"}),
+    );
+    assert_eq!(
+        a.entries.iter().filter(|e| e.kind == "assistant").count(),
+        1
+    );
+    assert_eq!(
+        a.entries.iter().filter(|e| e.kind == "reasoning").count(),
+        1
+    );
+}
+
+#[test]
+fn model_picker_preserves_automatic_team_when_pinning_owner() {
+    let mut a = ready();
+    settings(&mut a);
+    a.team_mode = "auto".into();
+    key(&mut a, KeyCode::Char('u'));
+    ctrl(&mut a, 's');
+    let request = a.outgoing.pop().unwrap();
+    assert_eq!(request["strategy"], "manual");
+    assert_eq!(request["team_mode"], "auto");
+}
+
 #[test]
 fn model_selection_uses_catalogue_and_explicit_save_without_submitting() {
     let mut a = ready();

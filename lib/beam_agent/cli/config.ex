@@ -3,11 +3,12 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 9
+  @version 10
   @profile_keys ["provider", "model", "base_url", "api_key_env", "credential_ref", "auth"]
   @global_keys [
     "approval_policy",
     "model_strategy",
+    "team_mode",
     "data_dir",
     "context_window_tokens",
     "compaction_threshold_percent"
@@ -34,6 +35,7 @@ defmodule BeamAgent.CLI.Config do
       },
       "approval_policy" => "ask",
       "model_strategy" => "auto",
+      "team_mode" => "auto",
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "context_window_tokens" => 32_000,
       "compaction_threshold_percent" => 75
@@ -98,6 +100,10 @@ defmodule BeamAgent.CLI.Config do
         |> Map.merge(profile)
         |> Map.put("version", @version)
         |> Map.put("profile", profile_name)
+        |> Map.put(
+          "team_mode",
+          config["team_mode"] || if(config["model_strategy"] == "auto", do: "auto", else: "solo")
+        )
 
       with :ok <- validate_runtime(runtime), do: {:ok, runtime}
     end
@@ -210,6 +216,7 @@ defmodule BeamAgent.CLI.Config do
     |> maybe_put("api_key_env", opts[:api_key_env])
     |> maybe_put("approval_policy", opts[:approval])
     |> maybe_put("model_strategy", opts[:model_strategy])
+    |> maybe_put("team_mode", opts[:team_mode])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
     |> maybe_put("context_window_tokens", opts[:context_window])
     |> maybe_put("compaction_threshold_percent", opts[:compact_at])
@@ -226,6 +233,10 @@ defmodule BeamAgent.CLI.Config do
   def model_strategy_atom("auto"), do: :auto
   def model_strategy_atom("manual"), do: :manual
   def model_strategy_atom("local_only"), do: :local_only
+
+  def team_mode_atom("auto"), do: :auto
+  def team_mode_atom("solo"), do: :solo
+  def team_mode_atom(_), do: nil
 
   def provider_options(config) do
     [
@@ -325,7 +336,13 @@ defmodule BeamAgent.CLI.Config do
          |> Map.put_new("auth", nil)}
       end)
 
-    {:ok, config |> Map.put("version", @version) |> Map.put("profiles", profiles)}
+    config |> Map.put("version", 9) |> Map.put("profiles", profiles) |> migrate()
+  end
+
+  defp migrate(%{"version" => 9} = config) do
+    # Preserve legacy spending/parallelism until the user explicitly opts in.
+    mode = if config["model_strategy"] == "auto", do: "auto", else: "solo"
+    {:ok, config |> Map.put("version", @version) |> Map.put_new("team_mode", mode)}
   end
 
   defp migrate(config), do: {:ok, config}
@@ -378,7 +395,8 @@ defmodule BeamAgent.CLI.Config do
              95
            ),
          :ok <- validate_approval_policy(config["approval_policy"]),
-         :ok <- validate_model_strategy(config["model_strategy"]) do
+         :ok <- validate_model_strategy(config["model_strategy"]),
+         :ok <- validate_team_mode(config["team_mode"]) do
       :ok
     end
   end
@@ -492,6 +510,9 @@ defmodule BeamAgent.CLI.Config do
 
   defp validate_model_strategy(_strategy),
     do: {:error, {:invalid_config_value, "model_strategy"}}
+
+  defp validate_team_mode(mode) when mode in [nil, "auto", "solo"], do: :ok
+  defp validate_team_mode(_), do: {:error, {:invalid_config_value, "team_mode"}}
 
   defp maybe_reset_provider_defaults(config, nil), do: config
 

@@ -82,6 +82,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
         "mode" => to_string(planning.mode),
         "source" => to_string(planning.source),
         "reason" => planning.reason,
+        "team_mode" => to_string(planning.team_mode),
         "endpoint_count" => planning.endpoint_count,
         "explicit_multi_provider_intent" => planning.explicit_multi_provider_intent,
         "suggested_endpoints" => planning.suggested_endpoints
@@ -1120,7 +1121,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
     WorkPlanningPolicy.decide(prompt || latest_user_prompt(context.session_id), endpoints,
       workspace_root: context.workspace_root,
-      model_strategy: context.model_strategy
+      model_strategy: context.model_strategy,
+      team_mode: Map.get(context, :team_mode)
     )
   end
 
@@ -1635,6 +1637,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :compaction_threshold_percent,
       :capability_envelope,
       :model_strategy,
+      :team_mode,
       :agent_spec,
       :runtime_command
     ])

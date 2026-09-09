@@ -96,6 +96,7 @@ record returns to its previous list and selection.
 | Up/Down at draft boundaries | Recall prompts and restore the original draft |
 | Ctrl+R, `/history` | Search prompt history; Enter recalls without submitting |
 | Ctrl+Y, `/copy` | Copy latest output or selected/open record |
+| Ctrl+T | Expand/collapse tool details in Mission |
 | `/output`, `/copy all` | Browse earlier output / copy the retained transcript |
 | Enter in Mission | Submit when idle; steer while running |
 | Ctrl+J | Insert newline (Alt/Shift+Enter also work when the terminal distinguishes them) |
@@ -121,6 +122,28 @@ and applies the choice. The form defaults to `manual` routing: the chosen model
 is pinned. Change the strategy field to `auto` or `local_only` to let the runtime
 route work again. The header shows the active routing mode.
 
+The separate `team_mode` field accepts `auto` or `solo`. Use `manual` strategy
+with `auto` team mode to pin the owner model while allowing bounded helpers.
+Use `solo` to disable automatic helpers without disabling model routing.
+Selecting another model preserves team mode. Older saved configurations retain
+their previous parallelism until you explicitly change this field. Helpers still
+require suitable endpoints, permission, budget, and a substantial task.
+
+Mission now shows live tool starts/results, command output, team decisions, and
+a pinned activity line even when the model sends no assistant text. Tool details
+are collapsed by default; Ctrl+T expands the retained previews, while `/events`
+and `/output` provide inspection. Durations are measured locally when both tool
+events were observed; replay does not invent a duration. The waiting timer measures
+time since the last activity received by this client, not model reasoning or a
+completion percentage. Approval/disconnection states take precedence.
+
+Codex exposes readable reasoning summaries on a separate
+[`item/reasoning/summaryTextDelta` channel](https://learn.chatgpt.com/docs/app-server#item-deltas).
+ION labels these separately from final answers. The adapter requests concise
+summaries and ignores raw reasoning-text notifications. Providers need not emit
+summaries; tool activity and the waiting indicator work without them. Summary
+events are checkpointed internally and remain redacted in public event views.
+
 ChatGPT/Codex and Ollama offer live catalogues. For other adapters, press `m` in
 the catalogue to enter an exact model ID; model access is checked on invocation.
 Runtime-only endpoints without a saved profile cannot be edited here.
@@ -144,7 +167,8 @@ be removed. Adding a profile does not activate it automatically.
 
 The release binary is precompiled; launch does not invoke Cargo. ION paints a
 connecting screen before waiting for `init`, and allows drafting at that point.
-It redraws only when input or runtime state changes. This removes UI-side waiting
+It redraws on input/runtime changes, plus once per second while busy for the
+activity timer. This removes UI-side waiting
 for initialization, but does **not** remove Elixir VM/session startup before the
 CLI launches its frontend. First-frame timing is not end-to-end launch timing.
 

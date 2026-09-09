@@ -1,7 +1,8 @@
 defmodule BeamAgent.ProviderSettings do
   @moduledoc "Credential-reference-only model settings, persisted with the owning session."
   alias BeamAgent.Providers
-  @fields ~w(provider profile model base_url api_key_env credential_ref auth model_strategy)
+
+  @fields ~w(provider profile model base_url api_key_env credential_ref auth model_strategy team_mode)
 
   def normalize(config) when is_map(config) do
     settings = Map.take(config, @fields)
@@ -9,6 +10,7 @@ defmodule BeamAgent.ProviderSettings do
     with {:ok, provider} <- Providers.fetch(settings["provider"]),
          true <- matches?(settings["profile"], ~r/\A[a-zA-Z0-9._-]{1,64}\z/),
          true <- settings["model_strategy"] in ["manual", "auto", "local_only"],
+         true <- settings["team_mode"] in [nil, "auto", "solo"],
          true <-
            provider[:model_required] != true or
              (is_binary(settings["model"]) and settings["model"] != ""),
@@ -100,6 +102,7 @@ defmodule BeamAgent.ProviderSettings do
         provider_profile: settings["profile"],
         provider_options: options,
         model_strategy: strategy(settings["model_strategy"]),
+        team_mode: team_mode(settings, state),
         agent_spec: %{state.agent_spec | model_requirements: requirements}
     }
   end
@@ -107,6 +110,14 @@ defmodule BeamAgent.ProviderSettings do
   def restore(state, events) do
     Enum.reduce(events, state, fn
       %{"type" => "provider_settings_changed", "data" => settings}, acc ->
+        # Old journal entries coupled manual routing to solo execution.
+        settings =
+          Map.put_new(
+            settings,
+            "team_mode",
+            if(settings["model_strategy"] == "auto", do: "auto", else: "solo")
+          )
+
         case normalize(settings) do
           {:ok, settings} -> apply_to_state(acc, settings)
           _ -> acc
@@ -120,4 +131,8 @@ defmodule BeamAgent.ProviderSettings do
   defp strategy("manual"), do: :manual
   defp strategy("auto"), do: :auto
   defp strategy("local_only"), do: :local_only
+
+  defp team_mode(%{"team_mode" => "auto"}, _), do: :auto
+  defp team_mode(%{"team_mode" => "solo"}, _), do: :solo
+  defp team_mode(_, state), do: state.team_mode
 end

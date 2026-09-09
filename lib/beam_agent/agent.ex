@@ -118,6 +118,9 @@ defmodule BeamAgent.Agent do
         provider_module: provider_module,
         provider_options: Keyword.get(opts, :provider_options, []),
         model_strategy: Keyword.get(opts, :model_strategy, :manual),
+        team_mode:
+          Keyword.get(opts, :team_mode) ||
+            if(Keyword.get(opts, :model_strategy) == :auto, do: :auto, else: :solo),
         strategy: strategy,
         data_dir: data_dir,
         workspace_root: Keyword.fetch!(opts, :workspace_root),
@@ -248,7 +251,8 @@ defmodule BeamAgent.Agent do
         :agent_spec,
         :context_window_tokens,
         :compaction_threshold_percent,
-        :model_strategy
+        :model_strategy,
+        :team_mode
       ])
 
     {:reply, {:ok, context}, state}
@@ -265,6 +269,7 @@ defmodule BeamAgent.Agent do
         :compaction_threshold_percent,
         :capability_envelope,
         :model_strategy,
+        :team_mode,
         :agent_spec
       ])
 
