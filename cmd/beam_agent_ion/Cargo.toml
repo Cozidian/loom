@@ -1,0 +1,20 @@
+[package]
+name = "beam_agent_ion"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "ION: a Ratatui mission workspace for the BeamAgent OTP runtime"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.30.2"
+crossterm = "0.29"
+serde_json = "1"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+base64 = "0.22"
+textwrap = "0.16"
+
+[profile.release]
+lto = "thin"
+strip = true

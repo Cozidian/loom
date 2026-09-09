@@ -37,8 +37,10 @@ It includes:
 - `:rest_for_one` recovery from durable-state dependency loss.
 
 The runtime uses Elixir's built-in `JSON` module and OTP's `:httpc` client for
-provider calls. The full-screen terminal interface is a small Go client built
-with Charm's Bubble Tea, Bubbles, and Lip Gloss libraries.
+provider calls. Terminal clients share the same runtime bridge: the original Go
+client uses Charm's Bubble Tea, Bubbles, and Lip Gloss; the alternative
+[ION frontend](docs/ion-tui.md) uses Rust and Ratatui, with mission, actor, and
+evidence workspaces.
 
 ## Build and configure the CLI
 
@@ -49,8 +51,21 @@ mix beam_agent.build
 
 The build requires Elixir/OTP and Go. It produces sibling `beam_agent` and
 `beam_agent_tui` executables; keep them together when moving the CLI. Set
-`BEAM_AGENT_TUI_BIN` to an explicit Go frontend path when packaging them in
+`BEAM_AGENT_TUI_BIN` to an explicit frontend path when packaging them in
 different locations. `mix escript.build` still builds only the Elixir CLI.
+
+To build and launch **ION**, the alternative Rust frontend (Rust 1.88+ required;
+Go is not needed for this build):
+
+```sh
+mix beam_agent.build --frontend rust
+BEAM_AGENT_TUI_BIN=./beam_agent_ion ./beam_agent
+```
+
+Preview the design without a provider or configuration using
+`./beam_agent_ion --demo`. `mix beam_agent.build --frontend all` builds both
+clients; the Go frontend remains the default. See the [ION field manual](docs/ion-tui.md)
+for controls, protocol details, and verification commands.
 
 Running `beam_agent` opens the terminal chat. On the first launch it walks
 through setup first, configuring the provider, model, durable session directory,
