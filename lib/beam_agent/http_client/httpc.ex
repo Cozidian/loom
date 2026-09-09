@@ -41,8 +41,8 @@ defmodule BeamAgent.HTTPClient.Httpc do
     request(:get, request, url, options)
   end
 
-  defp request(method, request, url, _options) do
-    http_options = [ssl: ssl_options(url)]
+  defp request(method, request, url, options) do
+    http_options = [ssl: ssl_options(url)] ++ Keyword.take(options, [:timeout, :connect_timeout])
 
     case :httpc.request(method, request, http_options, body_format: :binary) do
       {:ok, {{_version, status, _reason}, _headers, body}} ->

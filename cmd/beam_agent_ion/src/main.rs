@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod editor;
 mod protocol;
 mod ui;
@@ -102,6 +103,7 @@ fn main() -> io::Result<()> {
         execute!(io::stdout(), EnableBracketedPaste)?;
         let mut exit_started = None;
         let mut dirty = true;
+        let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
         loop {
             if dirty {
                 terminal.draw(|f| ui::draw(f, &mut a))?;
@@ -115,6 +117,38 @@ fn main() -> io::Result<()> {
                         Message::Failed(e) => a.disconnected(e),
                         Message::Exited => return Ok(()),
                     }
+                }
+            }
+            if let Some(text) = a.clipboard.take() {
+                dirty = true;
+                if copying.is_some() {
+                    a.notice = "Copy already in progress · try again shortly".into();
+                } else {
+                    match clipboard::start(text) {
+                        Ok(Some(rx)) => {
+                            copying = Some(rx);
+                            a.notice = "Copying output…".into();
+                        }
+                        Ok(None) => a.notice =
+                            "Clipboard request sent (OSC52); terminal must allow clipboard access"
+                                .into(),
+                        Err(e) => a.notice = format!("Not copied: {e}"),
+                    }
+                }
+            }
+            if let Some(rx) = &copying {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        a.notice = result.unwrap_or_else(|e| format!("Not copied: {e}"));
+                        copying = None;
+                        dirty = true;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        copying = None;
+                        a.notice = "Clipboard worker stopped".into();
+                        dirty = true;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
                 }
             }
             if a.quit {
@@ -153,9 +187,24 @@ fn main() -> io::Result<()> {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => a.key(k),
                     Event::Paste(text) => {
-                        if a.approvals.is_empty() && !a.palette && a.drawer.is_none() {
+                        if a.approvals.is_empty()
+                            && a.settings_form.is_some()
+                            && !a.settings_pending
+                        {
+                            let form = a.settings_form.as_mut().unwrap();
+                            form.fields[form.index]
+                                .1
+                                .insert(&text.replace(['\r', '\n'], ""));
+                        } else if a.approvals.is_empty()
+                            && !a.palette
+                            && a.drawer.is_none()
+                            && a.settings_confirm.is_none()
+                            && a.settings_form.is_none()
+                        {
+                            a.leave_history();
                             a.editor.insert(&text);
                             a.dismiss_picker = false;
+                            a.command_index = 0;
                         }
                     }
                     Event::Resize(_, _) => {}

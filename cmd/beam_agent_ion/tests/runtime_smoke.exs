@@ -3,6 +3,19 @@
 root = Path.join(System.tmp_dir!(), "ion-smoke-#{System.unique_integer([:positive])}")
 File.mkdir_p!(root)
 
+alias BeamAgent.CLI.Config
+{:ok, profile} = Config.profile("echo", "echo", nil, nil)
+
+stored =
+  Config.defaults()
+  |> Map.put("active_profile", "echo")
+  |> Map.put("profiles", %{"echo" => profile})
+  |> Map.put("model_strategy", "manual")
+  |> Map.put("data_dir", Path.join(root, "runtime"))
+
+config_path = Path.join(root, "config.json")
+{:ok, _} = Config.write(stored, config_path)
+
 {:ok, session} =
   BeamAgent.start_session(
     provider: :echo,
@@ -26,7 +39,7 @@ config = %{
 }
 
 try do
-  :ok = BeamAgent.CLI.TUI.run(session, config, Path.join(root, "config.json"))
+  :ok = BeamAgent.CLI.TUI.run(session, config, config_path)
 after
   BeamAgent.stop_session(session)
   File.rm_rf!(root)

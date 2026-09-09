@@ -639,6 +639,12 @@ defmodule BeamAgent.CLITUITest do
 
     refute TUI.available?(false)
     assert TUI.executable() == executable
+
+    System.put_env("BEAM_AGENT_TUI_BIN", Path.relative_to(executable, File.cwd!(), force: true))
+    assert TUI.executable() == executable
+
+    System.put_env("BEAM_AGENT_TUI_BIN", "./missing-explicit-frontend")
+    assert TUI.executable() == nil
   end
 
   defp collect_until_turn_finished(messages) do

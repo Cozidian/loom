@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real-PTY bridge smoke test. Uses only Python's standard library; no model calls."""
 import fcntl
+import base64
 import json
 import os
 import select
@@ -28,6 +29,8 @@ def run(binary):
         os.dup2(child_out, 4)
         os.closerange(5, 256)
         os.environ["TERM"] = "xterm-256color"
+        # Capture clipboard transport without touching the tester's clipboard.
+        os.environ["BEAM_AGENT_ION_CLIPBOARD"] = "osc52"
         # Keep the controlling session alive until modes are checked. macOS
         # invalidates tcgetattr on the parent's slave after its session exits.
         frontend = os.fork()
@@ -119,6 +122,37 @@ def run(binary):
         assert not select.select([parent_in], [], [], 0)[0], "reference picker submitted"
         type_text("\r")
         assert action()["prompt"] == 'Read @"my file.ex"'
+        send({"type": "turn_finished", "ok": True})
+        time.sleep(0.15)
+        type_text("\x1b[A")
+        time.sleep(0.1)
+        assert not select.select([parent_in], [], [], 0)[0], "history recall submitted"
+        type_text("\r")
+        assert action()["prompt"] == 'Read @"my file.ex"'
+        send({"type": "turn_finished", "ok": True})
+        time.sleep(0.15)
+        type_text("/a\t")
+        time.sleep(0.1)
+        assert not select.select([parent_in], [], [], 0)[0], "slash completion executed"
+        type_text("\r")
+        assert action() == {"type": "command", "command": "auto", "query": ""}
+        type_text("\x19")
+        wait_screen("\x1b]52;c;" + base64.b64encode(b"ORBITAL_RESULT").decode() + "\x07")
+        assert not select.select([parent_in], [], [], 0)[0], "copy reached the runtime"
+        type_text("/providers\r")
+        assert action() == {"type": "provider_settings", "action": "list"}
+        send({"type": "provider_settings", "revision": "r1", "model_strategy": "auto",
+              "providers": [{"profile": "echo", "provider": "echo", "model": "echo"}], "kinds": []})
+        time.sleep(0.15)
+        type_text("u")
+        wait_screen("SAVE & USE MODEL")
+        type_text("\x15new-model\x13")
+        packet = action()
+        assert packet["action"] == "select" and packet["model"] == "new-model"
+        assert packet["strategy"] == "manual" and packet["revision"] == "r1"
+        send({"type": "settings_applied", "profile": "echo", "model": "new-model", "model_strategy": "manual"})
+        time.sleep(0.15)
+        type_text("\x1b")
         type_text("\x11")
         assert action() == {"type": "exit"}
         deadline = time.monotonic() + 5
@@ -129,7 +163,7 @@ def run(binary):
             if ended:
                 pid = None
                 assert os.waitstatus_to_exitcode(status) == 0, "frontend failed or terminal modes not restored"
-                print(f"PASS: first frame {first_paint:.1f} ms before init; submit, stream, steer, approval ACK, paste, @ reference, exit, terminal restoration")
+                print(f"PASS: first frame {first_paint:.1f} ms before init; submit, stream, steer, approval ACK, paste, @ reference, history, slash completion, clipboard, provider settings, exit, terminal restoration")
                 return
             time.sleep(0.05)
         raise AssertionError("frontend did not exit")

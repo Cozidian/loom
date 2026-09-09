@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
+  @commands ~w(connect providers auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
   @competition_event_types ~w(tournament_started tournament_candidate_started tournament_candidate_completed tournament_judgment_requested tournament_winner_selected tournament_collapsed tournament_inconclusive tournament_judgment_unresolved race_started race_candidate_started race_candidate_completed race_candidate_rejected race_candidate_cancelled race_winner_selected race_settled race_inconclusive)
   @competition_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
@@ -20,14 +20,16 @@ defmodule BeamAgent.CLI.TUI do
 
   @doc false
   def executable do
-    [
-      System.get_env("BEAM_AGENT_TUI_BIN"),
-      escript_sibling(),
-      Path.expand("beam_agent_tui"),
-      application_binary()
-    ]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.find_value(&System.find_executable/1)
+    case System.get_env("BEAM_AGENT_TUI_BIN") do
+      override when is_binary(override) and override != "" ->
+        path = if String.contains?(override, "/"), do: Path.expand(override), else: override
+        System.find_executable(path)
+
+      _ ->
+        [escript_sibling(), Path.expand("beam_agent_tui"), application_binary()]
+        |> Enum.reject(&is_nil/1)
+        |> Enum.find_value(&System.find_executable/1)
+    end
   end
 
   def run(session_id, config, config_path \\ Config.path()) do
@@ -88,6 +90,7 @@ defmodule BeamAgent.CLI.TUI do
       provider: config["provider"],
       profile: config["profile"],
       model: config["model"] || "built-in",
+      model_strategy: config["model_strategy"],
       approval_mode: approval_mode(bootstrap, config),
       approvals: json_safe(Map.get(bootstrap, :pending_approvals, [])),
       attachments: json_safe(Map.get(bootstrap, :attachments, [])),
@@ -220,6 +223,18 @@ defmodule BeamAgent.CLI.TUI do
   def notification_payload({:models, payload}),
     do: Map.put(json_safe(payload), :type, "models")
 
+  def notification_payload({:provider_settings, payload}),
+    do: Map.put(json_safe(payload), :type, "provider_settings")
+
+  def notification_payload({:model_catalog, payload}),
+    do: Map.put(json_safe(payload), :type, "model_catalog")
+
+  def notification_payload({:settings_applied, payload}),
+    do: Map.put(json_safe(payload), :type, "settings_applied")
+
+  def notification_payload({:settings_failed, message}),
+    do: %{type: "settings_failed", message: message}
+
   def notification_payload({:files, payload}),
     do: Map.put(json_safe(payload), :type, "files")
 
@@ -302,6 +317,12 @@ defmodule BeamAgent.CLI.TUI do
        when is_binary(prompt) and is_list(attachments) do
     attachment_ids = Enum.map(attachments, & &1["id"])
     Controller.submit(controller, prompt, attachment_ids)
+    :ok
+  end
+
+  defp dispatch_action(%{"type" => "provider_settings", "action" => action} = request, controller)
+       when action in ["list", "catalog", "select", "save", "delete"] do
+    Controller.settings(controller, Map.delete(request, "type"))
     :ok
   end
 
@@ -1066,5 +1087,5 @@ defmodule BeamAgent.CLI.TUI do
     _error -> :ok
   end
 
-  defp format_error(reason), do: inspect(reason, pretty: true, limit: 8)
+  defp format_error(reason), do: BeamAgent.CLI.ErrorFormatter.format(reason)
 end

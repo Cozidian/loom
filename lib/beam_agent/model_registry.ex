@@ -31,6 +31,12 @@ defmodule BeamAgent.ModelRegistry do
     end
   end
 
+  def reconcile(project_id, specs, removed_ids) when is_list(specs) and is_list(removed_ids) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id) do
+      GenServer.call(pid, {:reconcile, specs, removed_ids})
+    end
+  end
+
   def refresh_health(project_id, endpoint_id \\ :all) do
     with {:ok, pid} <- Names.pid(:model_registry, project_id) do
       GenServer.call(pid, {:refresh_health, endpoint_id})
@@ -89,6 +95,17 @@ defmodule BeamAgent.ModelRegistry do
     case normalize_many(specs, state.endpoints) do
       {:ok, endpoints} -> {:reply, :ok, %{state | endpoints: endpoints}}
       {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:reconcile, specs, removed_ids}, _from, state) do
+    case normalize_many(specs, state.endpoints) do
+      {:ok, updated} ->
+        endpoints = state.endpoints |> Map.drop(removed_ids) |> Map.merge(updated)
+        {:reply, :ok, %{state | endpoints: endpoints}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
     end
   end
 

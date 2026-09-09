@@ -41,6 +41,9 @@ defmodule BeamAgent.Runtime do
   def bootstrap(client), do: Client.bootstrap(client)
   def snapshot(client), do: Client.snapshot(client)
 
+  def configure_provider(client, settings, endpoints, removed_ids \\ []),
+    do: Client.configure_provider(client, settings, endpoints, removed_ids)
+
   def submit(client, prompt, attachment_ids \\ []),
     do: Client.submit(client, prompt, attachment_ids)
 
