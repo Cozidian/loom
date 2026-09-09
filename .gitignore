@@ -7,5 +7,7 @@
 /.beam_agent/tmp/
 /beam_agent
 /beam_agent_tui
+/beam_agent_ion
+/cmd/beam_agent_ion/target/
 erl_crash.dump
 *.ez
