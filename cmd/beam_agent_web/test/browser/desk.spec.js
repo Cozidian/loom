@@ -114,6 +114,28 @@ test("browser writes require CSRF even with an authenticated cookie", async ({
   expect(rejected.status()).toBe(403);
 });
 
+test("night theme renders locally with mobile layout and visible keyboard focus", async ({page}) => {
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "dark");
+  await expect(page.locator(".night-scene img")).toBeVisible();
+  await expect.poll(() => page.locator(".night-scene img").evaluate(img => img.naturalWidth)).toBeGreaterThan(0);
+  await page.screenshot({path: "test-results/desk-login.png", fullPage: true});
+  await login(page);
+  await page.goto("/");
+  await page.emulateMedia({reducedMotion: "reduce"});
+  await expect(page.locator("html")).toHaveCSS("scroll-behavior", "auto");
+  await page.keyboard.press("Tab");
+  await expect(page.locator(".wordmark")).toBeFocused();
+  await expect(page.locator(".wordmark")).toHaveCSS("outline-style", "solid");
+  for (const width of [320, 390, 768]) {
+    await page.setViewportSize({width, height: 844});
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(page.locator(".session-open").first()).toBeVisible();
+  }
+  await page.setViewportSize({width: 390, height: 844});
+  await page.screenshot({path: "test-results/desk-overview-mobile.png", fullPage: true});
+});
+
 test("overview explicitly creates a new session and its output can be read", async ({page}) => {
   await login(page);
   await page.goto("/");

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="320" y1="20" x2="320" y2="320" gradientUnits="userSpaceOnUse"><stop stop-color="#272446"/><stop offset=".62" stop-color="#625077"/><stop offset="1" stop-color="#be7d91"/></linearGradient>
+    <linearGradient id="room" x1="0" y1="0" x2="640" y2="400" gradientUnits="userSpaceOnUse"><stop stop-color="#252139"/><stop offset="1" stop-color="#141925"/></linearGradient>
+    <linearGradient id="screen" x1="255" y1="217" x2="390" y2="310" gradientUnits="userSpaceOnUse"><stop stop-color="#273e46"/><stop offset="1" stop-color="#1a2838"/></linearGradient>
+    <pattern id="windows" width="23" height="29" patternUnits="userSpaceOnUse"><path d="M8 8h5v9H8z" fill="#bca1bb" opacity=".28"/></pattern>
+  </defs>
+  <!-- An original, static vector night study. No remote assets or animation. -->
+  <path fill="url(#room)" d="M0 0h640v400H0z"/>
+  <path d="M68 34h472v275H68z" fill="url(#sky)"/>
+  <circle cx="440" cy="94" r="28" fill="#edc3b4"/>
+  <path d="M158 100h91m-125 8h64m169 39h100m-18 10h70" stroke="#d7b0c9" stroke-opacity=".16" stroke-width="3"/>
+  <path d="M68 226h28v-44h49v36h26v-62h51v66h34v-34h24v44h40v-57h39v43h32v-67h40v58h32v-36h45v53h32v83H68z" fill="#49435f"/>
+  <path d="M68 252h50v-20h44v-25h66v64h26v-33h33v-13h62v42h25v-36h58v-20h51v42h57v56H68z" fill="#302f49"/>
+  <path d="M118 233h44v-26h66v100H118zm169-8h62v82h-62zm138-14h58v96h-58z" fill="url(#windows)"/>
+  <path d="M192 207v-30m-6 10h12m118 38v-62m-6 8h12m129 40v-25" stroke="#302f49" stroke-width="3"/>
+  <path d="M94 63l-7 35m84-39l-7 35m85 31l-7 35m69-103l-7 35m82 78l-7 35m87-40l-7 35m39-131l-7 35m-287 83l-7 35m-66-87l-7 35m251 66l-7 35" stroke="#e4c9dc" stroke-opacity=".18"/>
+  <path d="M66 31h478v282H66z" stroke="#121827" stroke-width="12"/>
+  <path d="M304 34v181M70 166h470" stroke="#1b2031" stroke-width="7"/>
+  <path d="M61 310h493v13H61z" fill="#706078"/>
+  <path d="M547 21h39v309h-39z" fill="#393047"/>
+  <path d="M554 22v296m15-296v296m12-296v296" stroke="#514057" stroke-width="3"/>
+  <!-- Desk, monitor, keyboard, tea, and a cat keeping watch. -->
+  <path d="M99 330h498v14H99z" fill="#876777"/>
+  <path d="M110 344h477v13H110z" fill="#3e3449"/>
+  <path d="M124 357h13v43h-13zm433 0h13v43h-13z" fill="#2a293b"/>
+  <rect x="245" y="209" width="159" height="110" rx="7" fill="#101623" stroke="#75677e" stroke-width="3"/>
+  <rect x="253" y="218" width="143" height="91" rx="2" fill="url(#screen)"/>
+  <path d="M263 231h19m5 0h33m-57 13h10m7 0h47m-53 13h28m6 0h29m-63 13h14m8 0h55m-88 13h33" stroke="#89c5b8" stroke-width="3" stroke-linecap="round"/>
+  <path d="M329 231h24m-42 26h28m-69 39h42" stroke="#ae95cc" stroke-width="3" stroke-linecap="round"/>
+  <path d="M316 320v9m-23 2h54" stroke="#9990a3" stroke-width="4"/>
+  <path d="M268 331h108l10 8H258z" fill="#b1a2b8"/>
+  <path d="M420 300h24v25a7 7 0 0 1-7 7h-10a7 7 0 0 1-7-7z" fill="#c598a4"/>
+  <path d="M444 305h5a7 7 0 0 1 0 14h-5" stroke="#c598a4" stroke-width="4"/>
+  <path d="M429 291c-8-10 8-12 0-23m9 26c-7-8 5-11 1-18" stroke="#dfb7c8" stroke-opacity=".4" stroke-width="2" stroke-linecap="round"/>
+  <path d="M152 328c-11-22-3-38 10-45l-1-22 17 11 14-10 2 26c20 15 23 27 17 40z" fill="#171d2c"/>
+  <path d="M207 326c33 9 32-17 16-16" stroke="#171d2c" stroke-width="10" stroke-linecap="round"/>
+  <path d="M166 285h4m12 0h4" stroke="#d3b0bb" stroke-width="2"/>
+  <path d="M501 331l-7-28h29l-6 28z" fill="#68556d"/>
+  <path d="M508 304v-45m0 30c-21 0-19-19-19-19 18-1 19 19 19 19zm1-11c20 0 17-22 17-22-16 2-17 22-17 22z" fill="#557471" stroke="#557471" stroke-width="3"/>
+  <path d="M0 381h640v19H0z" fill="#111722" opacity=".35"/>
+</svg>

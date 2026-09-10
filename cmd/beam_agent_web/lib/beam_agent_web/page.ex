@@ -22,18 +22,26 @@ defmodule BeamAgentWeb.Page do
         """
       end
 
-    layout("<main class=welcome>#{body}</main>")
+    layout(
+      "<main class=welcome><a class=wordmark href=/><span class=brand-mark>λ</span> BEAM<span> / DESK</span></a>#{night_scene()}<div class=welcome-copy>#{body}</div></main>"
+    )
   end
 
   def overview(directory, csrf, notice) do
     layout("""
-    <main class="control-center"><header><div><p class="eyebrow">BEAM / DESK · Personal control center</p><h1>Your work, together.</h1></div>
+    <main class="control-center"><header class="masthead"><a class="wordmark" href="/"><span class="brand-mark">λ</span> BEAM<span> / DESK</span></a>
+    <span class="edition">LOCAL FIRST / AFTER HOURS</span></header>
+    <section class="overview-hero"><div class="hero-copy"><p class="eyebrow">~/ personal control center</p><h1>Your work,<br> together.</h1>
+    <p class="lede">A quiet place to build ambitious things.<br>All your runtimes. One open channel.</p>
+    </div>#{night_scene()}</section>
+    <header class="directory-intro"><p class="eyebrow">01 / Runtime directory</p>
     <span class="connection" id="connection" role="status">Connecting</span></header>
-    <p>Live sessions on this computer. Opening a session attaches to its existing runtime; it does not restart it.</p>
+    <p class="muted">Live sessions on this computer. Opening a session attaches to its existing runtime; it does not restart it.</p>
     <p role="status">#{escape(notice)}</p><div id="directory">#{directory(directory)}</div>
-    <form method="post" action="/sessions">#{hidden(csrf)}<button>Start a new session</button>
+    <div class="directory-actions"><form method="post" action="/sessions">#{hidden(csrf)}<button>Start a new session</button>
     <p class="muted">Uses the workspace and provider profile chosen when launching Desk. No model call until you submit a prompt.</p></form>
-    <form method="post" action="/logout">#{hidden(csrf)}<button class="outline">Disconnect this browser</button></form></main>
+    <form method="post" action="/logout">#{hidden(csrf)}<button class="quiet">Disconnect this browser</button></form></div>
+    <footer>BEAM / DESK <span>Local connections. Runtime-owned work.</span></footer></main>
     """)
   end
 
@@ -45,10 +53,10 @@ defmodule BeamAgentWeb.Page do
     #{if directory["unavailable"], do: "<p>Discovery unavailable. Session count is unknown.</p>", else: ""}
     #{if sessions == [], do: "<p class=muted>No discoverable live sessions. Start a TUI with the rebuilt CLI. Older running binaries need one restart to publish their connection.</p>", else: ""}
     <div class="session-grid">#{Enum.map_join(sessions, fn session -> """
-        <article class="session-card"><p class="eyebrow">Live runtime · PID #{escape(session["owner_pid"])}</p>
+        <article class="session-card"><div class="card-chrome" aria-hidden="true"><span>● ● ●</span><span>runtime.ex</span></div><p class="eyebrow">Live runtime · PID #{escape(session["owner_pid"])}</p>
         <h2>#{escape(Path.basename(session["workspace"] || "Workspace"))}</h2><p class="muted">#{escape(session["workspace"])}</p>
         <p class="session-id">#{escape(session["session_id"])}</p><a class="session-open" href="/sessions/#{escape(session["session_id"])}">Open session ↗</a>
-        <p class="muted">Attach a terminal:</p><code>./beam_agent attach #{escape(session["session_id"])}</code></article>
+        <div class="attach-command"><p class="muted">Attach a terminal</p><code>./beam_agent attach #{escape(session["session_id"])}</code></div></article>
       """ end)}</div>
     """
   end
@@ -66,14 +74,14 @@ defmodule BeamAgentWeb.Page do
       end
 
     layout("""
-    <aside><a class="wordmark" href="/">BEAM<span> / DESK</span></a>
+    <aside><a class="wordmark" href="/"><span class="brand-mark">λ</span> BEAM<span> / DESK</span></a>
       <p class="eyebrow">Workspace control</p><a class="nav active" href="#mission">01 &nbsp; Mission</a>
       <a class="nav" href="#conversation">02 &nbsp; Output</a>
       <a class="nav" href="#agents">03 &nbsp; Agents</a><a class="nav" href="#activity">04 &nbsp; Activity</a>
-      <div class="aside-bottom"><p>Independent agents.<br>One shared direction.</p>
+      <div class="aside-bottom">#{night_scene()}<p>Independent agents.<br>One shared direction.</p>
       <form method="post" action="/logout">#{hidden(csrf)}<button class="quiet">Disconnect this browser</button></form></div>
     </aside>
-    <main class="workspace"><header><div><p class="eyebrow">The long view</p><h1>Make good things.</h1></div>
+    <main class="workspace"><header><div><p class="eyebrow">~/ workspace / mission control</p><h1>Make good things.</h1></div>
       <span class="connection" id="connection" role="status">Connecting</span></header>
       <p id="notice" role="status">#{escape(notice)}</p>
       <p><a href="/">← All live sessions</a></p>
@@ -205,6 +213,13 @@ defmodule BeamAgentWeb.Page do
 
   defp escape(value),
     do: value |> to_string() |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
+
+  defp night_scene do
+    """
+    <div class="night-scene" aria-hidden="true"><img src="/assets/night-shift.svg" alt="" width="640" height="400">
+      <span class="scene-caption">AFTER HOURS <span>心 / IN THE FLOW</span></span></div>
+    """
+  end
 
   defp layout(body) do
     """
