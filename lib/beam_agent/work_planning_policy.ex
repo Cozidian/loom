@@ -26,7 +26,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
         implementation? and explicit? and multi_endpoint? ->
           :required
 
-        implementation? and team_mode == :auto and multi_endpoint? ->
+        implementation? and team_mode == :auto and not explicit? ->
           :advisory
 
         true ->
@@ -44,7 +44,7 @@ defmodule BeamAgent.WorkPlanningPolicy do
       suggested_endpoints: suggested_endpoints(eligible),
       reason:
         if(mode == :direct and not explicit? and team_mode == :solo,
-          do: "automatic helpers disabled by solo team mode; model selection is independent",
+          do: "automatic delegation disabled by solo team mode; model selection is independent",
           else: reason(mode, explicit?, multi_endpoint?)
         )
     }
@@ -74,7 +74,8 @@ defmodule BeamAgent.WorkPlanningPolicy do
     do: "the user explicitly requested a multi-model implementation"
 
   defp reason(:advisory, _explicit?, _multi?),
-    do: "one worker owns implementation; bounded specialists are available when useful"
+    do:
+      "task-based subagents available, including the same model; one owner integrates and verifies"
 
   defp reason(:direct, true, false),
     do: "multi-model work was requested but fewer than two eligible endpoints are available"

@@ -1038,7 +1038,7 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
         "auth_mode" => "environment | chatgpt (OpenAI) | saved (existing credentials)",
         "strategy" => "manual = pin this model · auto = route automatically · local_only",
         "team_mode" => {
-            "auto = allow bounded helpers · solo = no automatic helpers. Independent of model routing."
+            "auto = task-based subagents · solo = no automatic team. Same-model workers are supported."
         }
         "base_url" => "Changing address clears saved credential references.",
         "profile" => "Unique name: letters, digits, dots, underscores, hyphens",

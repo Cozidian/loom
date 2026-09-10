@@ -38,6 +38,28 @@ fn durable_event(a: &mut App, seq: u64, worker: &str, kind: &str, data: serde_js
 }
 
 #[test]
+fn mission_distinguishes_queued_and_running_subagents() {
+    let mut a = ready();
+    durable_event(
+        &mut a,
+        1,
+        "root",
+        "worker_queued",
+        json!({"worker_id":"child"}),
+    );
+    assert!(a.activity.contains("worker capacity"));
+    assert!(a.entries.iter().any(|e| e.text.contains("Subagent queued")));
+    durable_event(
+        &mut a,
+        2,
+        "root",
+        "work_run_task_attempt_started",
+        json!({"task_id":"frontend"}),
+    );
+    assert!(a.activity.contains("frontend"));
+}
+
+#[test]
 fn mission_tracks_tools_without_model_commentary_and_deduplicates_replay() {
     let mut a = ready();
     a.apply(json!({"type":"turn_started","prompt":"Build Phoenix"}));
@@ -105,7 +127,7 @@ fn helper_tools_do_not_collide_with_owner_and_errors_are_visible() {
         json!({"tool_call_id":"same","name":"read_file","is_error":true,"error":"denied"}),
     );
     assert_eq!(a.active_tools.len(), 1);
-    assert!(a.entries.iter().any(|e| e.text.starts_with("! helper")));
+    assert!(a.entries.iter().any(|e| e.text.starts_with("! subagent")));
     assert!(a.entries.iter().any(|e| e.text.starts_with("… read_file")));
 }
 

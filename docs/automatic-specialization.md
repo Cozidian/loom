@@ -1,5 +1,9 @@
 # Automatic specialization — 2026-09-09
 
+> Historical implementation and evaluation record. The fixed two-investigator
+> launcher described below has been replaced by [task-based teams](task-teams.md).
+> Its live evaluation results do not validate the new task-selection policy.
+
 The runtime can now assign bounded assistance without asking the implementation
 model to invent a team. This builds on the existing goal-owned delegation
 manager, budget manager, provider auctions, stable leases and supervised workers.

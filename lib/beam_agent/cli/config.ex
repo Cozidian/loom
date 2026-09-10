@@ -9,6 +9,8 @@ defmodule BeamAgent.CLI.Config do
     "approval_policy",
     "model_strategy",
     "team_mode",
+    "max_workers",
+    "model_concurrency",
     "data_dir",
     "context_window_tokens",
     "compaction_threshold_percent"
@@ -36,6 +38,8 @@ defmodule BeamAgent.CLI.Config do
       "approval_policy" => "ask",
       "model_strategy" => "auto",
       "team_mode" => "auto",
+      "max_workers" => 4,
+      "model_concurrency" => 4,
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "context_window_tokens" => 32_000,
       "compaction_threshold_percent" => 75
@@ -217,6 +221,8 @@ defmodule BeamAgent.CLI.Config do
     |> maybe_put("approval_policy", opts[:approval])
     |> maybe_put("model_strategy", opts[:model_strategy])
     |> maybe_put("team_mode", opts[:team_mode])
+    |> maybe_put("max_workers", opts[:max_workers])
+    |> maybe_put("model_concurrency", opts[:model_concurrency])
     |> maybe_put("data_dir", opts[:data_dir] && Path.expand(opts[:data_dir]))
     |> maybe_put("context_window_tokens", opts[:context_window])
     |> maybe_put("compaction_threshold_percent", opts[:compact_at])
@@ -396,7 +402,9 @@ defmodule BeamAgent.CLI.Config do
            ),
          :ok <- validate_approval_policy(config["approval_policy"]),
          :ok <- validate_model_strategy(config["model_strategy"]),
-         :ok <- validate_team_mode(config["team_mode"]) do
+         :ok <- validate_team_mode(config["team_mode"]),
+         :ok <- validate_capacity(config["max_workers"], "max_workers"),
+         :ok <- validate_capacity(config["model_concurrency"], "model_concurrency") do
       :ok
     end
   end
@@ -513,6 +521,19 @@ defmodule BeamAgent.CLI.Config do
 
   defp validate_team_mode(mode) when mode in [nil, "auto", "solo"], do: :ok
   defp validate_team_mode(_), do: {:error, {:invalid_config_value, "team_mode"}}
+
+  defp validate_capacity(nil, _key), do: :ok
+  defp validate_capacity(value, _key) when is_integer(value) and value > 0, do: :ok
+  defp validate_capacity(_value, key), do: {:error, {:invalid_config_value, key}}
+
+  def capacity_options(config) do
+    model_limit = config["model_concurrency"] || defaults()["model_concurrency"]
+
+    [
+      budget: %{concurrent_workers: config["max_workers"] || defaults()["max_workers"]},
+      resource_limits: %{model: model_limit, expensive_model: model_limit}
+    ]
+  end
 
   defp maybe_reset_provider_defaults(config, nil), do: config
 

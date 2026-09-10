@@ -218,8 +218,8 @@ defmodule BeamAgent.DecompositionPlan do
       paths when is_list(paths) ->
         paths
         |> Enum.filter(&is_binary/1)
-        |> Enum.map(&String.trim_trailing(&1, "/"))
         |> Enum.reject(&(&1 == ""))
+        |> Enum.map(&Path.expand(&1, "/"))
 
       _other ->
         nil
@@ -227,7 +227,7 @@ defmodule BeamAgent.DecompositionPlan do
   end
 
   defp overlapping_path?(left, right) do
-    left == right or String.starts_with?(left, right <> "/") or
+    left == "/" or right == "/" or left == right or String.starts_with?(left, right <> "/") or
       String.starts_with?(right, left <> "/")
   end
 

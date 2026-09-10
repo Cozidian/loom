@@ -142,6 +142,10 @@ defmodule BeamAgent.Goal.ProgressMonitor do
   defp phase("resource_queued", data, _worker),
     do: {:waiting, :queued, data["resource_pool"]}
 
+  defp phase("worker_queued", _data, _worker), do: {:waiting, :queued, :worker_capacity}
+  defp phase("worker_dequeued", _data, _worker), do: {:active, :starting, nil}
+  defp phase("worker_queue_cancelled", _data, _worker), do: {:cancelled, :cancelled, nil}
+
   defp phase("budget_exhausted", _data, _worker), do: {:blocked, :blocked, :budget_exhausted}
   defp phase("tool_loop_stalled", _data, _worker), do: {:stalled, :stalled, :repeated_tool_loop}
   defp phase("turn_finished", data, _worker), do: terminal_phase(data["reason"])

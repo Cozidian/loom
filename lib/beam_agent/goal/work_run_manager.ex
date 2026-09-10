@@ -53,6 +53,7 @@ defmodule BeamAgent.Goal.WorkRunManager do
          {:ok, parent} <- Agent.construction_context(parent_session_id),
          true <- parent.goal_id == state.goal_id,
          strategy <- resolve_strategy(Keyword.get(opts, :strategy), parent),
+         strategy <- graph_capacity(strategy, parent, plan),
          run <- new_run(parent_session_id, plan, strategy, opts),
          {:ok, organization} <-
            OrganizationManager.create(
@@ -87,6 +88,9 @@ defmodule BeamAgent.Goal.WorkRunManager do
       nil ->
         {:reply, {:error, :unknown_work_run}, state}
 
+      %{status: status} when status != :running ->
+        {:reply, {:error, :work_run_terminal}, state}
+
       run ->
         with {:ok, event_type, event_data} <- checkpoint_event(run, checkpoint),
              {:ok, _event} <- EventLog.append(state.root_session_id, event_type, event_data) do
@@ -115,6 +119,7 @@ defmodule BeamAgent.Goal.WorkRunManager do
     case state.runs[run_id] do
       %{runner: %{pid: ^runner}} = run ->
         Process.demonitor(run.runner.monitor, [:flush])
+        if run.owner_monitor, do: Process.demonitor(run.owner_monitor, [:flush])
         {status, recovery} = terminal_status(result)
 
         data = %{
@@ -154,9 +159,54 @@ defmodule BeamAgent.Goal.WorkRunManager do
 
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Enum.find(state.runs, fn {_id, run} ->
-           match?(%{monitor: ^monitor}, run.runner)
+           match?(%{monitor: ^monitor}, run.runner) or run.owner_monitor == monitor
          end) do
       nil ->
+        {:noreply, state}
+
+      {run_id, %{owner_monitor: ^monitor, status: :running} = run} ->
+        # A user turn is cancellable, unlike a standalone durable work run.
+        # Persist cancellation before killing runners so replay cannot resurrect it.
+        case EventLog.append(state.root_session_id, :work_run_finished, %{
+               "work_run_id" => run.id,
+               "organization_id" => run.organization_id,
+               "plan_id" => run.plan.id,
+               "status" => "cancelled",
+               "reason" => "owner_exited"
+             }) do
+          {:ok, _} ->
+            if run.runner do
+              Process.demonitor(run.runner.monitor, [:flush])
+              Process.exit(run.runner.pid, :shutdown)
+            end
+
+            OrganizationManager.cancel(state.goal_id, run.organization_id, :owner_exited)
+            reply_waiters(run.waiters, {:error, :cancelled})
+
+            tasks =
+              Map.new(run.task_statuses, fn {id, status} ->
+                {id, if(status == :pending, do: :cancelled, else: status)}
+              end)
+
+            run = %{
+              run
+              | status: :cancelled,
+                task_statuses: tasks,
+                runner: nil,
+                owner_monitor: nil,
+                waiters: [],
+                result: {:error, :cancelled}
+            }
+
+            {:noreply, put_in(state.runs[run_id], run)}
+
+          {:error, _reason} ->
+            # Do not silently lose the cancellation if the durable append fails.
+            Process.send_after(self(), {:DOWN, monitor, :process, nil, reason}, @resume_delay_ms)
+            {:noreply, state}
+        end
+
+      {_run_id, %{owner_monitor: ^monitor}} ->
         {:noreply, state}
 
       {run_id, run} ->
@@ -196,6 +246,7 @@ defmodule BeamAgent.Goal.WorkRunManager do
 
   defp start_runner(state, run_id) do
     with {:ok, state} <- persist_recovered_interruption(state, run_id),
+         {:ok, state} <- restore_owner_monitor(state, run_id),
          run when not is_nil(run) <- state.runs[run_id],
          {:ok, _parent} <- Agent.construction_context(run.parent_session_id),
          {:ok, _organization} <-
@@ -236,7 +287,26 @@ defmodule BeamAgent.Goal.WorkRunManager do
       end
     else
       nil -> {:error, :unknown_work_run, state}
+      {:error, reason, next} -> {:error, reason, next}
       {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp restore_owner_monitor(state, run_id) do
+    run = state.runs[run_id]
+
+    if is_binary(run.owner_turn_id) and is_nil(run.owner_monitor) do
+      case Agent.turn_owner(run.parent_session_id, run.owner_turn_id) do
+        {:ok, pid} ->
+          {:ok, put_in(state.runs[run_id].owner_monitor, Process.monitor(pid))}
+
+        {:error, _} ->
+          reference = make_ref()
+          send(self(), {:DOWN, reference, :process, nil, :owner_turn_finished})
+          {:error, :owner_turn_finished, put_in(state.runs[run_id].owner_monitor, reference)}
+      end
+    else
+      {:ok, state}
     end
   end
 
@@ -269,9 +339,11 @@ defmodule BeamAgent.Goal.WorkRunManager do
       "organization_id" => run.organization_id,
       "plan_id" => run.plan.id,
       "parent_session_id" => run.parent_session_id,
+      "owner_turn_id" => run.owner_turn_id,
       "strategy" => run.strategy.id,
       "maximum_attempts" => run.strategy.maximum_attempts,
       "maximum_parallelism" => run.strategy.maximum_parallelism,
+      "task_count" => map_size(run.plan.tasks),
       "plan" => DecompositionPlan.to_map(run.plan)
     })
   end
@@ -403,6 +475,8 @@ defmodule BeamAgent.Goal.WorkRunManager do
       result: nil,
       opts: durable_opts(opts),
       waiters: [],
+      owner_monitor: if(is_pid(opts[:owner]), do: Process.monitor(opts[:owner])),
+      owner_turn_id: opts[:owner_turn_id],
       runner: nil,
       interruptions: 0,
       recovered_interruption?: false
@@ -467,7 +541,7 @@ defmodule BeamAgent.Goal.WorkRunManager do
         )
         |> Map.put(
           :maximum_parallelism,
-          positive_integer(data["maximum_parallelism"], 1, 4)
+          positive_integer(data["maximum_parallelism"], 1, max(1, map_size(plan.tasks)))
         )
 
       run = %{
@@ -485,6 +559,8 @@ defmodule BeamAgent.Goal.WorkRunManager do
         result: nil,
         opts: [],
         waiters: [],
+        owner_monitor: nil,
+        owner_turn_id: data["owner_turn_id"],
         runner: nil,
         interruptions: 0,
         recovered_interruption?: false
@@ -542,7 +618,18 @@ defmodule BeamAgent.Goal.WorkRunManager do
 
   defp recover_event(%{"type" => "work_run_finished", "data" => data}, runs) do
     update_recovered(runs, data, fn run ->
-      %{run | status: status_atom(data["status"]), recovery: atomize_recovery(data["recovery"])}
+      status = status_atom(data["status"])
+
+      tasks =
+        if status == :cancelled do
+          Map.new(run.task_statuses, fn {id, task_status} ->
+            {id, if(task_status == :pending, do: :cancelled, else: task_status)}
+          end)
+        else
+          run.task_statuses
+        end
+
+      %{run | status: status, task_statuses: tasks, recovery: atomize_recovery(data["recovery"])}
     end)
   end
 
@@ -580,6 +667,18 @@ defmodule BeamAgent.Goal.WorkRunManager do
 
   defp resolve_plan(%DecompositionPlan{} = plan), do: {:ok, plan}
   defp resolve_plan(attributes), do: DecompositionPlan.new(attributes)
+
+  # Task nodes remain data until a slot is available. Strategy defaults express
+  # ordering, not an arbitrary team-size limit. The goal budget is authoritative.
+  defp graph_capacity(strategy, parent, plan) do
+    if strategy.mode in [:coordinator, :investigator] do
+      limit = parent.agent_spec.resources.limits.concurrent_workers
+      parallelism = if limit == :infinity, do: map_size(plan.tasks), else: limit
+      %{strategy | maximum_parallelism: max(1, min(parallelism, map_size(plan.tasks)))}
+    else
+      strategy
+    end
+  end
 
   defp resolve_strategy(%ExecutionStrategy{} = strategy, _parent), do: strategy
   defp resolve_strategy(id, _parent) when is_binary(id), do: ExecutionStrategy.resolve(id)
@@ -653,9 +752,11 @@ defmodule BeamAgent.Goal.WorkRunManager do
       :running -> :running
       :completed -> :completed
       :failed -> :failed
+      :cancelled -> :cancelled
       "running" -> :running
       "completed" -> :completed
       "failed" -> :failed
+      "cancelled" -> :cancelled
       "blocked" -> :blocked
       _other -> :failed
     end

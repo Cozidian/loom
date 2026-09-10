@@ -188,6 +188,9 @@ defmodule BeamAgent.Goal.DelegationManager do
 
   def handle_call({:complete, id, worker_id, content, verification}, _from, state) do
     case state.delegations[id] do
+      %{status: status} when status in [:cancelled, :failed, :rejected] ->
+        {:reply, {:error, {:delegation_terminal, status}}, state}
+
       %{worker_id: ^worker_id} = delegation ->
         result = WorkerResult.new(worker_id, id, :completed, content, verification)
         delegation = %{delegation | status: :completed, result: result}

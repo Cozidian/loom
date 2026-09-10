@@ -9,7 +9,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
 
   @impl true
   def description do
-    "Execute up to four bounded specialist tasks as supervised workers. Independent tasks overlap; dependent tasks run as ordered handoffs and may request different model endpoints."
+    "Execute a task graph as supervised subagents. Independent tasks overlap within configured capacity; excess tasks wait. Workers may share the same provider/model. Use disjoint paths or dependency handoffs for implementation tasks."
   end
 
   @impl true
@@ -23,7 +23,7 @@ defmodule BeamAgent.Tools.DelegateTasks do
         },
         tasks: %{
           type: "array",
-          maxItems: 4,
+          minItems: 1,
           items: %{
             type: "object",
             properties: %{
@@ -75,11 +75,13 @@ defmodule BeamAgent.Tools.DelegateTasks do
 
   @impl true
   def execute(%{"tasks" => tasks} = arguments, context)
-      when is_list(tasks) and length(tasks) in 1..4 do
+      when is_list(tasks) and tasks != [] do
     baseline = workspace_snapshot(context)
 
     opts = [
       strategy: arguments["strategy"] || "coordinate",
+      owner: Map.get(context, :turn_owner),
+      owner_turn_id: context.runtime_command.command_id,
       worker_options: [
         provider: context.provider,
         provider_profile: context.provider_profile,
@@ -102,11 +104,15 @@ defmodule BeamAgent.Tools.DelegateTasks do
     end
   end
 
-  def execute(_arguments, _context), do: {:error, :expected_one_to_four_tasks}
+  def execute(_arguments, _context), do: {:error, :expected_nonempty_tasks}
 
   defp reject_duplicate_goals(tasks) do
-    goals = Enum.map(tasks, &(Map.get(&1, "goal", "") |> String.trim() |> String.downcase()))
-    if Enum.uniq(goals) == goals, do: :ok, else: {:error, :duplicate_delegated_goal}
+    if Enum.all?(tasks, &(is_map(&1) and is_binary(Map.get(&1, "goal")))) do
+      goals = Enum.map(tasks, &(Map.fetch!(&1, "goal") |> String.trim() |> String.downcase()))
+      if Enum.uniq(goals) == goals, do: :ok, else: {:error, :duplicate_delegated_goal}
+    else
+      {:error, :invalid_decomposition_task}
+    end
   end
 
   defp encode_result(result, workspace_delta) do

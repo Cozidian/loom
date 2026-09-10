@@ -106,6 +106,39 @@ defmodule BeamAgent.CLITest do
     assert output =~ "Goal" or output =~ "completed"
   end
 
+  test "startup capacity flags reach the goal and project without rewriting config", context do
+    {0, _} = init_cli(context)
+    id = "capacity-#{System.unique_integer([:positive])}"
+
+    {0, _} =
+      run_stdout([
+        "run",
+        "hello",
+        "--config",
+        context.config_path,
+        "--workspace",
+        context.root,
+        "--session",
+        id,
+        "--max-workers",
+        "6",
+        "--model-concurrency",
+        "7"
+      ])
+
+    assert {:ok, budget} = BeamAgent.budget(id)
+    allocation = Enum.find(budget.allocations, &(&1.worker_id == id))
+    assert allocation.limits.concurrent_workers == 6
+    assert {:ok, goal} = BeamAgent.goal(id)
+
+    assert {:ok, %{model: %{limit: 7}, expensive_model: %{limit: 7}}} =
+             BeamAgent.resource_pools(goal.project_id)
+
+    assert {:ok, saved} = BeamAgent.CLI.Config.load(context.config_path)
+    assert saved["max_workers"] == 4
+    assert saved["model_concurrency"] == 4
+  end
+
   test "auto mode can be configured and toggled during chat", context do
     {status, setup_output} =
       run_stdout([

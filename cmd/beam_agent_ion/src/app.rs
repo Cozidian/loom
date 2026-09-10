@@ -583,6 +583,33 @@ impl App {
             "automatic_helpers_decided" if root => {
                 self.entry("info", &format!("Team · {}", s(data, "reason")));
             }
+            "worker_queued" => {
+                self.entry("info", "Subagent queued · waiting for worker capacity");
+                self.signal("Waiting for worker capacity");
+            }
+            "work_run_started" => {
+                let tasks = data.get("task_count").and_then(Value::as_u64).unwrap_or(0);
+                let slots = data
+                    .get("maximum_parallelism")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1);
+                self.entry(
+                    "info",
+                    &format!("Team graph · {tasks} tasks · {slots} worker slots"),
+                );
+            }
+            "worker_dequeued" => {
+                self.signal("Worker capacity available · starting subagent");
+            }
+            "worker_queue_cancelled" => {
+                self.signal("Queued subagent cancelled");
+            }
+            "resource_queued" => {
+                self.signal("Waiting for runtime resource capacity");
+            }
+            "work_run_task_attempt_started" => {
+                self.signal(&format!("Subagent started · {}", s(data, "task_id")));
+            }
             "worker_stall_suspected" => {
                 self.entry(
                     "info",
@@ -654,7 +681,7 @@ impl App {
         let label = if root {
             name.to_owned()
         } else {
-            format!("helper · {name}")
+            format!("subagent · {name}")
         };
         if kind == "tool_called" {
             let args = &data["arguments"];
