@@ -1,16 +1,31 @@
 defmodule BeamAgentWeb.RuntimeClient do
   @moduledoc "Bounded loopback-only HTTP client; no goal state, credentials in browser, or automatic command retries."
 
-  def snapshot, do: request(:get, "/api/v1/snapshot", nil)
+  def sessions, do: request(:get, "/api/v1/sessions", nil)
+  def create_session, do: request(:post, "/api/v1/sessions", %{})
 
-  def command(name, arguments) do
-    request(:post, "/api/v1/command", %{
+  def snapshot(session_id \\ nil) do
+    prefix = session_prefix(session_id)
+
+    with {:ok, snapshot} <- request(:get, prefix <> "/snapshot", nil) do
+      case request(:get, prefix <> "/conversation", nil) do
+        {:ok, conversation} -> {:ok, Map.put(snapshot, "conversation", conversation)}
+        {:error, _} -> {:ok, Map.put(snapshot, "conversation_unavailable", true)}
+      end
+    end
+  end
+
+  def command(name, arguments, session_id \\ nil) do
+    request(:post, session_prefix(session_id) <> "/command", %{
       version: 1,
       request_id: "desk-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false),
       command: name,
       arguments: arguments
     })
   end
+
+  defp session_prefix(nil), do: "/api/v1"
+  defp session_prefix(id), do: "/api/v1/sessions/" <> URI.encode(id, &URI.char_unreserved?/1)
 
   def token, do: Application.get_env(:beam_agent_web, :runtime_token)
 

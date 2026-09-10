@@ -23,10 +23,7 @@ defmodule BeamAgent.Goal.Reviewer do
           "Inspect the current diff and relevant source before reaching a conclusion.",
           "Do not modify files or accept claims unsupported by deterministic evidence."
         ],
-        capabilities: %{
-          tools: ["git_inspect", "read_file", "search_files", "file_diagnostics"],
-          paths: :all
-        },
+        capabilities: read_capabilities(construction),
         model_requirements: reviewer_requirements(reviewer_endpoint_id),
         verification_requirements: %{required: false, review_required: false},
         completion_criteria: "Return REVIEW_PASS, REVIEW_WARN, or REVIEW_FAIL with evidence"
@@ -79,6 +76,15 @@ defmodule BeamAgent.Goal.Reviewer do
       "REVIEW_WARN" <> _rest -> :warning
       _other -> :failed
     end
+  end
+
+  @doc false
+  def read_capabilities(context) do
+    tools = ~w(git_inspect read_file read_document search_files file_diagnostics)
+    allowed = context.capability_envelope.scopes.tools
+    # Omitted path scopes inherit the parent's exact authority. Asking for :all
+    # would escalate a legitimate finite workspace scope such as ["."].
+    %{tools: if(allowed == :all, do: tools, else: Enum.filter(tools, &(&1 in allowed)))}
   end
 
   def review_rubric do

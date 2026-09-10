@@ -21,6 +21,7 @@ defmodule BeamAgent.CLI do
     model_concurrency: :integer,
     context_window: :integer,
     compact_at: :integer,
+    frontend: :string,
     tui: :boolean
   ]
 
@@ -33,6 +34,28 @@ defmodule BeamAgent.CLI do
     {config_path, args} = extract_config_path(args)
 
     case args do
+      ["attach", id | rest] ->
+        with {:ok, opts, []} <- parse(rest, frontend: :string),
+             :ok <- validate_frontend(opts[:frontend]),
+             {:ok, record} <- BeamAgent.LocalDiscovery.lookup(id),
+             :ok <- TUI.attach(record, opts[:frontend]) do
+          0
+        else
+          _ ->
+            error(
+              "Cannot attach. Use an interactive terminal and a live session from Desk. No session was resumed."
+            )
+        end
+
+      ["document" | rest] ->
+        BeamAgent.CLI.Document.run(rest, config_path)
+
+      ["desk", flag] when flag in ["--help", "-h"] ->
+        desk_help()
+
+      ["desk" | rest] ->
+        desk_command(config_path, rest)
+
       [] ->
         default_command(config_path)
 
@@ -249,6 +272,7 @@ defmodule BeamAgent.CLI do
 
   defp run_command(config_path, args, require_existing? \\ false) do
     with {:ok, opts, prompt_parts} <- parse(args, @run_switches),
+         :ok <- validate_frontend(opts[:frontend]),
          {:ok, stored_config} <- Config.load(config_path),
          {:ok, config} <- Config.runtime(stored_config, opts[:profile]),
          config <- Config.merge_overrides(config, opts),
@@ -263,14 +287,20 @@ defmodule BeamAgent.CLI do
       prompt = Enum.join(prompt_parts, " ")
 
       if prompt == "" do
-        if TUI.available?(opts[:tui]) do
-          case TUI.run(session_id, config, config_path) do
-            :ok -> 0
-            {:error, reason} -> error(reason)
+        {:ok, endpoint} = publish_local_session(session_id, config, config_path)
+
+        try do
+          if TUI.available?(opts[:tui], opts[:frontend]) do
+            case TUI.run(session_id, Map.put(config, "frontend", opts[:frontend]), config_path) do
+              :ok -> 0
+              {:error, reason} -> error(reason)
+            end
+          else
+            UI.session_header(config, session_id)
+            chat_loop(session_id, config, config_path)
           end
-        else
-          UI.session_header(config, session_id)
-          chat_loop(session_id, config, config_path)
+        after
+          DynamicSupervisor.terminate_child(BeamAgent.LocalEndpointSupervisor, endpoint)
         end
       else
         UI.one_shot_header(config, session_id)
@@ -330,6 +360,125 @@ defmodule BeamAgent.CLI do
     end
   end
 
+  defp desk_command(config_path, args) do
+    # The first-run wizard is shared with the terminal workflow.
+    if match?({:error, {:not_initialized, _}}, Config.load(config_path)) do
+      case init_command(config_path, []) do
+        0 -> desk_command(config_path, args)
+        status -> status
+      end
+    else
+      with {:ok, opts, []} <- parse(args, @run_switches ++ [port: :integer, open: :boolean]),
+           :ok <- validate_frontend(opts[:frontend]),
+           :ok <- validate_desk_tui(opts),
+           true <- is_nil(opts[:port]) or opts[:port] in 0..65535,
+           {:ok, stored} <- Config.load(config_path),
+           {:ok, config} <- Config.runtime(stored, opts[:profile]),
+           config <- Config.merge_overrides(config, opts),
+           config <- Map.put(config, "model_endpoints", Config.model_endpoints(stored, config)),
+           config <-
+             Map.put(config, "workspace_root", Path.expand(opts[:workspace] || File.cwd!())),
+           :ok <- Config.validate_runtime(config),
+           :ok <- ensure_application_started(),
+           {:ok, id, owner?} <- desk_session(opts, config, config_path) do
+        try do
+          opts =
+            Keyword.merge(opts,
+              catalog_config: config,
+              config_path: config_path,
+              initial_session: id
+            )
+
+          launch_opts =
+            if opts[:tui] do
+              Keyword.put(opts, :on_ready, fn ->
+                if owner? do
+                  TUI.run(id, Map.put(config, "frontend", opts[:frontend]), config_path)
+                else
+                  with {:ok, record} <- BeamAgent.LocalDiscovery.lookup(id),
+                       do: TUI.attach(record, opts[:frontend])
+                end
+              end)
+            else
+              opts
+            end
+
+          case BeamAgent.CLI.Desk.run(id, launch_opts) do
+            :ok -> 0
+            {:error, reason} -> error(reason)
+          end
+        after
+          if owner?, do: BeamAgent.stop_session(id)
+        end
+      else
+        false -> usage_error("--port must be between 0 and 65535")
+        {:ok, _, _} -> usage_error("desk accepts flags, not a prompt")
+        {:error, reason} -> error(reason)
+      end
+    end
+  end
+
+  defp desk_session(opts, config, config_path) do
+    cond do
+      is_binary(opts[:session]) ->
+        with {:ok, _} <- BeamAgent.LocalDiscovery.lookup(opts[:session]),
+             do: {:ok, opts[:session], false}
+
+      opts[:tui] == true ->
+        with {:ok, id, _} <- create_local_session(config, config_path), do: {:ok, id, true}
+
+      true ->
+        {:ok, nil, false}
+    end
+  end
+
+  @doc false
+  def create_local_session(config, config_path) do
+    with {:ok, provider} <- Config.provider_atom(config["provider"]),
+         {:ok, id} <- ensure_session(nil, config, provider),
+         {:ok, endpoint} <- publish_local_session(id, config, config_path),
+         do: {:ok, id, endpoint}
+  end
+
+  defp publish_local_session(id, config, config_path) do
+    DynamicSupervisor.start_child(
+      BeamAgent.LocalEndpointSupervisor,
+      {BeamAgent.LocalEndpoint, session_id: id, config: config, config_path: config_path}
+    )
+  end
+
+  defp validate_frontend(nil), do: :ok
+  defp validate_frontend(frontend) when frontend in ["rust", "go"], do: :ok
+  defp validate_frontend(_), do: {:error, "--frontend must be rust or go"}
+
+  defp validate_desk_tui(opts) do
+    if opts[:tui] == true and not TUI.available?(true, opts[:frontend]),
+      do: {:error, "desk --tui needs an interactive terminal and a built TUI"},
+      else: :ok
+  end
+
+  defp desk_help do
+    output("""
+    Open the local session control center in your browser
+
+      beam_agent desk [--workspace PATH] [--profile NAME]
+      --port PORT       browser port (default: choose an available port)
+      --no-open         print the one-time launch link without opening a browser
+      --session ID      open an existing LIVE session without resuming its storage
+      --tui             also open a TUI on the SAME live session (new if no ID given)
+
+    No exported variables or separate server terminals. The browser authenticates
+    through a short-lived, single-use launch link; the runtime token stays private.
+    Keep this command running. Closing the tab does not stop work; stopping this
+    command stops Desk and sessions created by this Desk process, not other TUIs.
+    Plain desk creates no work session. The overview discovers live CLI sessions.
+    Older running binaries need one restart to publish their connection.
+    Use beam_agent attach SESSION_ID to attach a terminal without a second owner.
+    With --tui, exiting the TUI also stops this Desk launcher.
+    One-time build: mix beam_agent.build
+    """)
+  end
+
   defp api_token,
     do: :crypto.strong_rand_bytes(32) |> Base.url_encode64(padding: false)
 
@@ -337,7 +486,17 @@ defmodule BeamAgent.CLI do
 
   defp require_existing_session(session_id, config, true) do
     path = Path.join([config["data_dir"], session_id, "events.jsonl"])
-    if File.regular?(path), do: :ok, else: {:error, {:session_not_found, session_id}}
+
+    cond do
+      not File.regular?(path) ->
+        {:error, {:session_not_found, session_id}}
+
+      match?({:ok, _}, BeamAgent.LocalDiscovery.lookup(session_id)) ->
+        {:error, "Session is already live. Use beam_agent attach #{session_id}, not resume."}
+
+      true ->
+        :ok
+    end
   end
 
   defp ensure_session(nil, config, provider) do
@@ -345,6 +504,7 @@ defmodule BeamAgent.CLI do
       Config.capacity_options(config) ++
         [
           provider: provider,
+          strategy: BeamAgent.Strategies.ToolLoop,
           provider_options: Config.provider_options(config),
           provider_profile: config["profile"],
           data_dir: config["data_dir"],
@@ -371,6 +531,7 @@ defmodule BeamAgent.CLI do
           Config.capacity_options(config) ++
             [
               provider: provider,
+              strategy: BeamAgent.Strategies.ToolLoop,
               provider_options: Config.provider_options(config),
               provider_profile: config["profile"],
               data_dir: config["data_dir"],
@@ -1401,6 +1562,9 @@ defmodule BeamAgent.CLI do
 
     Start here:
       beam_agent                             open an interactive chat
+      beam_agent desk                        start runtime + Phoenix Desk in one command
+      beam_agent attach SESSION_ID           attach a TUI to an existing live runtime
+      beam_agent document --help             guarded Word editing and verification
       beam_agent run "your prompt"           run once and exit
       beam_agent resume SESSION              continue a saved session
       beam_agent serve SESSION               web control plane + JSON API
@@ -1438,6 +1602,7 @@ defmodule BeamAgent.CLI do
       --context-window TOKENS                estimated model context capacity
       --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
+      --frontend rust|go                     choose a TUI (default: ION, Go fallback)
 
     Running `beam_agent init` opens a guided setup. For automated setup, add
     --non-interactive and provide provider/model flags explicitly.

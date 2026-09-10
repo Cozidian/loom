@@ -15,6 +15,8 @@ defmodule BeamAgent.ControlPlane do
   end
 
   def snapshot(control_plane), do: GenServer.call(control_plane, :snapshot, 30_000)
+  def conversation(control_plane), do: GenServer.call(control_plane, :conversation)
+  def identity(control_plane), do: GenServer.call(control_plane, :identity)
   def submit(control_plane, prompt), do: GenServer.call(control_plane, {:submit, prompt})
   def cancel(control_plane), do: GenServer.call(control_plane, :cancel)
 
@@ -30,16 +32,31 @@ defmodule BeamAgent.ControlPlane do
   @impl true
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
+    owner_view? = Keyword.get(opts, :conversation, false)
 
-    with {:ok, runtime} <- Runtime.connect(session_id, subscriber: self(), view: :public),
+    with {:ok, runtime} <-
+           Runtime.connect(session_id,
+             subscriber: self(),
+             view: if(owner_view?, do: :internal, else: :public)
+           ),
          {:ok, bootstrap} <- Runtime.bootstrap(runtime) do
       {:ok,
        %{
          runtime: runtime,
          session_id: session_id,
          cursor: bootstrap.cursor,
+         owner_view?: owner_view?,
+         conversation:
+           Enum.reduce(
+             bootstrap.events,
+             BeamAgent.ControlPlane.Conversation.new(),
+             &BeamAgent.ControlPlane.Conversation.consume/2
+           ),
          pending_approvals: %{},
-         recent_events: Enum.take(bootstrap.events, -500)
+         recent_events:
+           bootstrap.events
+           |> Enum.take(-500)
+           |> Enum.map(&BeamAgent.RuntimeEventView.project(&1, :public))
        }}
     end
   end
@@ -48,6 +65,15 @@ defmodule BeamAgent.ControlPlane do
   def handle_call(:snapshot, _from, state) do
     {:reply, build_snapshot(state), state}
   end
+
+  def handle_call(:identity, _from, state),
+    do: {:reply, {:ok, %{session_id: state.session_id}}, state}
+
+  def handle_call(:conversation, _from, %{owner_view?: true} = state),
+    do: {:reply, {:ok, Map.put(state.conversation, :session_id, state.session_id)}, state}
+
+  def handle_call(:conversation, _from, state),
+    do: {:reply, {:error, :conversation_not_enabled}, state}
 
   def handle_call({:submit, prompt}, _from, state),
     do: {:reply, Runtime.submit(state.runtime, prompt), state}
@@ -82,8 +108,11 @@ defmodule BeamAgent.ControlPlane do
     cursor =
       if is_integer(event.goal_seq), do: max(state.cursor, event.goal_seq), else: state.cursor
 
-    events = Enum.take(state.recent_events ++ [event], -500)
-    {:noreply, %{state | cursor: cursor, recent_events: events}}
+    events =
+      Enum.take(state.recent_events ++ [BeamAgent.RuntimeEventView.project(event, :public)], -500)
+
+    conversation = BeamAgent.ControlPlane.Conversation.consume(event, state.conversation)
+    {:noreply, %{state | cursor: cursor, recent_events: events, conversation: conversation}}
   end
 
   def handle_info(

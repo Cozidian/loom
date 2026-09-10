@@ -77,6 +77,87 @@ defmodule BeamAgent.ControlPlaneTest do
     assert {:ok, _agent} = BeamAgent.agent_pid(session_id)
   end
 
+  test "owner conversation is opt-in, bearer-only, replayable and separate from public metadata",
+       context do
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo
+      )
+
+    {:ok, answer} = BeamAgent.ask(id, "private-output-sentinel")
+    token = "private-conversation-test-token"
+    {:ok, server} = BeamAgent.start_web_control_plane(id, token: token, conversation: true)
+    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    {:ok, url} = BeamAgent.ControlPlane.HTTPServer.url(server)
+    port = URI.parse(url).port
+
+    {:ok, public} =
+      http_request(
+        port,
+        "GET /api/v1/snapshot HTTP/1.1\r\nhost: localhost\r\nauthorization: Bearer #{token}\r\n\r\n"
+      )
+
+    refute public =~ "private-output-sentinel"
+
+    {:ok, private} =
+      http_request(
+        port,
+        "GET /api/v1/conversation HTTP/1.1\r\nhost: localhost\r\nauthorization: Bearer #{token}\r\n\r\n"
+      )
+
+    assert private =~ answer
+    assert private =~ "no-store"
+
+    {:ok, denied} =
+      http_request(
+        port,
+        "GET /api/v1/conversation?token=#{token} HTTP/1.1\r\nhost: localhost\r\n\r\n"
+      )
+
+    assert denied =~ "401 Unauthorized"
+    refute denied =~ answer
+    {:ok, disabled} = BeamAgent.ControlPlane.start_link(session_id: id)
+    assert {:error, :conversation_not_enabled} = BeamAgent.ControlPlane.conversation(disabled)
+    GenServer.stop(disabled)
+  end
+
+  test "conversation projection excludes child, reasoning and tool payloads and bounds text" do
+    alias BeamAgent.ControlPlane.Conversation
+    root = "root"
+
+    event = fn session, seq, type, data ->
+      BeamAgent.RuntimeEvent.durable("project", root, session, %{
+        "seq" => seq,
+        "type" => type,
+        "data" => data
+      })
+    end
+
+    state = Conversation.new()
+
+    for {session, type} <- [
+          {"child", "assistant_message"},
+          {root, "tool_result"},
+          {root, "model_response_checkpoint"}
+        ] do
+      assert Conversation.consume(event.(session, 1, type, %{"content" => "secret"}), state).messages ==
+               []
+    end
+
+    long = String.duplicate("æ", 20_000)
+
+    result =
+      Enum.reduce(1..30, state, fn seq, acc ->
+        Conversation.consume(event.(root, seq, "assistant_message", %{"content" => long}), acc)
+      end)
+
+    assert length(result.messages) <= 24
+    assert Enum.sum(Enum.map(result.messages, &byte_size(&1.content))) <= 128_000
+    assert Enum.all?(result.messages, &(&1.truncated and String.valid?(&1.content)))
+  end
+
   defp http_request(port, request) do
     with {:ok, socket} <-
            :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 2_000),

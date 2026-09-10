@@ -44,6 +44,7 @@ defmodule BeamAgent.AgentConstructor do
       %{required: false, source: "goal_default"}
       |> Map.merge(template.verification_requirements)
       |> Map.put(:review_required, Keyword.get(opts, :completion_review, :runtime) != :external)
+      |> Map.put(:plan, Keyword.get(opts, :verification_plan, :auto))
 
     with :ok <- validate_maximum_delegation_depth(maximum_delegation_depth),
          {:ok, context} <- ProjectContext.load(workspace_root),
@@ -55,7 +56,12 @@ defmodule BeamAgent.AgentConstructor do
         context_refs: [%{kind: "project_context", id: context.fingerprint}],
         requested_capabilities: authority.requested,
         effective_capabilities: authority.effective,
-        restrictions: restrictions(workspace_root, envelope),
+        restrictions:
+          Map.put(
+            restrictions(workspace_root, envelope),
+            :document,
+            Keyword.get(opts, :document_binding)
+          ),
         resources: resources(opts),
         model_requirements: root_model_requirements(opts, template),
         verification_requirements: verification_requirements,
@@ -129,7 +135,12 @@ defmodule BeamAgent.AgentConstructor do
           ],
           requested_capabilities: authority.requested,
           effective_capabilities: authority.effective,
-          restrictions: restrictions(parent.workspace_root, authority.effective),
+          restrictions:
+            Map.put(
+              restrictions(parent.workspace_root, authority.effective),
+              :document,
+              parent.agent_spec.restrictions[:document]
+            ),
           resources: resources_from_parent(parent, opts),
           model_requirements: model_requirements(proposal, parent, template),
           verification_requirements: verification_requirements(proposal, template, opts),

@@ -45,6 +45,15 @@ defmodule BeamAgent.EvaluationEvidenceTest do
     assert Usage.summarize([]).usage_status == :not_applicable
   end
 
+  test "canonical event log records have the same coverage as wrapped runtime events" do
+    wrapped = [event(:model_response_started), event(:model_response_finished)]
+    canonical = Enum.map(wrapped, & &1.payload)
+    persisted = canonical |> JSON.encode!() |> JSON.decode!()
+    assert Usage.summarize(canonical) == Usage.summarize(wrapped)
+    assert Usage.summarize(persisted).usage_status == :unknown
+    assert Usage.summarize(persisted).total_tokens == nil
+  end
+
   test "a failed runner with unavailable event evidence is not reported as free" do
     result =
       Usage.aggregate([

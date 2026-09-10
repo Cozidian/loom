@@ -1,7 +1,7 @@
 import Config
 
 config :phoenix, :json_library, Jason
-config :phoenix, :filter_parameters, ["token", "_csrf_token"]
+config :phoenix, :filter_parameters, ["token", "ticket", "_csrf_token"]
 
 config :beam_agent_web, BeamAgentWeb.Endpoint,
   url: [host: "localhost"],

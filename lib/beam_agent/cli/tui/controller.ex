@@ -29,6 +29,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def init(opts) do
     state = %{
       client: Keyword.fetch!(opts, :client),
+      client_monitor: Process.monitor(Keyword.fetch!(opts, :client)),
       runtime: nil,
       runtime_monitor: nil,
       session_id: Keyword.fetch!(opts, :session_id),
@@ -58,6 +59,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       state = %{
         state
         | runtime: runtime,
+          current: if(subscription.running?, do: :observing, else: nil),
           runtime_monitor: Process.monitor(runtime),
           project_id: subscription.project_id,
           goal_id: subscription.goal_id,
@@ -69,6 +71,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
       }
 
       notify(state, {:controller_ready, self()})
+      if state.current == :observing, do: notify(state, {:turn_started, ""})
       notify(state, {:approval_mode, subscription.approval_policy})
       notify_context_stats(state)
       {:ok, state}
@@ -274,7 +277,11 @@ defmodule BeamAgent.CLI.TUI.Controller do
     {:noreply, %{state | settings_task: nil}}
   end
 
+  def handle_info({:DOWN, ref, :process, _, _}, %{client_monitor: ref} = state),
+    do: {:stop, :normal, state}
+
   def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
+    state = observe_shared_turn(state, event)
     notify(state, {:stream, event})
     state = schedule_work_projection(state, event)
 
@@ -514,6 +521,33 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
     :ok
   end
+
+  # A different client can submit to this same runtime. Its caller-specific
+  # notifications do not reach us, but the canonical lifecycle events do.
+  defp observe_shared_turn(%{current: nil} = state, %{
+         durability: :durable,
+         scope: %{root?: true},
+         payload: %{type: "user_message", data: data}
+       }) do
+    notify(state, {:turn_started, data["content"] || ""})
+    %{state | current: :observing}
+  end
+
+  defp observe_shared_turn(%{current: :observing} = state, %{
+         durability: :durable,
+         scope: %{root?: true},
+         payload: %{type: "turn_finished", data: data}
+       }) do
+    result =
+      if data["reason"] == "completed",
+        do: {:ok, ""},
+        else: {:error, data["reason"] || :work_stopped}
+
+    notify(state, {:turn_finished, result})
+    %{state | current: nil}
+  end
+
+  defp observe_shared_turn(state, _), do: state
 
   defp run_command(_command, %{settings_task: task} = state) when not is_nil(task) do
     notify(state, {:notice, :warning, "Wait for the settings request to finish"})

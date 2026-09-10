@@ -5,7 +5,7 @@ defmodule BeamAgent.ToolRunner do
   alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
   alias BeamAgent.Project.PathLeaseManager
 
-  @write_tools ~w(apply_patch create_file edit_file)
+  @write_tools ~w(apply_patch create_file edit_file fill_document render_document)
 
   def execute(module, arguments, context) do
     arguments = normalize_workspace_arguments(arguments, context)
@@ -14,6 +14,8 @@ defmodule BeamAgent.ToolRunner do
     resource = resource(module.name(), arguments)
 
     with :ok <- authorize_capability(context, resource),
+         :ok <- authorize_document_source(context, module.name(), arguments),
+         :ok <- authorize_document_binding(context, module.name(), arguments),
          :ok <-
            ToolPolicy.authorize(context.session_id, module.name(), arguments, access, resource),
          :ok <- consume_budget(context, module.name(), arguments),
@@ -27,6 +29,28 @@ defmodule BeamAgent.ToolRunner do
       result
     end
   end
+
+  defp authorize_document_binding(
+         %{agent_spec: %{restrictions: %{document: %{source: source, path: path}}}},
+         "fill_document",
+         arguments
+       ) do
+    if arguments["source"] == source and arguments["path"] == path,
+      do: :ok,
+      else: {:error, :document_binding_denied}
+  end
+
+  defp authorize_document_binding(_, _, _), do: :ok
+
+  defp authorize_document_source(context, tool, %{"source" => source})
+       when tool in ["fill_document", "render_document"] and is_binary(source),
+       do: authorize_capability(context, %{tools: tool, paths: source})
+
+  defp authorize_document_source(_context, tool, _)
+       when tool in ["fill_document", "render_document"],
+       do: {:error, :expected_document_source}
+
+  defp authorize_document_source(_context, _tool, _arguments), do: :ok
 
   def execute_mcp(server, tool, arguments, context, invoke) when is_function(invoke, 0) do
     name = "mcp__#{server}__#{tool}"
@@ -118,12 +142,13 @@ defmodule BeamAgent.ToolRunner do
   defp git_operation("git_inspect", arguments), do: arguments["operation"]
   defp git_operation(_tool, _arguments), do: nil
   defp browser_scope(tool) when tool in ["browser", "browser_control"], do: "interactive"
+  defp browser_scope("render_document"), do: "desktop-document"
   defp browser_scope(_tool), do: nil
   defp stringify(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   defp normalize_workspace_arguments(arguments, %{workspace_root: workspace_root})
        when is_map(arguments) and is_binary(workspace_root) do
-    Enum.reduce(["path", "cwd"], arguments, fn key, normalized ->
+    Enum.reduce(["path", "cwd", "source"], arguments, fn key, normalized ->
       case normalized[key] do
         path when is_binary(path) and path != "" ->
           Map.put(normalized, key, workspace_argument(path, workspace_root))
@@ -205,7 +230,7 @@ defmodule BeamAgent.ToolRunner do
   end
 
   defp publish_deterministic_result(context, tool, arguments, result) do
-    if match?({:ok, _}, result) and tool in ["create_file", "edit_file", "apply_patch"] do
+    if match?({:ok, _}, result) and tool in @write_tools do
       _ = BeamAgent.Project.RepositoryIndex.notify_change(context.project_id)
     end
 

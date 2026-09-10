@@ -6,7 +6,7 @@ inspecting its owners, and examining what actually happened.
 
 ION does not create a second agent runtime. Elixir still owns provider routing,
 supervision, delegation, races/tournaments, tools, policy, persistence and recovery.
-The original Go frontend remains available and remains the default.
+ION is the default. The original Go frontend remains available with `--frontend go`.
 
 ## Run
 
@@ -16,12 +16,13 @@ palette; the UI also adapts to narrow terminals without requiring a Nerd Font.
 
 ```sh
 mix beam_agent.build --frontend rust
-BEAM_AGENT_TUI_BIN=./beam_agent_ion ./beam_agent
+./beam_agent
 ```
 
 The existing CLI configuration, setup wizard, flags, workspace and provider
-profiles apply unchanged. To launch from another directory, use absolute paths to
-both executables. `mix beam_agent.build --frontend all` builds both clients.
+profiles apply unchanged. To launch from another directory, use an absolute path
+to `beam_agent` and keep `beam_agent_ion` beside it. The default
+`mix beam_agent.build` prepares ION and Desk; `--frontend all` also builds Go.
 
 ```sh
 ./beam_agent_ion --demo       # interactive simulated workspace, no model calls
@@ -30,6 +31,11 @@ both executables. `mix beam_agent.build --frontend all` builds both clients.
 
 The standalone executable needs inherited bridge descriptors unless `--demo` or
 `--snapshot` is selected. Do not launch it directly for a real session.
+
+To join an existing live runtime, use `./beam_agent attach SESSION_ID` with the ID
+shown in Desk. This starts only a frontend/connection, not a second session owner.
+Closing it leaves the owner running. Desk discovers interactive CLI sessions
+started with the rebuilt binary; older processes need one restart.
 
 ## Work differently
 
@@ -226,7 +232,7 @@ Unavailable-model errors list the catalogue and explain `--model MODEL`; nested
 provider JSON errors are unwrapped into readable messages in both TUIs.
 
 If a saved model is rejected, select an available model explicitly using
-`BEAM_AGENT_TUI_BIN="$PWD/beam_agent_ion" ./beam_agent --model MODEL`, or update
+`./beam_agent --model MODEL`, or update
 the saved provider profile through `/models` or `/providers`. No model or account
 configuration is silently changed.
 

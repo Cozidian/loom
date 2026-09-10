@@ -32,7 +32,7 @@ defmodule BeamAgentWeb.DeskTest do
       )
 
     token = "desk-test-token-0123456789"
-    {:ok, server} = BeamAgent.start_web_control_plane(id, token: token)
+    {:ok, server} = BeamAgent.start_web_control_plane(id, token: token, conversation: true)
     {:ok, url} = BeamAgent.ControlPlane.HTTPServer.url(server)
     port = URI.parse(url).port
     Application.put_env(:beam_agent_web, :runtime_url, "http://127.0.0.1:#{port}")
@@ -64,6 +64,43 @@ defmodule BeamAgentWeb.DeskTest do
     assert snapshot["session_id"] == ctx.id
   end
 
+  test "launch ticket establishes a browser session exactly once without sharing the runtime token",
+       ctx do
+    ticket = String.duplicate("launch-once-", 4)
+    :ok = BeamAgentWeb.LaunchTicket.issue(ticket)
+    conn = get(local_conn(), "/")
+    refute conn.resp_body =~ ticket
+    conn = post(recycle(conn), "/launch", %{"ticket" => ticket, "_csrf_token" => csrf(conn)})
+    assert conn.status == 204
+    assert get(recycle(conn), "/").resp_body =~ ctx.id
+    fresh = get(local_conn(), "/")
+
+    assert post(recycle(fresh), "/launch", %{"ticket" => ticket, "_csrf_token" => csrf(fresh)}).status ==
+             401
+  end
+
+  test "expired tickets and runtime bearer tokens cannot bootstrap a session", ctx do
+    ticket = String.duplicate("expired-", 5)
+    :ok = BeamAgentWeb.LaunchTicket.issue(ticket, -1)
+    refute BeamAgentWeb.LaunchTicket.consume(ticket)
+    :ok = BeamAgentWeb.LaunchTicket.issue(String.duplicate("fresh-", 8))
+    refute BeamAgentWeb.LaunchTicket.consume(ctx.token)
+    refute BeamAgentWeb.LaunchTicket.consume(nil)
+  end
+
+  test "launch requires CSRF and a rejected request does not consume the ticket" do
+    ticket = String.duplicate("csrf-launch-", 4)
+    :ok = BeamAgentWeb.LaunchTicket.issue(ticket)
+
+    assert_error_sent(403, fn ->
+      local_conn()
+      |> put_private(:plug_skip_csrf_protection, false)
+      |> post("/launch", %{"ticket" => ticket})
+    end)
+
+    assert BeamAgentWeb.LaunchTicket.consume(ticket)
+  end
+
   test "submit reaches the actual supervised runtime; logout does not stop its goal", ctx do
     conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
 
@@ -77,10 +114,21 @@ defmodule BeamAgentWeb.DeskTest do
     assert_event(ctx.id, "turn_finished")
     conn = get(recycle(conn), "/")
     assert conn.resp_body =~ "turn finished"
+    assert conn.resp_body =~ "Conversation &amp; output"
+    assert conn.resp_body =~ "echo(1): Desk connection works"
+    assert conn.resp_body =~ "Work completed"
     conn = post(recycle(conn), "/logout", %{"_csrf_token" => csrf(conn)})
     assert redirected_to(conn) == "/"
     assert {:ok, _} = BeamAgent.agent_pid(ctx.id)
     assert get(recycle(conn), "/panels").status == 401
+  end
+
+  test "model output is readable text, never executable HTML", ctx do
+    {:ok, _} = BeamAgent.ask(ctx.id, "<script>alert('output')</script> & result")
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
+    assert conn.resp_body =~ "&lt;script&gt;"
+    refute conn.resp_body =~ "<script>alert('output')</script>"
+    assert conn.resp_body =~ "Assistant output"
   end
 
   test "CSRF and foreign host requests are rejected", ctx do

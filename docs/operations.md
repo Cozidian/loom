@@ -52,23 +52,43 @@ mix beam_agent.build
 ./beam_agent
 ```
 
-The build requires Elixir/OTP and Go. It produces sibling `beam_agent` and
-`beam_agent_tui` executables; keep them together when moving the CLI. Set
-`BEAM_AGENT_TUI_BIN` to an explicit frontend path when packaging them in
-different locations. `mix escript.build` still builds only the Elixir CLI.
+The default one-time build requires Elixir/OTP and Rust 1.88+, and prepares ION,
+Phoenix Desk and the CLI. ION is the default terminal client, with Go as a fallback
+if only that binary exists. Keep `beam_agent` and `beam_agent_ion` together when
+moving them. Desk currently also needs `cmd/beam_agent_web` and its built Mix
+dependencies beside the CLI; this is a checkout workflow, not a standalone release.
+No environment exports are needed for ordinary startup.
 
-To build and launch **ION**, the alternative Rust frontend (Rust 1.88+ required;
-Go is not needed for this build):
+For only the terminal client:
 
 ```sh
 mix beam_agent.build --frontend rust
-BEAM_AGENT_TUI_BIN=./beam_agent_ion ./beam_agent
+./beam_agent
 ```
 
 Preview the design without a provider or configuration using
-`./beam_agent_ion --demo`. `mix beam_agent.build --frontend all` builds both
-clients; the Go frontend remains the default. See the [ION field manual](ion-tui.md)
+`./beam_agent_ion --demo`. `mix beam_agent.build --frontend all` also builds the
+Go client (requires Go); select it with `./beam_agent --frontend go`.
+`--frontend web` prepares Desk alone, and `mix escript.build` builds only the CLI.
+Explicit `BEAM_AGENT_TUI_BIN` overrides remain available for custom packaging.
+See the [ION field manual](ion-tui.md)
 for controls, protocol details, and verification commands.
+
+For browser work, `./beam_agent desk` opens a live-session overview and one-use
+login link. It creates no work session until requested. `--no-open` prints the
+link; `--port 4100` chooses a fixed frontend port. Interactive CLI sessions publish
+private loopback connections; older binaries need one restart.
+`./beam_agent attach SESSION_ID` attaches a terminal to the existing runtime;
+`desk --session ID` opens that live session in the browser. Neither resumes its
+storage. See the [Desk guide](../cmd/beam_agent_web/README.md).
+
+For insert-only Word-template work, see the [document workflow](document-workflow.md),
+including dependency checks, original protection and render-only recovery.
+
+Use `./beam_agent desk --tui` to open browser and terminal views on the same live
+session. Separate TUI launches create separate sessions, which Desk can discover.
+Exiting the combined TUI stops its Desk launcher. Independently owned TUI sessions
+survive Desk closure; sessions created inside Desk require its foreground process.
 
 Running `beam_agent` opens the terminal chat. On the first launch it walks
 through setup first, configuring the provider, model, durable session directory,
@@ -235,7 +255,7 @@ stay solo; agents are not launched just to fill slots.
 For example, allow an owner and up to five subagents:
 
 ```sh
-BEAM_AGENT_TUI_BIN="$PWD/beam_agent_ion" ./beam_agent \
+./beam_agent \
   --model-strategy manual --team-mode auto \
   --max-workers 5 --model-concurrency 6
 ```

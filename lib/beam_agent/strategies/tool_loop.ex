@@ -1931,10 +1931,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
           "Use git_inspect before reaching a conclusion.",
           "Do not modify files and do not accept claims unsupported by the diff or tests."
         ],
-        capabilities: %{
-          tools: ["git_inspect", "read_file", "search_files", "file_diagnostics"],
-          paths: :all
-        },
+        capabilities: BeamAgent.Goal.Reviewer.read_capabilities(context),
         verification_requirements: %{required: false},
         completion_criteria: "Return REVIEW_PASS or REVIEW_FAIL with evidence"
       }

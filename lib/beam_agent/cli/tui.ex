@@ -8,32 +8,38 @@ defmodule BeamAgent.CLI.TUI do
   @competition_event_types ~w(tournament_started tournament_candidate_started tournament_candidate_completed tournament_judgment_requested tournament_winner_selected tournament_collapsed tournament_inconclusive tournament_judgment_unresolved race_started race_candidate_started race_candidate_completed race_candidate_rejected race_candidate_cancelled race_winner_selected race_settled race_inconclusive)
   @competition_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
-  def available?(override \\ nil)
+  def available?(override \\ nil, frontend \\ nil)
 
-  def available?(false), do: false
+  def available?(false, _frontend), do: false
 
-  def available?(_override) do
+  def available?(_override, frontend) do
     System.get_env("BEAM_AGENT_NO_TUI") not in ["1", "true"] and
       System.get_env("TERM") not in [nil, "", "dumb"] and
-      not is_nil(executable()) and tty?()
+      not is_nil(executable(frontend)) and tty?()
   end
 
   @doc false
-  def executable do
+  def executable(frontend \\ nil)
+
+  def executable(frontend) when frontend in ["rust", "go"] do
+    binaries(if(frontend == "rust", do: "beam_agent_ion", else: "beam_agent_tui"))
+    |> Enum.find_value(&System.find_executable/1)
+  end
+
+  def executable(nil) do
     case System.get_env("BEAM_AGENT_TUI_BIN") do
       override when is_binary(override) and override != "" ->
         path = if String.contains?(override, "/"), do: Path.expand(override), else: override
         System.find_executable(path)
 
       _ ->
-        [escript_sibling(), Path.expand("beam_agent_tui"), application_binary()]
-        |> Enum.reject(&is_nil/1)
+        (binaries("beam_agent_ion") ++ binaries("beam_agent_tui"))
         |> Enum.find_value(&System.find_executable/1)
     end
   end
 
   def run(session_id, config, config_path \\ Config.path()) do
-    with executable when is_binary(executable) <- executable(),
+    with executable when is_binary(executable) <- executable(config["frontend"]),
          {:ok, port} <- open_port(executable),
          {:ok, controller} <-
            Controller.start_link(
@@ -55,8 +61,140 @@ defmodule BeamAgent.CLI.TUI do
         close_port(port)
       end
     else
-      nil -> {:error, :go_tui_not_built}
+      nil -> {:error, :tui_not_built}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc false
+  def serve_socket(socket, session_id, config, config_path) do
+    with {:ok, controller} <-
+           Controller.start_link(
+             client: self(),
+             session_id: session_id,
+             config: config,
+             config_path: config_path
+           ),
+         {:ok, bootstrap} <- Controller.bootstrap(controller) do
+      try do
+        :ok = :gen_tcp.send(socket, JSON.encode!(initial_payload(session_id, config, bootstrap)))
+        :ok = :inet.setopts(socket, active: :once)
+        socket_loop(socket, controller)
+      after
+        stop_controller(controller)
+      end
+    end
+  end
+
+  def attach(record, frontend \\ nil) do
+    id = record["session_id"]
+
+    with true <- available?(true, frontend),
+         {:ok, socket} <-
+           :gen_tcp.connect(
+             {127, 0, 0, 1},
+             record["tui_port"],
+             [:binary, packet: 4, packet_size: 16_777_216, active: false],
+             2000
+           ) do
+      try do
+        with :ok <- :gen_tcp.send(socket, JSON.encode!(%{token: record["token"]})),
+             {:ok, bytes} <- :gen_tcp.recv(socket, 0, 10_000),
+             {:ok, %{"type" => "init", "session_id" => ^id} = initial} <- JSON.decode(bytes),
+             {:ok, port} <- open_port(executable(frontend)) do
+          try do
+            :ok = send_packet(port, initial)
+            :ok = :inet.setopts(socket, active: :once)
+            relay_loop(socket, port)
+          after
+            close_port(port)
+          end
+        else
+          _ -> {:error, :live_attachment_failed}
+        end
+      after
+        :gen_tcp.close(socket)
+      end
+    else
+      false -> {:error, :interactive_tui_required}
+      error -> error
+    end
+  end
+
+  defp socket_loop(socket, controller) do
+    receive do
+      {:tcp, ^socket, bytes} ->
+        case JSON.decode(bytes) do
+          {:ok, %{"type" => "command", "command" => command}} when command in ["new", "resume"] ->
+            :gen_tcp.send(
+              socket,
+              JSON.encode!(%{
+                type: "notice",
+                tone: "warning",
+                message:
+                  "This is a live attachment. Exit and use beam_agent attach SESSION_ID to change sessions."
+              })
+            )
+
+          {:ok, action} when is_map(action) ->
+            case dispatch_action(action, controller) do
+              {:error, _} ->
+                :gen_tcp.send(
+                  socket,
+                  JSON.encode!(%{
+                    type: "notice",
+                    tone: "error",
+                    message: "Action rejected by runtime"
+                  })
+                )
+
+              _ ->
+                :ok
+            end
+
+          _ ->
+            :ok
+        end
+
+        :inet.setopts(socket, active: :once)
+        socket_loop(socket, controller)
+
+      {:beam_agent_tui, message} ->
+        if payload = notification_payload(message),
+          do: :gen_tcp.send(socket, JSON.encode!(payload))
+
+        socket_loop(socket, controller)
+
+      {:tcp_closed, ^socket} ->
+        :ok
+
+      {:tcp_error, ^socket, _} ->
+        :ok
+    end
+  end
+
+  defp relay_loop(socket, port) do
+    receive do
+      {:tcp, ^socket, bytes} ->
+        Port.command(port, bytes)
+        :inet.setopts(socket, active: :once)
+        relay_loop(socket, port)
+
+      {^port, {:data, bytes}} ->
+        :gen_tcp.send(socket, bytes)
+        relay_loop(socket, port)
+
+      {^port, {:exit_status, 0}} ->
+        :ok
+
+      {^port, {:exit_status, _}} ->
+        {:error, :tui_stopped}
+
+      {:tcp_closed, ^socket} ->
+        {:error, :runtime_disconnected}
+
+      {:tcp_error, ^socket, _} ->
+        {:error, :runtime_disconnected}
     end
   end
 
@@ -282,6 +420,16 @@ defmodule BeamAgent.CLI.TUI do
 
   defp bridge_loop(port, controller, monitor) do
     receive do
+      {:desk_disconnected, _status} ->
+        :ok =
+          send_packet(port, %{
+            type: "notice",
+            tone: "warning",
+            message: "Desk stopped. This terminal session is still available."
+          })
+
+        bridge_loop(port, controller, monitor)
+
       {^port, {:data, data}} ->
         with {:ok, action} <- JSON.decode(data),
              :ok <- dispatch_action(action, controller) do
@@ -1058,10 +1206,15 @@ defmodule BeamAgent.CLI.TUI do
       match?({:ok, _rows}, :io.rows(:standard_io))
   end
 
-  defp escript_sibling do
+  defp binaries(name) do
+    [escript_sibling(name), Path.expand("../../../" <> name, __DIR__), application_binary(name)]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp escript_sibling(binary) do
     case :escript.script_name() do
       name when is_list(name) and name != [] ->
-        name |> List.to_string() |> Path.expand() |> Path.dirname() |> Path.join("beam_agent_tui")
+        name |> List.to_string() |> Path.expand() |> Path.dirname() |> Path.join(binary)
 
       _ ->
         nil
@@ -1070,8 +1223,8 @@ defmodule BeamAgent.CLI.TUI do
     _error -> nil
   end
 
-  defp application_binary do
-    Application.app_dir(:beam_agent, "priv/beam_agent_tui")
+  defp application_binary(name) do
+    Application.app_dir(:beam_agent, "priv/" <> name)
   rescue
     _error -> nil
   end
