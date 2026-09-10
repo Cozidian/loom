@@ -100,6 +100,15 @@ editors need disjoint path authority or ordered handoffs, and the owner remains
 responsible for integration and verification. Model slots are per project pool,
 not an account-wide quota. [How teams work →](docs/task-teams.md)
 
+### A desk in your browser
+
+[BeamAgent Desk](cmd/beam_agent_web/README.md) is a separate Phoenix client for
+the real authenticated HTTP API: prompt submission, active cancellation,
+approvals, actor inspection and live public activity. It attaches to a served
+session without owning its work. Desktop/mobile browser checks exercise the
+actual runtime with an isolated echo provider; autonomous delivery and the
+broader multi-workspace control center remain separate things to prove.
+
 ## What exists—and what we are reaching for
 
 | Area | Working foundation | Next proof |
@@ -122,6 +131,7 @@ tool to edit its working tree. This is **direction**, not shipped functionality.
 - [Vision](VISION.md) — what we believe, why, and what remains open.
 - [Roadmap](ROADMAP.md) — the next real-world trials and proposed follow-up work.
 - [ION field manual](docs/ion-tui.md) — controls and terminal workflows.
+- [Desk](cmd/beam_agent_web/README.md) — Phoenix frontend, setup and browser checks.
 - [Operations guide](docs/operations.md) — setup, providers, APIs and detailed usage.
 - [Architecture](docs/architecture.md) — the runtime and its OTP boundaries.
 - [Evaluations](evals/README.md) — reproducible runs and delivery evidence.

@@ -84,7 +84,8 @@ defmodule BeamAgent do
          :ok <- validate_goal_session_identity(goal_id, session_id),
          {:ok, project} <- Project.snapshot(project_id),
          :ok <- validate_goal_workspace(opts, project.workspace_root) do
-      data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
+      data_dir =
+        Keyword.get_lazy(opts, :data_dir, fn -> Application.fetch_env!(:beam_agent, :data_dir) end)
 
       goal_opts =
         opts
@@ -556,7 +557,9 @@ defmodule BeamAgent do
   end
 
   defp register_session_model(project_id, opts) do
-    provider = Keyword.get(opts, :provider, Application.fetch_env!(:beam_agent, :provider))
+    provider =
+      Keyword.get_lazy(opts, :provider, fn -> Application.fetch_env!(:beam_agent, :provider) end)
+
     provider_options = Keyword.get(opts, :provider_options, [])
 
     endpoint = %{

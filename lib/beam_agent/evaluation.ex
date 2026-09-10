@@ -2,8 +2,48 @@ defmodule BeamAgent.Evaluation do
   @moduledoc "Manifest-driven, evidence-producing evaluation runs for the complete harness."
 
   alias BeamAgent.VerificationPlan
+  alias BeamAgent.Evaluation.{FileEvidence, Usage}
 
   @version 1
+
+  @doc "Read-only fixture validation. Does not start sessions, load credentials or call providers."
+  def preflight_file(path) do
+    with {:ok, manifest} <- load(path) do
+      scenarios = Enum.map(manifest.scenarios, &preflight_scenario/1)
+      {:ok, %{passed: Enum.all?(scenarios, & &1.passed), scenarios: scenarios}}
+    end
+  end
+
+  defp preflight_scenario(scenario) do
+    result =
+      case scenario.fixture do
+        nil ->
+          if scenario.expect.preserved_files == [],
+            do: {:ok, []},
+            else: {:error, :protected_files_require_fixture}
+
+        fixture ->
+          with {:ok, root} <- BeamAgent.Workspace.canonical_root(fixture) do
+            before = FileEvidence.capture(root, scenario.expect.preserved_files)
+
+            {:ok,
+             FileEvidence.compare(root, before, scenario.expect.preserved_files, :file_preserved)}
+          end
+      end
+
+    case result do
+      {:ok, files} ->
+        %{
+          id: scenario.id,
+          passed: Enum.all?(files, & &1.passed),
+          preserved_files: files,
+          required_checks: Enum.count(scenario.checks, & &1.required)
+        }
+
+      {:error, reason} ->
+        %{id: scenario.id, passed: false, error: inspect(reason)}
+    end
+  end
 
   def run_file(path, opts \\ []) when is_binary(path) and is_list(opts) do
     with {:ok, manifest} <- load(path) do
@@ -96,12 +136,32 @@ defmodule BeamAgent.Evaluation do
   end
 
   defp run_started_scenario(scenario, session_id, workspace, started) do
-    with {ask_result, timed_out?} <- ask(session_id, scenario.prompt, scenario.timeout_ms),
-         {:ok, goal} <- BeamAgent.goal(session_id),
+    with {:ok, goal} <- BeamAgent.goal(session_id),
          canonical_workspace = goal.workspace_root,
-         verification <- verify(session_id, scenario.checks, ask_result),
+         before <-
+           FileEvidence.capture(
+             canonical_workspace,
+             scenario.expect.preserved_files ++ scenario.expect.changed_files
+           ),
+         {ask_result, timed_out?} <- ask_with_baseline(session_id, scenario, before),
+         integrity <- preserved_files(scenario, canonical_workspace, before),
+         verification <- verify_intact(session_id, scenario.checks, ask_result, integrity),
          expectations <- expectations(scenario.expect, canonical_workspace, ask_result),
          {:ok, events} <- BeamAgent.goal_events(session_id, view: :internal) do
+      expectations =
+        expectations ++
+          Enum.map(integrity, &Map.put(&1, :phase, :before_checks)) ++
+          Enum.map(
+            preserved_files(scenario, canonical_workspace, before),
+            &Map.put(&1, :phase, :after_checks)
+          ) ++
+          FileEvidence.compare(
+            canonical_workspace,
+            before,
+            scenario.expect.changed_files,
+            :file_changed
+          )
+
       duration_ms = System.monotonic_time(:millisecond) - started
       {:ok, goal_status} = BeamAgent.Goal.status(session_id)
       artifact = goal_status.last_work && goal_status.last_work.artifact
@@ -113,6 +173,7 @@ defmodule BeamAgent.Evaluation do
         run_id: scenario.run_id,
         repetition: scenario.repetition,
         status: if(passed, do: :passed, else: :failed),
+        verified_completion: passed and verified?(verification),
         session_id: session_id,
         project_id: goal.project_id,
         workspace: canonical_workspace,
@@ -130,6 +191,30 @@ defmodule BeamAgent.Evaluation do
       {:error, reason} -> failed_scenario(scenario.id, reason, workspace, started)
     end
   end
+
+  defp preserved_files(scenario, workspace, before),
+    do: FileEvidence.compare(workspace, before, scenario.expect.preserved_files, :file_preserved)
+
+  defp ask_with_baseline(session_id, scenario, before) do
+    if Enum.all?(scenario.expect.preserved_files, &match?({:ok, _hash}, before[&1])) do
+      ask(session_id, scenario.prompt, scenario.timeout_ms)
+    else
+      {{:error, :protected_fixture_missing_or_unreadable}, false}
+    end
+  end
+
+  defp verify_intact(session_id, checks, ask_result, integrity) do
+    if Enum.all?(integrity, & &1.passed) do
+      verify(session_id, checks, ask_result)
+    else
+      %{status: :not_run, checks: [], failure: "protected_fixture_changed_or_missing"}
+    end
+  end
+
+  defp verified?(verification),
+    do:
+      verification.status == :passed and
+        Enum.any?(verification.checks, &(&1.required and &1.status == :passed))
 
   defp failed_scenario(id, reason, workspace, started) do
     failed_result(id, reason)
@@ -242,16 +327,6 @@ defmodule BeamAgent.Evaluation do
       end)
       |> Enum.uniq()
 
-    total_tokens =
-      events
-      |> Enum.filter(&(event_type(&1) == "model_response_finished"))
-      |> Enum.map(fn event ->
-        usage = event_data(event)["usage"] || %{}
-        usage["total_tokens"] || usage[:total_tokens] || 0
-      end)
-      |> Enum.filter(&is_number/1)
-      |> Enum.sum()
-
     %{
       duration_ms: duration_ms,
       model_calls: Enum.count(types, &(&1 == "model_response_started")),
@@ -270,7 +345,6 @@ defmodule BeamAgent.Evaluation do
           event_type(event) == "semantic_planning_observed" and
             event_data(event)["multi_provider"] == true
         end),
-      total_tokens: total_tokens,
       tool_calls: Enum.count(types, &(&1 == "tool_called")),
       delegated_workers: Enum.count(types, &(&1 == "delegation_started")),
       repair_attempts:
@@ -287,6 +361,7 @@ defmodule BeamAgent.Evaluation do
       changed_file_count: length((artifact && artifact.changed_files) || []),
       event_count: length(events)
     }
+    |> Map.merge(Usage.summarize(events))
   end
 
   defp passed?({:ok, _answer}, false, verification, expectations) do
@@ -335,7 +410,16 @@ defmodule BeamAgent.Evaluation do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+    |> reject_duplicate_scenarios()
   end
+
+  defp reject_duplicate_scenarios({:ok, scenarios}) do
+    if length(scenarios) == MapSet.size(MapSet.new(scenarios, & &1.id)),
+      do: {:ok, scenarios},
+      else: {:error, :duplicate_evaluation_scenario}
+  end
+
+  defp reject_duplicate_scenarios(error), do: error
 
   defp normalize_scenario(%{"id" => id, "prompt" => prompt} = scenario, base, index)
        when is_binary(id) and id != "" and is_binary(prompt) and prompt != "" do
@@ -348,7 +432,8 @@ defmodule BeamAgent.Evaluation do
     with true <-
            valid_id?(id) and is_integer(timeout_ms) and timeout_ms in 100..1_800_000 and
              is_integer(repetitions) and repetitions in 1..20 and
-             is_list(checks) and is_map(expect),
+             is_list(checks) and is_map(expect) and
+             (is_nil(fixture) or (is_binary(fixture) and fixture != "")),
          {:ok, checks} <- normalize_verification_checks(checks),
          {:ok, expect} <- normalize_expectations(expect) do
       {:ok,
@@ -390,16 +475,25 @@ defmodule BeamAgent.Evaluation do
   end
 
   defp normalize_expectations(expect) do
-    files = list(expect["files"])
-    answer_contains = list(expect["answer_contains"])
-    file_contains = list(expect["file_contains"])
+    files = Map.get(expect, "files", [])
+    answer_contains = Map.get(expect, "answer_contains", [])
+    file_contains = Map.get(expect, "file_contains", [])
+    preserved_files = Map.get(expect, "preserved_files", [])
+    changed_files = Map.get(expect, "changed_files", [])
 
     valid? =
-      Enum.all?(files, &(is_binary(&1) and &1 != "")) and
+      Map.keys(expect) --
+        ["files", "answer_contains", "file_contains", "preserved_files", "changed_files"] == [] and
+        Enum.all?(
+          [files, answer_contains, file_contains, preserved_files, changed_files],
+          &is_list/1
+        ) and
+        Enum.all?(files ++ preserved_files ++ changed_files, &valid_relative_file?/1) and
+        MapSet.disjoint?(MapSet.new(preserved_files), MapSet.new(changed_files)) and
         Enum.all?(answer_contains, &is_binary/1) and
         Enum.all?(file_contains, fn
           %{"path" => path, "text" => text} ->
-            is_binary(path) and path != "" and is_binary(text)
+            valid_relative_file?(path) and is_binary(text)
 
           _assertion ->
             false
@@ -409,6 +503,8 @@ defmodule BeamAgent.Evaluation do
       {:ok,
        %{
          files: files,
+         preserved_files: Enum.uniq(preserved_files),
+         changed_files: Enum.uniq(changed_files),
          answer_contains: answer_contains,
          file_contains:
            Enum.map(file_contains, fn assertion ->
@@ -453,10 +549,14 @@ defmodule BeamAgent.Evaluation do
       total: total,
       passed: passed,
       failed: total - passed,
-      verified_completion_rate: if(total == 0, do: 0.0, else: passed / total),
+      completion_rate: if(total == 0, do: 0.0, else: passed / total),
+      verified_completion_rate:
+        if(total == 0,
+          do: 0.0,
+          else: Enum.count(results, & &1.verified_completion) / total
+        ),
       total_duration_ms: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :duration_ms]))),
       total_model_calls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :model_calls]))),
-      total_tokens: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :total_tokens]))),
       total_tool_calls: Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :tool_calls]))),
       total_user_interventions:
         Enum.sum(Enum.map(results, &get_in(&1, [:metrics, :approval_requests]))),
@@ -479,7 +579,7 @@ defmodule BeamAgent.Evaluation do
       route_teams: route_team_calibration(results)
     }
 
-    summary
+    Map.merge(summary, Usage.aggregate(Enum.map(results, & &1.metrics)))
   end
 
   defp evaluate_acceptance(summary, gates) do
@@ -582,7 +682,8 @@ defmodule BeamAgent.Evaluation do
        %{
          runs: runs,
          passed: passed,
-         verified_completion_rate: passed / runs,
+         completion_rate: passed / runs,
+         verified_completion_rate: Enum.count(team_results, & &1.verified_completion) / runs,
          average_duration_ms: Enum.sum(Enum.map(team_results, & &1.metrics.duration_ms)) / runs,
          average_model_calls: Enum.sum(Enum.map(team_results, & &1.metrics.model_calls)) / runs,
          average_tool_calls: Enum.sum(Enum.map(team_results, & &1.metrics.tool_calls)) / runs
@@ -594,6 +695,7 @@ defmodule BeamAgent.Evaluation do
     %{
       id: id,
       status: :failed,
+      verified_completion: false,
       failure: inspect(reason),
       verification: %{status: :not_run, checks: []},
       expectations: [],
@@ -606,7 +708,12 @@ defmodule BeamAgent.Evaluation do
         multi_provider?: false,
         planning_required: 0,
         semantic_decomposition_choices: 0,
-        total_tokens: 0,
+        total_tokens: nil,
+        reported_tokens: 0,
+        usage_reported_calls: 0,
+        usage_missing_calls: 0,
+        usage_status: :unknown,
+        usage_unavailable_runs: 1,
         tool_calls: 0,
         delegated_workers: 0,
         repair_attempts: 0,
@@ -654,8 +761,11 @@ defmodule BeamAgent.Evaluation do
 
   defp safe_id(id), do: String.replace(id, ~r/[^a-zA-Z0-9_-]/u, "-")
   defp valid_id?(id), do: Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9_-]*\z/u, id)
-  defp list(value) when is_list(value), do: value
-  defp list(_value), do: []
+
+  defp valid_relative_file?(path),
+    do:
+      is_binary(path) and path not in ["", "."] and Path.type(path) == :relative and
+        not Enum.member?(Path.split(path), "..")
 
   defp rate_or_nil?(nil), do: true
   defp rate_or_nil?(value), do: is_number(value) and value >= 0 and value <= 1

@@ -9,5 +9,10 @@
 /beam_agent_tui
 /beam_agent_ion
 /cmd/beam_agent_ion/target/
+/cmd/beam_agent_web/_build/
+/cmd/beam_agent_web/deps/
+/cmd/beam_agent_web/node_modules/
+/cmd/beam_agent_web/test-results/
+/cmd/beam_agent_web/playwright-report/
 erl_crash.dump
 *.ez

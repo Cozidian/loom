@@ -54,7 +54,9 @@ defmodule BeamAgent.Project.ContextStore do
 
   @impl true
   def init(opts) do
-    data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
+    data_dir =
+      Keyword.get_lazy(opts, :data_dir, fn -> Application.fetch_env!(:beam_agent, :data_dir) end)
+
     project_id = Keyword.fetch!(opts, :project_id)
     path = Path.join([data_dir, "projects", project_id, "context_artifacts.jsonl"])
 

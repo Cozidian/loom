@@ -32,6 +32,50 @@ remain future work.
 
 ## Now — earn trust with two real deliveries
 
+### Trial readiness — first implementation slice
+
+- [x] Add a read-only evaluation preflight so missing fixtures/originals can be
+  caught before spending provider calls.
+- [x] Fingerprint protected tests and binary originals before a run; reject
+  changed/missing inputs and check preservation again after verification.
+- [x] Require a content delta for declared changed outputs; separate passing
+  expectations from completion backed by required deterministic checks.
+- [x] Report unreported usage as unknown, retaining observed token subtotals and
+  coverage instead of showing a misleading zero.
+
+Evidence: [evaluation tests](test/evaluation_test.exs),
+[file/usage regressions](test/evaluation_evidence_test.exs),
+[trial instructions and limits](evals/README.md#artifact-integrity-and-honest-measurement).
+These are offline evaluation safeguards, **not completion of either delivery**.
+The old Phoenix fixture still uses a stand-in runtime. A real API client now
+exists and has browser evidence (below), but autonomous delivery remains to be
+tried. The Word trial still needs an actual
+source document and a working editing/rendering setup.
+
+### Phoenix client — real API integration milestone
+
+- [x] Build a standalone Phoenix client of the existing authenticated HTTP/JSON
+  protocol, with no frontend-owned goal state or core Phoenix dependency.
+- [x] Exercise login, submission, active inference cancellation, approvals and
+  duplicate-decision rejection against actual supervised runtime sessions.
+- [x] Run desktop/mobile Chrome checks and inspect screenshots; preserve drafts
+  across refresh and errors; reject CSRF and foreign-host requests.
+- [x] Fix issues exposed by embedding: JSON boolean/null serialization and eager
+  global default reads that failed despite explicit caller options.
+
+Evidence: [Desk](cmd/beam_agent_web/README.md),
+[runtime integration tests](cmd/beam_agent_web/test/desk_test.exs),
+[browser checks](cmd/beam_agent_web/test/browser/desk.spec.js).
+The provider is deterministic echo (or a blocked test provider for cancellation).
+This demonstrates a running client, **not a model independently building it**,
+cross-machine execution, document delivery or an efficiency benchmark. It uses
+the public redacted activity view; ION remains the richer conversation surface.
+
+Inputs still needed for the full roadmap's external trials: a non-sensitive
+source document and intended edit, an authorized provider account for live
+delivery/strategy comparisons, and a second trusted computer with an explicit
+connection scope. Do not substitute local simulations for these proofs.
+
 ### A. Build something the owner can use
 
 - [ ] Choose a bounded but representative app/feature and a starting workspace.
