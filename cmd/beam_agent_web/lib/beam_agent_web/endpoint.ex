@@ -4,7 +4,7 @@ defmodule BeamAgentWeb.Endpoint do
   plug(Plug.Static,
     at: "/assets",
     from: {:beam_agent_web, "priv/static"},
-    only: ~w(desk.css desk.js)
+    only: ~w(desk.css desk.js night-shift.svg)
   )
 
   plug(Plug.Parsers, parsers: [:urlencoded], pass: [], length: 128_000)
