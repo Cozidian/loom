@@ -23,6 +23,8 @@
         }
       ],
       "expect": {
+        "preserved_files": ["test/editor_test.exs", "test/test_helper.exs"],
+        "changed_files": ["lib/clipboard_fixture/editor.ex"],
         "files": ["lib/clipboard_fixture/editor.ex"],
         "file_contains": [
           {

@@ -138,6 +138,7 @@ defmodule BeamAgent.Runtime.JSONProtocol do
   defp stringify(tuple) when is_tuple(tuple),
     do: tuple |> Tuple.to_list() |> Enum.map(&stringify/1)
 
+  defp stringify(value) when is_boolean(value) or is_nil(value), do: value
   defp stringify(value) when is_atom(value), do: to_string(value)
   defp stringify(value) when is_pid(value) or is_reference(value), do: inspect(value)
   defp stringify(value), do: value

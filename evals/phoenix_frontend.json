@@ -13,6 +13,10 @@
       {"id": "acceptance", "command": "mix test", "timeout_ms": 120000},
       {"id": "compile", "command": "mix compile --warnings-as-errors", "timeout_ms": 120000}
     ],
-    "expect": {"files": ["lib/harness_fixture_web/endpoint.ex", "lib/harness_fixture_web/router.ex", "mix.lock"]}
+    "expect": {
+      "preserved_files": ["test/frontend_test.exs", "test/test_helper.exs", "lib/harness_fixture/runtime.ex"],
+      "changed_files": ["lib/harness_fixture_web/endpoint.ex", "lib/harness_fixture_web/router.ex"],
+      "files": ["lib/harness_fixture_web/endpoint.ex", "lib/harness_fixture_web/router.ex", "mix.lock"]
+    }
   }]
 }

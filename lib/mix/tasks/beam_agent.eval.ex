@@ -10,6 +10,7 @@ defmodule Mix.Tasks.BeamAgent.Eval do
 
   ## Options
 
+    * `--preflight` - validate fixture integrity without provider calls or verification commands
     * `--config PATH` - BeamAgent config (defaults to the normal config path)
     * `--profile NAME` - provider profile to evaluate
     * `--model MODEL` - model override for this evaluation only
@@ -32,7 +33,8 @@ defmodule Mix.Tasks.BeamAgent.Eval do
     model_strategy: :string,
     output: :string,
     runs_root: :string,
-    concurrency: :integer
+    concurrency: :integer,
+    preflight: :boolean
   ]
 
   @impl true
@@ -40,8 +42,28 @@ defmodule Mix.Tasks.BeamAgent.Eval do
     {opts, positional, invalid} = OptionParser.parse(args, strict: @switches)
 
     case {positional, invalid} do
-      {[manifest], []} -> run_manifest(manifest, opts)
-      _other -> Mix.raise(usage())
+      {[manifest], []} ->
+        if opts[:preflight], do: preflight(manifest), else: run_manifest(manifest, opts)
+
+      _other ->
+        Mix.raise(usage())
+    end
+  end
+
+  defp preflight(manifest) do
+    case BeamAgent.Evaluation.preflight_file(manifest) do
+      {:ok, result} ->
+        Enum.each(result.scenarios, fn scenario ->
+          status = if scenario.passed, do: "ready", else: "failed"
+          Mix.shell().info("#{scenario.id}: #{status}")
+          if not scenario.passed, do: Mix.shell().info(inspect(scenario))
+        end)
+
+        Mix.shell().info("Preflight only: no model calls or verification commands were run.")
+        unless result.passed, do: Mix.raise("evaluation preflight failed")
+
+      {:error, reason} ->
+        Mix.raise("evaluation preflight failed: #{inspect(reason)}")
     end
   end
 
@@ -78,12 +100,12 @@ defmodule Mix.Tasks.BeamAgent.Eval do
 
       Mix.shell().info(
         "BeamAgent evaluation #{report.run_id}: #{summary.passed}/#{summary.total} passed " <>
-          "(#{Float.round(summary.verified_completion_rate * 100, 1)}%)"
+          "(#{Float.round(summary.verified_completion_rate * 100, 1)}% verified)"
       )
 
       Mix.shell().info(
         "model calls: #{summary.total_model_calls} · tool calls: #{summary.total_tool_calls} · " <>
-          "tokens: #{summary.total_tokens}"
+          "tokens: #{usage_label(summary)}"
       )
 
       Mix.shell().info("report: #{report.report_path}")
@@ -108,11 +130,22 @@ defmodule Mix.Tasks.BeamAgent.Eval do
     end
   end
 
+  defp usage_label(%{usage_status: status, total_tokens: tokens})
+       when status in [:complete, :not_applicable],
+       do: to_string(tokens)
+
+  defp usage_label(summary),
+    do:
+      "unknown total (#{summary.reported_tokens} reported; " <>
+        "#{summary.usage_missing_calls} call(s) without usage; " <>
+        "#{summary.usage_unavailable_runs} run(s) without event evidence)"
+
   defp usage do
     """
     Usage: mix beam_agent.eval MANIFEST [options]
 
       --config PATH       BeamAgent config (defaults to the normal config path)
+      --preflight         validate fixtures without calling a provider or running checks
       --profile NAME      provider profile to evaluate
       --model MODEL       model override for this evaluation only
       --model-strategy MODE auto, manual, or local_only

@@ -103,9 +103,15 @@ defmodule BeamAgent.Agent do
     Process.flag(:trap_exit, true)
 
     session_id = Keyword.fetch!(opts, :session_id)
-    provider = Keyword.get(opts, :provider, Application.fetch_env!(:beam_agent, :provider))
-    strategy = Keyword.get(opts, :strategy, Application.fetch_env!(:beam_agent, :strategy))
-    data_dir = Keyword.get(opts, :data_dir, Application.fetch_env!(:beam_agent, :data_dir))
+
+    provider =
+      Keyword.get_lazy(opts, :provider, fn -> Application.fetch_env!(:beam_agent, :provider) end)
+
+    strategy =
+      Keyword.get_lazy(opts, :strategy, fn -> Application.fetch_env!(:beam_agent, :strategy) end)
+
+    data_dir =
+      Keyword.get_lazy(opts, :data_dir, fn -> Application.fetch_env!(:beam_agent, :data_dir) end)
 
     with {:ok, provider_module} <- CapabilityCatalog.provider(provider),
          :ok <- validate_strategy(strategy),

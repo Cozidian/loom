@@ -298,7 +298,7 @@ defmodule BeamAgent.RuntimeClientTest do
     assert response.ok
     assert response.request_id == "request-1"
     assert response.result.root.session_id == context.session_id
-    assert JSON.decode!(BeamAgent.Runtime.JSONProtocol.encode_response(response))["ok"]
+    assert JSON.decode!(BeamAgent.Runtime.JSONProtocol.encode_response(response))["ok"] == true
 
     unsupported =
       BeamAgent.Runtime.JSONProtocol.dispatch(runtime, %{
@@ -309,6 +309,11 @@ defmodule BeamAgent.RuntimeClientTest do
 
     refute unsupported.ok
     assert unsupported.error == "unsupported_protocol_version"
+    encoded = BeamAgent.Runtime.JSONProtocol.encode_response(unsupported) |> JSON.decode!()
+    assert encoded["ok"] == false
+
+    assert BeamAgent.Runtime.JSONProtocol.normalize(%{missing: nil, nested: [false, true]}) ==
+             %{"missing" => nil, "nested" => [false, true]}
   end
 
   test "a temporary client restores the previously attached approval handler", context do
