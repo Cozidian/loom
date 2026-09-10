@@ -63,12 +63,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
              "attachments" => attachments,
              "file_references" => Enum.map(file_references, &Map.delete(&1, :content))
            }) do
-      # Routine inventory reads are deterministic work, not a model round trip.
-      # Use the same guarded, recorded tool boundary as model-originated calls.
-      Enum.each(BeamAgent.AutomaticSpecialization.seed_calls(context), fn call ->
-        execute_native_tool(context, turn, 0, %{call | id: "#{call.id}-#{turn}"})
-      end)
-
       start_turn(context, prompt, turn)
     end
   end
@@ -99,19 +93,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
         end
 
       :continue ->
-        if BeamAgent.AutomaticSpecialization.applicable?(context, planning) do
-          with {:ok, route} <- route_model(context, available_tool_schemas(context), turn, 1) do
-            BeamAgent.AutomaticSpecialization.run(
-              context,
-              prompt,
-              turn,
-              route.selected_endpoint_id,
-              &step(&1, turn, 1, nil, 0, true)
-            )
-          end
-        else
-          step(context, turn, 1, nil, 0, true)
-        end
+        step(context, turn, 1, nil, 0, true)
     end
   end
 
@@ -250,7 +232,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
            ),
          system_prompt <-
            project_context.system_prompt
-           |> append_prompt(BeamAgent.AutomaticSpecialization.prompt(context))
            |> turn_execution_prompt(context, tool_schemas)
            |> recovery_prompt(
              context,
@@ -1432,14 +1413,14 @@ defmodule BeamAgent.Strategies.ToolLoop do
             "The user requested multiple providers. Call list_models and then delegate_tasks with a validated decomposition before returning a terminal answer."
 
           :advisory ->
-            "The runtime marks decomposition as advisory. Use it only when specialization improves the result; otherwise keep one coherent implementation owner."
+            "Automatic team mode is enabled. Identify independent deliverables and delegate useful parallel work through delegate_tasks. Stay solo for trivial or tightly coupled work; do not manufacture tasks just to fill capacity."
 
           :direct ->
             "The runtime currently prefers direct work, but bounded delegation remains available if new evidence justifies it."
         end
 
       """
-      # Multi-provider coordination
+      # Task-based subagent coordination
       Runtime planning mode: #{planning.mode}. #{obligation}
       Runtime suggested assignments: scaffold=#{planning.suggested_endpoints.scaffold || "none"},
       coherent implementation=#{planning.suggested_endpoints.implementation || "none"},
@@ -1452,6 +1433,17 @@ defmodule BeamAgent.Strategies.ToolLoop do
       not authority: runtime capability, privacy, availability, evidence, budget, leases, and
       routing policy decide the award. Run independent workers concurrently. Order workers with
       explicit dependencies whenever their paths overlap so ownership is handed off, not raced.
+      Several workers may use the SAME provider and model, including your selected model.
+      Provider diversity and cheap-model availability are NOT prerequisites for delegation.
+      There is no fixed team size or task-count ceiling: propose as many useful independent
+      tasks as the work requires. The runtime queues tasks behind configured worker/model
+      capacity; capacity is a ceiling, never a target. Prefer delegate_tasks for fan-out and
+      dependency graphs; spawn_subagent with background=true is for independent advisory work.
+      Give each task a concrete deliverable and completion criteria. Concurrent implementation
+      tasks require disjoint capabilities.paths (an authority boundary for reads AND writes),
+      or explicit depends_on handoffs. Keep shared scaffolding and integration with one owner.
+      You remain responsible for integration and verification. Report evidence, not worker
+      claims, and do not recursively delegate a task already assigned to an implementation leaf.
       """
       |> String.trim()
     end
@@ -1638,6 +1630,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
       :capability_envelope,
       :model_strategy,
       :team_mode,
+      :turn_owner,
       :agent_spec,
       :runtime_command
     ])

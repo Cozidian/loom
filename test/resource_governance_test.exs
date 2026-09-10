@@ -115,6 +115,88 @@ defmodule BeamAgent.ResourceGovernanceTest do
     refute CapabilityManager.permits?(root_id, child_id, %{tools: "run_command"})
   end
 
+  test "worker reservations queue at capacity and reclaim abandoned waiters", context do
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        budget: %{concurrent_workers: 1}
+      )
+
+    {:ok, first} = BudgetManager.reserve(id, id, "first")
+
+    abandoned =
+      Task.async(fn ->
+        BudgetManager.reserve(id, id, "abandoned", %{}, wait_for_capacity: true)
+      end)
+
+    wait_for_queue(id, 1)
+    Task.shutdown(abandoned, :brutal_kill)
+    wait_for_queue(id, 0)
+
+    waiting =
+      Task.async(fn ->
+        result = BudgetManager.reserve(id, id, "next", %{}, wait_for_capacity: true)
+        # Transfer the reservation to an actor before the requesting process exits.
+        {:ok, allocation} = result
+        BudgetManager.bind(id, allocation.allocation_id, Process.whereis(__MODULE__))
+        result
+      end)
+
+    Process.register(self(), __MODULE__)
+    wait_for_queue(id, 1)
+    assert :ok = BudgetManager.release(id, first.allocation_id)
+    assert {:ok, next} = Task.await(waiting)
+    assert next.worker_id == "next"
+    wait_for_queue(id, 0)
+    {:ok, budget} = BeamAgent.budget(id)
+    refute Enum.any?(budget.allocations, &(&1.worker_id == "abandoned"))
+    assert :ok = BudgetManager.release(id, next.allocation_id)
+  end
+
+  test "provisional reservations are reclaimed if their caller dies before binding", context do
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        budget: %{concurrent_workers: 1}
+      )
+
+    task = Task.async(fn -> BudgetManager.reserve(id, id, "unbound") end)
+    assert {:ok, _allocation} = Task.await(task)
+    wait_for_released_budget(id, "unbound")
+    assert {:ok, _allocation} = BudgetManager.reserve(id, id, "replacement")
+  end
+
+  test "finite provisional budgets can safely serve as allocation parents", context do
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: context.data_dir,
+        workspace_root: context.workspace,
+        provider: :echo,
+        budget: %{concurrent_workers: 2, wall_time_ms: 10_000}
+      )
+
+    assert {:ok, _} = BudgetManager.reserve(id, id, "provisional-parent")
+    assert {:ok, _} = BudgetManager.reserve(id, "provisional-parent", "provisional-child")
+  end
+
+  defp wait_for_queue(id, count, attempts \\ 100)
+  defp wait_for_queue(_id, _count, 0), do: flunk("worker queue did not settle")
+
+  defp wait_for_queue(id, count, attempts) do
+    case BeamAgent.budget(id) do
+      {:ok, %{queued: ^count}} ->
+        :ok
+
+      _ ->
+        Process.sleep(10)
+        wait_for_queue(id, count, attempts - 1)
+    end
+  end
+
   test "escalation is approved by the parent policy rather than the delegate", context do
     assert {:ok, root_id} =
              BeamAgent.start_session(

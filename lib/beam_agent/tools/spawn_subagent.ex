@@ -42,6 +42,10 @@ defmodule BeamAgent.Tools.SpawnSubagent do
         model_requirements: %{
           type: "object",
           properties: %{
+            preferred_endpoint_id: %{
+              type: "string",
+              description: "Optional endpoint from list_models; may be the same as the owner"
+            },
             reasoning: %{type: "string", enum: ["standard", "high"]},
             locality: %{type: "string", enum: ["any", "local", "remote"]},
             privacy: %{type: "string", enum: ["provider_allowed", "local"]},

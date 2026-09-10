@@ -17,6 +17,8 @@ defmodule BeamAgent.CLI do
     approval: :string,
     model_strategy: :string,
     team_mode: :string,
+    max_workers: :integer,
+    model_concurrency: :integer,
     context_window: :integer,
     compact_at: :integer,
     tui: :boolean
@@ -135,6 +137,8 @@ defmodule BeamAgent.CLI do
       approval: :string,
       model_strategy: :string,
       team_mode: :string,
+      max_workers: :integer,
+      model_concurrency: :integer,
       context_window: :integer,
       compact_at: :integer,
       force: :boolean,
@@ -233,6 +237,8 @@ defmodule BeamAgent.CLI do
       "approval_policy" => approval_policy,
       "model_strategy" => opts[:model_strategy] || defaults["model_strategy"],
       "team_mode" => opts[:team_mode] || defaults["team_mode"],
+      "max_workers" => opts[:max_workers] || defaults["max_workers"],
+      "model_concurrency" => opts[:model_concurrency] || defaults["model_concurrency"],
       "data_dir" => Path.expand(data_dir),
       "context_window_tokens" => parse_integer(context_window),
       "compaction_threshold_percent" => parse_integer(compact_at)
@@ -336,28 +342,8 @@ defmodule BeamAgent.CLI do
 
   defp ensure_session(nil, config, provider) do
     BeamAgent.start_session(
-      provider: provider,
-      provider_options: Config.provider_options(config),
-      provider_profile: config["profile"],
-      data_dir: config["data_dir"],
-      context_window_tokens: config["context_window_tokens"],
-      compaction_threshold_percent: config["compaction_threshold_percent"],
-      workspace_root: config["workspace_root"],
-      approval_policy: Config.approval_policy_atom(config["approval_policy"]),
-      model_strategy: Config.model_strategy_atom(config["model_strategy"]),
-      team_mode: Config.team_mode_atom(config["team_mode"]),
-      approval_handler: self(),
-      model_endpoints: config["model_endpoints"] || []
-    )
-  end
-
-  defp ensure_session(session_id, config, provider) do
-    case BeamAgent.agent_pid(session_id) do
-      {:ok, _pid} ->
-        {:ok, session_id}
-
-      {:error, :not_found} ->
-        BeamAgent.resume_session(session_id,
+      Config.capacity_options(config) ++
+        [
           provider: provider,
           provider_options: Config.provider_options(config),
           provider_profile: config["profile"],
@@ -370,6 +356,33 @@ defmodule BeamAgent.CLI do
           team_mode: Config.team_mode_atom(config["team_mode"]),
           approval_handler: self(),
           model_endpoints: config["model_endpoints"] || []
+        ]
+    )
+  end
+
+  defp ensure_session(session_id, config, provider) do
+    case BeamAgent.agent_pid(session_id) do
+      {:ok, _pid} ->
+        {:ok, session_id}
+
+      {:error, :not_found} ->
+        BeamAgent.resume_session(
+          session_id,
+          Config.capacity_options(config) ++
+            [
+              provider: provider,
+              provider_options: Config.provider_options(config),
+              provider_profile: config["profile"],
+              data_dir: config["data_dir"],
+              context_window_tokens: config["context_window_tokens"],
+              compaction_threshold_percent: config["compaction_threshold_percent"],
+              workspace_root: config["workspace_root"],
+              approval_policy: Config.approval_policy_atom(config["approval_policy"]),
+              model_strategy: Config.model_strategy_atom(config["model_strategy"]),
+              team_mode: Config.team_mode_atom(config["team_mode"]),
+              approval_handler: self(),
+              model_endpoints: config["model_endpoints"] || []
+            ]
         )
     end
   end
@@ -1419,7 +1432,9 @@ defmodule BeamAgent.CLI do
       --workspace PATH                       root visible to file and command tools
       --approval ask|auto|deny               risky tool policy (`allow` is an alias)
       --model-strategy auto|manual|local_only intelligence routing policy
-      --team-mode auto|solo  automatic helpers independent of the selected model
+      --team-mode auto|solo  task-based delegation independent of the selected model
+      --max-workers N       concurrent subagents per goal (default: 4; extras queue)
+      --model-concurrency N  slots per project model pool (default: 4)
       --context-window TOKENS                estimated model context capacity
       --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
@@ -1443,6 +1458,8 @@ defmodule BeamAgent.CLI do
       --approval POLICY      ask, deny, or auto-approve risky tools
       --model-strategy MODE  auto, manual, or local_only
       --team-mode MODE       auto or solo; independent of model routing
+      --max-workers N       concurrent subagents per goal (default: 4)
+      --model-concurrency N  slots per project model pool (default: 4)
       --data-dir PATH        durable session directory
       --context-window N     estimated model context capacity in tokens
       --compact-at PERCENT   automatic compaction threshold (50-95)

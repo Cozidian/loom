@@ -181,7 +181,11 @@ defmodule BeamAgent.Goal.DecompositionExecutor do
          notify
        ) do
     {proposal, selected_alternative} = proposal(task, parent, failed_endpoint_ids)
-    spawn_opts = Keyword.get(opts, :worker_options, [])
+
+    spawn_opts =
+      Keyword.get(opts, :worker_options, [])
+      |> Keyword.put(:wait_for_capacity, true)
+      |> Keyword.put(:lifetime_owner, self())
 
     case BeamAgent.spawn_worker(parent.session_id, proposal, spawn_opts) do
       {:ok, handle} ->

@@ -133,7 +133,15 @@ defmodule BeamAgent.SessionSupervisor do
        ) do
     requested = Keyword.get(opts, :resource_limits, %{})
 
-    case BudgetManager.reserve(parent.goal_id, parent_session_id, child_id, requested) do
+    reservation_opts = Keyword.take(opts, [:wait_for_capacity, :delegation_id])
+
+    case BudgetManager.reserve(
+           parent.goal_id,
+           parent_session_id,
+           child_id,
+           requested,
+           reservation_opts
+         ) do
       {:ok, allocation} ->
         allocation =
           Map.put(allocation, :context_window_tokens, spec.resources.context_window_tokens)
@@ -224,7 +232,9 @@ defmodule BeamAgent.SessionSupervisor do
     case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
       {:ok, child_pid} ->
         with :ok <-
-               BudgetManager.bind(parent.goal_id, spec.resources.allocation_id, child_pid),
+               BudgetManager.bind(parent.goal_id, spec.resources.allocation_id, child_pid,
+                 lifetime_owner: opts[:lifetime_owner]
+               ),
              {:ok, _event} <-
                EventLog.append(parent_session_id, :subagent_spawned, %{
                  "child_session_id" => child_id,

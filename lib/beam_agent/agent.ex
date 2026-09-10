@@ -34,6 +34,12 @@ defmodule BeamAgent.Agent do
     end
   end
 
+  @doc false
+  def turn_owner(session_id, command_id) do
+    with {:ok, pid} <- Names.pid(:agent, session_id),
+         do: GenServer.call(pid, {:turn_owner, command_id})
+  end
+
   def context_options(session_id) do
     with {:ok, pid} <- Names.pid(:agent, session_id) do
       GenServer.call(pid, :context_options)
@@ -174,6 +180,16 @@ defmodule BeamAgent.Agent do
   end
 
   @impl true
+  def handle_call({:turn_owner, command_id}, _from, state) do
+    result =
+      case state.current_turn do
+        %{pid: pid, command: %{command_id: ^command_id}, cancel_requested: false} -> {:ok, pid}
+        _ -> {:error, :owner_turn_finished}
+      end
+
+    {:reply, result, state}
+  end
+
   def handle_call({:ask, prompt, attachment_ids}, from, %{current_turn: nil} = state)
       when is_binary(prompt) and is_list(attachment_ids) do
     accept_turn(prompt, attachment_ids, nil, from, state)
@@ -450,7 +466,7 @@ defmodule BeamAgent.Agent do
       # The session resource supervisor owns the worker, while this extra link
       # ensures an in-flight turn cannot outlive the agent that accepted it.
       Process.link(agent)
-      result = state.strategy.run(turn_context, prompt)
+      result = state.strategy.run(Map.put(turn_context, :turn_owner, self()), prompt)
       send(agent, {:turn_result, turn_ref, self(), result})
     end
 

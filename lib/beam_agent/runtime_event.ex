@@ -148,6 +148,9 @@ defmodule BeamAgent.RuntimeEvent do
   defp category(type)
        when type in [
               "resource_queued",
+              "worker_queued",
+              "worker_dequeued",
+              "worker_queue_cancelled",
               "resource_granted",
               "resource_released",
               "resource_reclaimed"

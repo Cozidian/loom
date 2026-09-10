@@ -10,12 +10,12 @@ defmodule BeamAgent.Goal.BudgetManager do
     GenServer.start_link(__MODULE__, opts, name: Names.via(:goal_budget_manager, goal_id))
   end
 
-  def reserve(goal_id, parent_worker_id, worker_id, requested \\ %{}) do
-    call(goal_id, {:reserve, parent_worker_id, worker_id, requested})
+  def reserve(goal_id, parent_worker_id, worker_id, requested \\ %{}, opts \\ []) do
+    call(goal_id, {:reserve, parent_worker_id, worker_id, requested, opts}, :infinity)
   end
 
-  def bind(goal_id, allocation_id, owner) when is_pid(owner),
-    do: call(goal_id, {:bind, allocation_id, owner})
+  def bind(goal_id, allocation_id, owner, opts \\ []) when is_pid(owner),
+    do: call(goal_id, {:bind, allocation_id, owner, opts[:lifetime_owner]})
 
   def release(goal_id, allocation_id, reason \\ :released),
     do: call(goal_id, {:release, allocation_id, reason})
@@ -42,42 +42,57 @@ defmodule BeamAgent.Goal.BudgetManager do
        worker_allocations: %{root.worker_id => root.allocation_id},
        monitors: %{},
        owners: %{},
+       queue: [],
+       reservation_monitors: %{},
        warned: MapSet.new()
      }}
   end
 
   @impl true
-  def handle_call({:reserve, parent_worker_id, worker_id, requested}, _from, state) do
-    with {:ok, parent} <- fetch_worker_allocation(state, parent_worker_id),
-         :ok <- available_worker_slot(state),
-         remaining <- ResourceBudget.remaining(parent),
-         allocation_id <- allocation_id(),
-         allocation <-
-           ResourceBudget.child_allocation(
-             allocation_id,
-             worker_id,
-             parent,
-             remaining,
-             requested
-           ) do
-      state =
-        state
-        |> put_in([:allocations, allocation_id], allocation)
-        |> put_in([:worker_allocations, worker_id], allocation_id)
+  def handle_call({:reserve, parent_worker_id, worker_id, requested, opts}, from, state) do
+    request = %{
+      parent_id: parent_worker_id,
+      worker_id: worker_id,
+      requested: requested,
+      from: from,
+      delegation_id: Keyword.get(opts, :delegation_id)
+    }
 
-      record(state, :budget_allocated, allocation, %{})
-      {:reply, {:ok, ResourceBudget.public(allocation)}, state}
-    else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+    case reserve_request(state, request) do
+      {:ok, allocation, state} ->
+        {:reply, {:ok, ResourceBudget.public(allocation)}, state}
+
+      {:error, :worker_concurrency_exhausted} = error ->
+        # A non-root worker already occupies a slot. Do not let nested fan-out
+        # wait forever for capacity held by its own ancestors.
+        if Keyword.get(opts, :wait_for_capacity, false) and
+             parent_worker_id == state.root_session_id and
+             state.allocations[state.root_allocation_id].limits.concurrent_workers != 0 do
+          monitor = Process.monitor(elem(from, 0))
+          request = Map.put(request, :monitor, monitor)
+          state = %{state | queue: state.queue ++ [request]}
+          state = put_in(state.reservation_monitors[monitor], {:queued, worker_id})
+          record_queue(state, :worker_queued, request)
+          {:noreply, state}
+        else
+          {:reply, error, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
     end
   end
 
-  def handle_call({:bind, allocation_id, owner}, _from, state) do
+  def handle_call({:bind, allocation_id, owner, lifetime_owner}, _from, state) do
     case state.allocations[allocation_id] do
       nil ->
         {:reply, {:error, :unknown_budget_allocation}, state}
 
+      %{status: :released} ->
+        {:reply, {:error, :budget_allocation_released}, state}
+
       allocation ->
+        state = clear_reservation_monitor(state, {:reserved, allocation_id})
         monitor = Process.monitor(owner)
         now = System.monotonic_time(:millisecond)
         allocation = %{allocation | status: :active} |> Map.put(:started_monotonic_ms, now)
@@ -88,6 +103,14 @@ defmodule BeamAgent.Goal.BudgetManager do
           |> put_in([:monitors, monitor], allocation_id)
           |> put_in([:owners, allocation_id], owner)
 
+        state =
+          if is_pid(lifetime_owner) do
+            reference = Process.monitor(lifetime_owner)
+            put_in(state.reservation_monitors[reference], {:lifetime, allocation_id})
+          else
+            state
+          end
+
         schedule_deadline(allocation)
 
         {:reply, :ok, state}
@@ -96,7 +119,7 @@ defmodule BeamAgent.Goal.BudgetManager do
 
   def handle_call({:release, allocation_id, reason}, _from, state) do
     {reply, state} = release_allocation(state, allocation_id, reason)
-    {:reply, reply, state}
+    {:reply, reply, drain_queue(state)}
   end
 
   def handle_call({:check, worker_id, consumption}, _from, state) do
@@ -136,18 +159,44 @@ defmodule BeamAgent.Goal.BudgetManager do
       |> Enum.map(&ResourceBudget.public/1)
       |> Enum.sort_by(& &1.allocation_id)
 
-    {:reply, {:ok, %{goal_id: state.goal_id, allocations: allocations}}, state}
+    {:reply,
+     {:ok, %{goal_id: state.goal_id, allocations: allocations, queued: length(state.queue)}},
+     state}
   end
 
   @impl true
   def handle_info({:DOWN, monitor, :process, _pid, reason}, state) do
     case Map.pop(state.monitors, monitor) do
       {nil, monitors} ->
-        {:noreply, %{state | monitors: monitors}}
+        state = %{state | monitors: monitors}
+
+        case Map.pop(state.reservation_monitors, monitor) do
+          {nil, _monitors} ->
+            {:noreply, state}
+
+          {{:queued, worker_id}, reservation_monitors} ->
+            {removed, queue} = Enum.split_with(state.queue, &(&1.worker_id == worker_id))
+            Enum.each(removed, &cancel_queued(state, &1, :owner_down))
+            {:noreply, %{state | queue: queue, reservation_monitors: reservation_monitors}}
+
+          {{:reserved, allocation_id}, reservation_monitors} ->
+            {_reply, state} =
+              release_allocation(
+                %{state | reservation_monitors: reservation_monitors},
+                allocation_id,
+                reason
+              )
+
+            {:noreply, drain_queue(state)}
+
+          {{:lifetime, allocation_id}, reservation_monitors} ->
+            stop_allocation_owner(state, allocation_id)
+            {:noreply, %{state | reservation_monitors: reservation_monitors}}
+        end
 
       {allocation_id, monitors} ->
         {_reply, state} = release_allocation(%{state | monitors: monitors}, allocation_id, reason)
-        {:noreply, state}
+        {:noreply, drain_queue(state)}
     end
   end
 
@@ -201,6 +250,109 @@ defmodule BeamAgent.Goal.BudgetManager do
   defp authorize_consumption(_state, _worker_id, _consumption),
     do: {:error, :invalid_budget_consumption}
 
+  defp reserve_request(state, request) do
+    with {:ok, parent} <- fetch_worker_allocation(state, request.parent_id),
+         :ok <- active?(parent),
+         :ok <- within_wall_time?(parent),
+         :ok <- available_worker_slot(state) do
+      allocation =
+        ResourceBudget.child_allocation(
+          allocation_id(),
+          request.worker_id,
+          parent,
+          ResourceBudget.remaining(parent),
+          request.requested
+        )
+        |> Map.put(:delegation_id, request.delegation_id)
+        |> Map.put(:started_monotonic_ms, System.monotonic_time(:millisecond))
+
+      monitor = Process.monitor(elem(request.from, 0))
+
+      state =
+        state
+        |> put_in([:allocations, allocation.allocation_id], allocation)
+        |> put_in([:worker_allocations, request.worker_id], allocation.allocation_id)
+        |> put_in([:reservation_monitors, monitor], {:reserved, allocation.allocation_id})
+
+      record(state, :budget_allocated, allocation, %{})
+      {:ok, allocation, state}
+    end
+  end
+
+  defp drain_queue(%{queue: []} = state), do: state
+
+  defp drain_queue(%{queue: [request | rest]} = state) do
+    if Process.alive?(elem(request.from, 0)) do
+      case reserve_request(state, request) do
+        {:ok, allocation, state} ->
+          state = clear_reservation_monitor(state, {:queued, request.worker_id})
+          record_queue(state, :worker_dequeued, request)
+          GenServer.reply(request.from, {:ok, ResourceBudget.public(allocation)})
+          drain_queue(%{state | queue: rest})
+
+        {:error, :worker_concurrency_exhausted} ->
+          state
+
+        {:error, _reason} = error ->
+          GenServer.reply(request.from, error)
+          state = clear_reservation_monitor(state, {:queued, request.worker_id})
+          drain_queue(%{state | queue: rest})
+      end
+    else
+      cancel_queued(state, request, :owner_down)
+      state = clear_reservation_monitor(state, {:queued, request.worker_id})
+      drain_queue(%{state | queue: rest})
+    end
+  end
+
+  defp cancel_queued(state, request, reason) do
+    if request.delegation_id do
+      BeamAgent.Goal.DelegationManager.reject(state.goal_id, request.delegation_id, reason)
+    end
+
+    record_queue(state, :worker_queue_cancelled, request)
+  end
+
+  defp record_queue(state, type, request) do
+    EventLog.append(state.root_session_id, type, %{
+      "worker_id" => request.worker_id,
+      "delegation_id" => request.delegation_id,
+      "queue_depth" => length(state.queue)
+    })
+  end
+
+  defp clear_reservation_monitor(state, value) do
+    monitors =
+      Map.reject(state.reservation_monitors, fn {reference, entry} ->
+        if entry == value do
+          Process.demonitor(reference, [:flush])
+          true
+        else
+          false
+        end
+      end)
+
+    %{state | reservation_monitors: monitors}
+  end
+
+  defp stop_allocation_owner(state, allocation_id) do
+    with %{status: :active, worker_id: worker_id} <- state.allocations[allocation_id],
+         {:ok, supervisor} <- Names.pid(:goal_resource_supervisor, state.goal_id) do
+      DynamicSupervisor.start_child(
+        supervisor,
+        {Task,
+         fn ->
+           if delegation_id = state.allocations[allocation_id][:delegation_id] do
+             BeamAgent.Goal.DelegationManager.cancel(state.goal_id, delegation_id, :owner_exited)
+           end
+
+           BeamAgent.Agent.cancel(worker_id)
+           BeamAgent.stop_session(worker_id)
+         end}
+      )
+    end
+  end
+
   defp fetch_worker_allocation(state, worker_id) do
     case state.worker_allocations[worker_id] do
       nil -> {:error, :unknown_worker_budget}
@@ -249,6 +401,8 @@ defmodule BeamAgent.Goal.BudgetManager do
         {:ok, state}
 
       allocation ->
+        state = clear_reservation_monitor(state, {:reserved, allocation_id})
+        state = clear_reservation_monitor(state, {:lifetime, allocation_id})
         allocation = %{allocation | status: :released}
         record(state, :budget_released, allocation, %{"reason" => inspect(reason)})
 
@@ -326,7 +480,8 @@ defmodule BeamAgent.Goal.BudgetManager do
     |> Enum.to_list()
   end
 
-  defp call(goal_id, message) do
-    with {:ok, pid} <- Names.pid(:goal_budget_manager, goal_id), do: GenServer.call(pid, message)
+  defp call(goal_id, message, timeout \\ 5_000) do
+    with {:ok, pid} <- Names.pid(:goal_budget_manager, goal_id),
+         do: GenServer.call(pid, message, timeout)
   end
 end
