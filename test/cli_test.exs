@@ -17,6 +17,30 @@ defmodule BeamAgent.CLITest do
     %{root: root, config_path: config_path, data_dir: data_dir}
   end
 
+  test "new entry points are discoverable without loading a provider configuration", ctx do
+    {0, help} = run_stdout(["--help", "--config", ctx.config_path])
+    assert help =~ "beam_agent desk"
+    assert help =~ "beam_agent document"
+    {0, desk} = run_stdout(["desk", "--help", "--config", ctx.config_path])
+    assert desk =~ "No exported variables"
+    assert desk =~ "--tui"
+    assert desk =~ "SAME live session"
+    {0, document} = run_stdout(["document", "--help", "--config", ctx.config_path])
+    assert document =~ "visual review"
+  end
+
+  test "Desk without a TUI reaches normal option validation instead of crashing", context do
+    {0, _} = init_cli(context)
+
+    for flags <- [[], ["--no-tui"]] do
+      {status, output} =
+        run_stderr(["desk", "--config", context.config_path, "--port", "-1"] ++ flags)
+
+      assert status == 2
+      assert output =~ "--port must be between 0 and 65535"
+    end
+  end
+
   test "non-interactive init writes a complete private first-run config", context do
     {status, output} = init_cli(context)
 

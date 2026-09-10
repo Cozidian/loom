@@ -1,10 +1,47 @@
 (() => {
+  const ticket = new URLSearchParams(location.hash.slice(1)).get("launch");
+  if (ticket) {
+    // Fragments are never sent in HTTP requests. Remove before authenticating.
+    history.replaceState(null, "", location.pathname);
+    const csrf = document.querySelector('input[name="_csrf_token"]')?.value;
+    if (csrf) {
+      fetch("/launch", {
+        method: "POST", credentials: "same-origin",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({ticket, _csrf_token: csrf}),
+      }).then(async response => {
+        if (response.ok) location.replace(location.pathname);
+        else document.querySelector('[role="alert"]').textContent = await response.text();
+      }).catch(() => {
+        document.querySelector('[role="alert"]').textContent = "Connection interrupted. Reopen Desk from the CLI; this launch may already have been used.";
+      });
+    }
+    return;
+  }
+  const directory = document.querySelector("#directory");
+  if (directory) {
+    const connection = document.querySelector("#connection");
+    async function refreshDirectory() {
+      try {
+        const response = await fetch("/sessions-panel", {cache: "no-store", signal: AbortSignal.timeout(10000)});
+        if (!response.ok) throw new Error("Session directory disconnected · retrying");
+        directory.innerHTML = await response.text();
+        connection.textContent = "● Live · synced " + new Date().toLocaleTimeString();
+        connection.classList.remove("offline");
+      } catch (error) {
+        connection.textContent = error.message;
+        connection.classList.add("offline");
+      } finally { setTimeout(refreshDirectory, 3000); }
+    }
+    refreshDirectory();
+    return;
+  }
   const panels = document.querySelector("#panels");
   if (!panels) return;
   const connection = document.querySelector("#connection");
   const prompt = document.querySelector("#prompt");
   // Memory is confined to this browser tab and removed after an accepted submit.
-  const key = "beam-agent-desk-draft";
+  const key = "beam-agent-desk-draft:" + panels.dataset.sessionId;
   try {
     prompt.value = sessionStorage.getItem(key) || "";
   } catch (_) {}
@@ -47,7 +84,7 @@
       return;
     }
     try {
-      const response = await fetch("/panels", {
+      const response = await fetch(panels.dataset.panelsUrl || "/panels", {
         cache: "no-store",
         signal: AbortSignal.timeout(10000),
       });

@@ -88,6 +88,46 @@ defmodule BeamAgent.CLITUITest do
     assert payload.attachments == []
   end
 
+  test "web submission is visible as a live turn in a TUI on the same session", context do
+    {:ok, controller} =
+      Controller.start_link(
+        client: self(),
+        session_id: context.session_id,
+        config: context.config,
+        config_path: context.config_path
+      )
+
+    {:ok, web} =
+      BeamAgent.ControlPlane.start_link(session_id: context.session_id, conversation: true)
+
+    on_exit(fn ->
+      for pid <- [web, controller], Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    {:ok, _} = Controller.bootstrap(controller)
+    assert :ok = BeamAgent.ControlPlane.submit(web, "hello from the browser")
+    assert_receive {:beam_agent_tui, {:turn_started, "hello from the browser"}}, 3_000
+    messages = collect_until_turn_finished([])
+
+    assert Enum.any?(messages, fn
+             {:stream,
+              %{
+                payload: %{
+                  type: "assistant_message",
+                  data: %{"content" => "echo(1): hello from the browser"}
+                }
+              }} ->
+               true
+
+             _ ->
+               false
+           end)
+
+    assert :sys.get_state(controller).current == nil
+    {:ok, conversation} = BeamAgent.ControlPlane.conversation(web)
+    assert List.last(conversation.messages).content == "echo(1): hello from the browser"
+  end
+
   test "initial bridge payload restores durable draft attachments", context do
     png =
       Base.decode64!(

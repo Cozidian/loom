@@ -1,24 +1,43 @@
 defmodule Mix.Tasks.BeamAgent.Build do
   use Mix.Task
 
-  @shortdoc "Builds the Elixir CLI and a terminal frontend (--frontend go|rust|all)"
+  @shortdoc "One-time build for CLI and clients (--frontend rust|go|web|all)"
 
   @impl Mix.Task
   def run(args) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: [frontend: :string])
-    frontend = opts[:frontend] || "go"
+    frontend = opts[:frontend] || "standard"
 
-    if rest != [] or invalid != [] or frontend not in ["go", "rust", "all"] do
-      Mix.raise("Usage: mix beam_agent.build [--frontend go|rust|all]")
+    if rest != [] or invalid != [] or frontend not in ["standard", "go", "rust", "web", "all"] do
+      Mix.raise("Usage: mix beam_agent.build [--frontend rust|go|web|all]")
     end
 
     root = File.cwd!()
 
     if frontend in ["go", "all"], do: build_go(root)
-    if frontend in ["rust", "all"], do: build_rust(root)
+    if frontend in ["standard", "rust", "all"], do: build_rust(root)
+    if frontend in ["standard", "web", "all"], do: build_web(root)
 
     Mix.shell().info("Building Elixir escript")
     Mix.Task.run("escript.build")
+  end
+
+  defp build_web(root) do
+    mix = System.find_executable("mix") || Mix.raise("Elixir/Mix is required for Desk")
+    directory = Path.join(root, "cmd/beam_agent_web")
+
+    for args <- [["deps.get"], ["compile", "--warnings-as-errors"]] do
+      Mix.shell().info("Preparing Phoenix Desk: mix #{Enum.join(args, " ")}")
+
+      case System.cmd(mix, args,
+             cd: directory,
+             env: [{"MIX_ENV", "dev"}],
+             into: IO.stream(:stdio, :line)
+           ) do
+        {_, 0} -> :ok
+        {_, status} -> Mix.raise("Desk build failed with status #{status}")
+      end
+    end
   end
 
   defp build_go(root) do

@@ -5,7 +5,7 @@ defmodule BeamAgent.Goal.WorkArtifact do
   alias BeamAgent.Project.ContextStore
   alias BeamAgent.Session.EventLog
 
-  @write_tools MapSet.new(["apply_patch", "create_file", "edit_file"])
+  @write_tools MapSet.new(["apply_patch", "create_file", "edit_file", "fill_document"])
 
   def build(goal, contract, result, started_event_id \\ nil, baseline \\ nil) do
     with {:ok, events} <- EventLog.events(goal.session_id) do

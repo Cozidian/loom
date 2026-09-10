@@ -49,8 +49,8 @@ Evidence: [evaluation tests](test/evaluation_test.exs),
 These are offline evaluation safeguards, **not completion of either delivery**.
 The old Phoenix fixture still uses a stand-in runtime. A real API client now
 exists and has browser evidence (below), but autonomous delivery remains to be
-tried. The Word trial still needs an actual
-source document and a working editing/rendering setup.
+tried. The Word trial now has a real source, runtime delivery and native Word
+rendering evidence, with interventions recorded below.
 
 ### Phoenix client — real API integration milestone
 
@@ -71,10 +71,34 @@ This demonstrates a running client, **not a model independently building it**,
 cross-machine execution, document delivery or an efficiency benchmark. It uses
 the public redacted activity view; ION remains the richer conversation surface.
 
-Inputs still needed for the full roadmap's external trials: a non-sensitive
-source document and intended edit, an authorized provider account for live
-delivery/strategy comparisons, and a second trusted computer with an explicit
-connection scope. Do not substitute local simulations for these proofs.
+The owner supplied a Word source and authorized the live ROS delivery using the
+existing provider profile. Further strategy comparisons still need a chosen
+scope and spending authority; distributed proof needs a second trusted computer
+with an explicit connection scope. Do not substitute simulations for these proofs.
+
+### Startup DX — one command after the build
+
+- [x] Make ION the default; retain explicit Go selection and binary overrides.
+- [x] Prepare ION, Desk and the CLI with one `mix beam_agent.build` command.
+- [x] Add `./beam_agent desk`: shared setup, session creation, managed servers,
+  browser opening and short-lived one-use login without user-managed exports.
+- [x] Exercise automatic browser login and prompt submission against the real
+  runtime; verify stopping the launcher also stops its Phoenix process/listener.
+- [x] Show private prompt/answer output separately from redacted events; test
+  actual answer visibility, refresh persistence, escaping and bearer-only access.
+- [x] Add `desk --tui` for one live session with two views and exercise external
+  submissions through the terminal controller. Separate launches remain separate.
+- [x] Add a local live-session overview, private owner discovery and
+  `attach SESSION_ID`. Verify two separate OS owners, unauthorized attachment,
+  disconnect survival, answer visibility and browser-tab isolation.
+- [ ] Extend discovery to archived sessions and other run entrypoints; prove
+  crash/recovery registration handling before adding automatic takeover.
+
+Evidence: [startup guide](docs/operations.md#build-and-configure-the-cli),
+[launcher](lib/beam_agent/cli/desk.ex),
+[bootstrap/browser regressions](cmd/beam_agent_web/test/browser/desk.spec.js).
+This is a foreground checkout launcher, not an installed standalone release,
+background daemon or multi-workspace control center.
 
 ### A. Build something the owner can use
 
@@ -99,25 +123,36 @@ Passing existing unit tests alone does not answer whether this experience works.
 
 ### B. Edit a document without breaking it
 
-- [ ] Choose a real, non-sensitive Word document and a meaningful edit. Start
+- [x] Choose a real, non-sensitive Word document and a meaningful edit. Start
   from a copy; note the content and formatting that should remain unaffected.
-- [ ] Inspect existing tools/skills and choose the smallest viable editing and
+- [x] Inspect existing tools/skills and choose the smallest viable editing and
   rendering path. Make its dependencies and supported platforms visible.
-- [ ] Make the edit through the guarded runtime workflow and retain the original.
-- [ ] Render and inspect the output, including affected pages, tables, images,
+- [x] Make the edit through the guarded runtime workflow and retain the original.
+- [x] Render and inspect the output, including affected pages, tables, images,
   pagination and styles where relevant. Check the file's structural integrity.
-- [ ] Open the result in the intended document application, or explicitly record
+- [x] Open the result in the intended document application, or explicitly record
   that this check still needs the user. Do not imply rendering proves every editor.
-- [ ] Deliver the edited document with a concise change summary and remaining
+- [x] Deliver the edited document with a concise change summary and remaining
   issues. Capture a reusable regression fixture from any corruption/layout failure.
 
 **Evidence we want:** the requested edit, preserved unrelated material, successful
 rendering and a document that opens correctly—not merely a generated `.docx` path.
 
+**Observed result:** `test-ros-agent.docx` fills the supplied ROS template with
+repository-grounded current-state and residual-risk entries. The original is
+unchanged; runtime integrity verification and independent review passed. Native
+Word produced two pages, both visually checked by the supervising assistant.
+The trial required runtime fixes and render-only recovery, so it does **not**
+establish unattended reliability. See [commands, limits and trial evidence](docs/document-workflow.md).
+
 ## Next — refine what those trials expose
 
 ### Reliability and visibility
 
+- [ ] Rerun the document workflow from a clean launch without development-time
+  intervention; exercise denial/cancellation and partial-render recovery.
+- [ ] Integrate page-image inspection and an evidence-backed final handoff into
+  the harness, rather than relying on an external supervising assistant.
 - [ ] Review both trials for false completion, repeated questions, idle-looking
   activity and confusing failures. Prioritize observed friction, not hypothetical
   architecture work.

@@ -28,9 +28,9 @@ Built first for one person's workflow, and for others who want that same mix
 of independence, reliability and visibility.
 
 > **Early, working foundation—not the finished promise.** Coding tools,
-> supervised teams and terminal clients run today. Reliable visual end-to-end
-> delivery, document editing, persistent workspace missions and a personal
-> control center are the next things to prove and build.
+> supervised teams, terminal/browser clients and bounded Word-template filling
+> run today. Reliable autonomous visual delivery, persistent workspace missions
+> and a personal control center remain things to prove and build.
 
 ## Why this harness?
 
@@ -55,11 +55,13 @@ ION is the Rust/Ratatui terminal frontend. Build from the repository root with
 Elixir 1.19 and compatible OTP, plus Rust 1.88 or newer:
 
 ```sh
-mix beam_agent.build --frontend rust
-BEAM_AGENT_TUI_BIN="$PWD/beam_agent_ion" ./beam_agent
+mix beam_agent.build
+./beam_agent
 ```
 
-The first launch guides provider setup. To preview the interface without
+The one-time build prepares ION, Phoenix Desk and the CLI. After that,
+`./beam_agent` is all you need; ION is the default. The first launch guides
+provider setup. To preview the interface without
 credentials or model calls:
 
 ```sh
@@ -69,8 +71,8 @@ credentials or model calls:
 After setup, run `./beam_agent doctor` to check the selected provider. In ION,
 use `/providers` to manage connections, `/models` to select a model and team
 mode, and `Ctrl+P` to discover commands. Start in another repository or document
-folder with `--workspace /path/to/workspace`; document-folder support does not
-yet imply a proven Word-editing workflow.
+folder with `--workspace /path/to/workspace`. For guarded Word-template edits,
+see the [document workflow](docs/document-workflow.md).
 
 File mutations and commands use the `ask` approval policy by default. Explicit
 `--approval auto` reduces prompts while retaining runtime safeguards; it grants
@@ -79,9 +81,9 @@ leaving publication to you is not yet a separate enforced permission category.
 Sandboxed command execution currently has a macOS backend; other platforms
 fail closed until an enforcing backend is available.
 
-The original Go TUI remains available with `mix beam_agent.build --frontend go`.
-Keep the explicit ION binary override when you want Rust; the default launcher
-still selects Go. See the [operations guide](docs/operations.md) for provider
+The original Go TUI remains available with `mix beam_agent.build --frontend go`
+and `./beam_agent --frontend go`. A terminal-only build can use `--frontend rust`.
+See the [operations guide](docs/operations.md) for provider
 authentication, saved profiles, line mode, sessions and embedding.
 
 ### One model. A useful team.
@@ -89,7 +91,7 @@ authentication, saved profiles, line mode, sessions and embedding.
 Keep the selected model while allowing task-based delegation:
 
 ```sh
-BEAM_AGENT_TUI_BIN="$PWD/beam_agent_ion" ./beam_agent \
+./beam_agent \
   --model-strategy manual --team-mode auto \
   --max-workers 5 --model-concurrency 6
 ```
@@ -104,16 +106,38 @@ not an account-wide quota. [How teams work →](docs/task-teams.md)
 
 [BeamAgent Desk](cmd/beam_agent_web/README.md) is a separate Phoenix client for
 the real authenticated HTTP API: prompt submission, active cancellation,
-approvals, actor inspection and live public activity. It attaches to a served
-session without owning its work. Desktop/mobile browser checks exercise the
-actual runtime with an isolated echo provider; autonomous delivery and the
-broader multi-workspace control center remain separate things to prove.
+approvals, actor inspection and live public activity. Start everything together:
+
+```sh
+./beam_agent desk
+```
+
+Desk opens a **live-session overview**, without creating a work session. Normal
+TUI launches publish local connections automatically; click a session to see its
+output, agents and approvals. Older running binaries need one restart after
+rebuilding to become discoverable.
+
+To attach another terminal to existing work, use the command on its session card:
+
+```sh
+./beam_agent attach SESSION_ID
+```
+
+Attachments share the existing runtime; they never reopen its storage. Closing an
+attached TUI does not stop the owner. `desk --tui` remains a combined-launch
+shortcut, and `desk --session ID` opens an already-live session. Browser login
+uses a one-use link: no token copying or exports.
+
+Keep Desk's terminal open. Stopping it stops sessions created by that Desk
+process, but not separately running TUIs. This is same-user, same-machine live
+discovery—not an archive browser, daemon or network control center.
+[Connection details and limits](cmd/beam_agent_web/README.md).
 
 ## What exists—and what we are reaching for
 
 | Area | Working foundation | Next proof |
 | --- | --- | --- |
-| Delivery | Coding tools, command execution, verification and artifact evidence | Build, run and visually inspect a usable app; edit and render a real document |
+| Delivery | Coding tools, verification, artifact evidence; a real ROS template filled through the runtime and rendered in Word | Repeat reliable app/document delivery with less intervention and automated visual review |
 | Teams | Same-model subagents, task graphs, capacity queues, races and tournaments | Show that the chosen workflow improves useful outcomes without waste |
 | Visibility | ION mission/actor/evidence views, live events and replay | Make changes, decision explanations and unfinished work effortless to understand |
 | Continuity | Durable sessions, project context, instructions and skills | Share revisable knowledge across sessions and tools without turning notes into rules |

@@ -50,7 +50,11 @@ defmodule BeamAgent.Evaluation.Usage do
 
   defp type(%{payload: %{type: type}}), do: to_string(type)
   defp type(%{"payload" => %{"type" => type}}), do: to_string(type)
+  defp type(%{type: type}), do: to_string(type)
+  defp type(%{"type" => type}), do: to_string(type)
   defp type(_event), do: "unknown"
   defp data(%{payload: %{data: data}}), do: data
   defp data(%{"payload" => %{"data" => data}}), do: data
+  defp data(%{data: data}), do: data
+  defp data(%{"data" => data}), do: data
 end

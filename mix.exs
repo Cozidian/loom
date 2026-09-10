@@ -14,7 +14,7 @@ defmodule BeamAgent.MixProject do
 
   def application do
     [
-      extra_applications: [:crypto, :inets, :logger, :ssl],
+      extra_applications: [:crypto, :inets, :logger, :ssl, :xmerl],
       mod: {BeamAgent.Application, []}
     ]
   end

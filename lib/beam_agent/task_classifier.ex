@@ -56,7 +56,11 @@ defmodule BeamAgent.TaskClassifier do
         text
       )
 
-    explicit_change? or requested_construction?
+    document_fill? =
+      Regex.match?(~r/\bfill\s+(?:in\s+|out\s+)?/u, text) and
+        String.contains?(text, ["document", ".docx", "template", "ros analysis"])
+
+    explicit_change? or requested_construction? or document_fill?
   end
 
   defp reasoning(text) do

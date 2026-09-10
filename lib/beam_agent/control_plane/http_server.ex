@@ -18,12 +18,12 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
 
   @impl true
   def init(opts) do
-    session_id = Keyword.fetch!(opts, :session_id)
+    session_id = Keyword.get(opts, :session_id)
     token = Keyword.get_lazy(opts, :token, &new_token/0)
     port = Keyword.get(opts, :port, 0)
 
     with true <- is_binary(token) and byte_size(token) >= 16,
-         {:ok, control_plane} <- ControlPlane.start_link(session_id: session_id),
+         {:ok, control_plane} <- start_control_plane(session_id, opts),
          {:ok, listener} <-
            :gen_tcp.listen(port,
              mode: :binary,
@@ -64,7 +64,10 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
   @impl true
   def terminate(_reason, state) do
     :gen_tcp.close(state.listener)
-    if Process.alive?(state.control_plane), do: GenServer.stop(state.control_plane)
+
+    if is_pid(state.control_plane) and Process.alive?(state.control_plane),
+      do: GenServer.stop(state.control_plane)
+
     :ok
   end
 
@@ -116,6 +119,31 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     :gen_tcp.close(socket)
   end
 
+  defp start_control_plane(nil, opts), do: {:ok, {:catalog, Keyword.fetch!(opts, :catalog)}}
+
+  defp start_control_plane(session, opts),
+    do:
+      ControlPlane.start_link(
+        session_id: session,
+        conversation: Keyword.get(opts, :conversation, false)
+      )
+
+  defp route(request, {:catalog, opts}, token) do
+    if authorized?(token, %{request | query: %{}}) do
+      case BeamAgent.ControlPlane.Catalog.route(request, opts) do
+        {:ok, result} -> json(200, %{ok: true, result: result})
+        {:error, reason} -> json(200, %{ok: false, error: to_string(reason)})
+      end
+    else
+      json(401, %{ok: false, error: "bearer_token_required"})
+    end
+  end
+
+  defp route(%{method: "GET", path: "/api/v1/identity"}, control_plane, _token) do
+    {:ok, identity} = ControlPlane.identity(control_plane)
+    json(200, %{ok: true, result: identity})
+  end
+
   defp route(%{method: "GET", path: "/"}, _control_plane, token),
     do: response(200, "text/html; charset=utf-8", page(token))
 
@@ -123,6 +151,18 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     case ControlPlane.snapshot(control_plane) do
       {:ok, snapshot} -> json(200, %{ok: true, result: snapshot})
       {:error, reason} -> json(500, %{ok: false, error: inspect(reason)})
+    end
+  end
+
+  defp route(%{method: "GET", path: "/api/v1/conversation"} = request, control_plane, token) do
+    # Content is opt-in and requires an Authorization header, never a URL token.
+    if authorized?(token, %{request | query: %{}}) do
+      case ControlPlane.conversation(control_plane) do
+        {:ok, conversation} -> json(200, %{ok: true, result: conversation})
+        {:error, reason} -> json(403, %{ok: false, error: to_string(reason)})
+      end
+    else
+      json(401, %{ok: false, error: "bearer_token_required"})
     end
   end
 
@@ -237,6 +277,7 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
   defp reason(200), do: "OK"
   defp reason(400), do: "Bad Request"
   defp reason(401), do: "Unauthorized"
+  defp reason(403), do: "Forbidden"
   defp reason(404), do: "Not Found"
   defp reason(413), do: "Payload Too Large"
   defp reason(_status), do: "Internal Server Error"
