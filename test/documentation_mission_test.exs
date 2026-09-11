@@ -196,10 +196,15 @@ defmodule BeamAgent.DocumentationMissionTest do
     assert {:ok, _} = Documentation.command(ctx.id, "prepare_fix", opts)
     assert {:ok, _} = Documentation.command(ctx.id, "prepare_fix", opts)
 
-    assert eventually(fn ->
-             {:ok, status} = Documentation.command(ctx.id, "status")
-             Enum.any?(status["followups"], &(&1["status"] in ["completed", "failed"]))
-           end)
+    # This crosses Git worktree creation, tool execution and an independent
+    # review. Hosted runners need more than the short state-transition budget.
+    assert eventually(
+             fn ->
+               {:ok, status} = Documentation.command(ctx.id, "status")
+               Enum.any?(status["followups"], &(&1["status"] in ["completed", "failed"]))
+             end,
+             1_000
+           )
 
     {:ok, status} = Documentation.command(ctx.id, "status")
     assert [followup] = status["followups"]
