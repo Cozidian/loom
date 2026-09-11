@@ -38,6 +38,10 @@ jobs:
         run: |
           rustup toolchain install 1.90.0 --profile minimal --component clippy
           rustup override set 1.90.0
+      - name: Workspace search dependency
+        run: |
+          brew install ripgrep
+          rg --version
       - name: No local build or document-trial artifacts in Git
         run: |
           if git ls-files | grep -E '(^\.beam_agent/tmp/|^test\.docx$|^test-ros.*\.docx($|\.review-)|(^|/)(node_modules|target|_build|deps)/|(^|/)\.env($|\.local$))'; then

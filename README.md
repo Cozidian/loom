@@ -53,8 +53,8 @@ something better is learned. Knowledge is never a frozen specification.
 
 ION is the Rust/Ratatui terminal frontend. Build from the repository root with
 Elixir 1.19 and compatible OTP (tested with OTP 28), plus Rust 1.88 or newer.
-The default service-backed workflow targets macOS; Git is needed for repository
-work. Phoenix dependencies are downloaded during the first build:
+The default service-backed workflow targets macOS; Git and ripgrep (`rg`) are
+needed for repository work. Phoenix dependencies are downloaded during the first build:
 
 ```sh
 mix loom.build

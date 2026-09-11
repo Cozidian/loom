@@ -4,6 +4,26 @@ defmodule BeamAgent.ResourceGovernanceTest do
   alias BeamAgent.Goal.{BudgetManager, CapabilityManager}
   alias BeamAgent.Project.ResourceScheduler
 
+  defmodule ClosingEventLog do
+    use GenServer
+
+    def start_link(opts),
+      do:
+        GenServer.start_link(__MODULE__, opts,
+          name: BeamAgent.Names.via(:event_log, opts[:session_id])
+        )
+
+    def init(opts), do: {:ok, opts}
+
+    def handle_call({:append, type, _data, _metadata}, _from, opts) do
+      send(opts[:test_pid], {:recorded, type})
+
+      if type == :resource_reclaimed,
+        do: {:stop, :normal, opts},
+        else: {:reply, {:ok, %{}}, opts}
+    end
+  end
+
   setup do
     root =
       Path.join(
@@ -309,6 +329,40 @@ defmodule BeamAgent.ResourceGovernanceTest do
     assert Enum.any?(events, &(&1["type"] == "resource_queued"))
     assert Enum.any?(events, &(&1["type"] == "resource_granted"))
     assert Enum.any?(events, &(&1["type"] == "resource_released"))
+  end
+
+  test "a closing session log cannot crash the project scheduler or strand queued work" do
+    id = "scheduler-shutdown-#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      Supervisor.child_spec({ClosingEventLog, session_id: id, test_pid: self()},
+        restart: :temporary
+      )
+    )
+
+    scheduler =
+      start_supervised!({ResourceScheduler, project_id: id, resource_limits: %{test: 1}})
+
+    owner = spawn(fn -> receive do: (:finish -> :ok) end)
+    on_exit(fn -> if Process.alive?(owner), do: Process.exit(owner, :kill) end)
+    assert {:ok, _first} = ResourceScheduler.acquire(id, :test, owner, session_id: id)
+    test_pid = self()
+
+    waiter =
+      spawn(fn ->
+        result = ResourceScheduler.acquire(id, :test, self(), session_id: id)
+        send(test_pid, {:queued_work_granted, result})
+        receive do: (:finish -> :ok)
+      end)
+
+    on_exit(fn -> if Process.alive?(waiter), do: Process.exit(waiter, :kill) end)
+    assert_receive {:recorded, :resource_queued}, 2_000
+    send(owner, :finish)
+    assert_receive {:recorded, :resource_reclaimed}, 2_000
+    assert_receive {:queued_work_granted, {:ok, _lease}}, 2_000
+    assert {:ok, ^scheduler} = BeamAgent.Names.pid(:project_resource_scheduler, id)
+    assert {:ok, %{test: %{active: 1, queued: 0}}} = ResourceScheduler.snapshot(id)
+    send(waiter, :finish)
   end
 
   test "delegated model work borrows bounded capacity from its waiting parent", context do

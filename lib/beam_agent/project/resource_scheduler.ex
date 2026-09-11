@@ -276,6 +276,11 @@ defmodule BeamAgent.Project.ResourceScheduler do
 
     _ = EventLog.append(session_id, type, data)
     :ok
+  catch
+    # Project capacity outlives a session. Its event log may stop between the
+    # registry lookup and append during teardown; that must not crash the shared
+    # scheduler and strand other sessions' waiters. Unexpected failures still exit.
+    :exit, {reason, {GenServer, :call, _}} when reason in [:noproc, :normal, :shutdown] -> :ok
   end
 
   defp call(project_id, message, timeout \\ 5_000) do
