@@ -197,3 +197,71 @@ footer { display: flex; justify-content: space-between; gap: 12px; font: 9px/1.7
   footer { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+.documentation-mission { margin: 24px 0; padding: 22px; border: 1px solid var(--line); border-radius: 12px; }
+.observer-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.observer-actions form { margin: 0; }
+.observer-report pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.observer-setup { max-width: 1180px; padding-top: 28px; }
+.observer-root { overflow-wrap: anywhere; }
+.observer-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 28px; }
+.folder-browser, .observer-selection { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
+.browse-location { display: flex; gap: 8px; margin-bottom: 16px; }
+.browse-location input { min-width: 0; flex: 1; }
+.browse-location button { flex-shrink: 0; }
+#browse-entries { list-style: none; padding: 0; max-height: 440px; overflow: auto; }
+#browse-entries li { display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); }
+#browse-entries button:first-child { text-align: left; overflow-wrap: anywhere; min-width: 0; }
+#browse-status { font-size: 13px; overflow-wrap: anywhere; }
+.observer-configure { display: inline-block; align-self: center; }
+#observer-paths { font-family: var(--mono); }
+@media (max-width: 760px) { .observer-picker { grid-template-columns: 1fr; } .folder-browser, .observer-selection { padding: 16px; } .browse-location { flex-wrap: wrap; } }
+
+/* The viewport is the shell; long content scrolls inside its owning panel. */
+html, body { height: 100%; overflow: hidden; }
+body { height: 100dvh; }
+.control-center { width: 100%; height: 100dvh; overflow: auto; overscroll-behavior: contain; }
+.welcome { max-height: 96dvh; overflow: auto; margin-top: 2dvh; margin-bottom: 2dvh; }
+.workspace { height: 100dvh; max-width: none; display: flex; flex-direction: column; min-height: 0; padding: 20px 28px 16px; }
+.workspace > header { flex: 0 0 auto; margin-bottom: 8px; padding-bottom: 8px; }
+.workspace > header .eyebrow { margin-top: 0; }
+.workspace > header h1 { margin: 0; font-size: clamp(24px, 3vw, 36px); }
+.workspace > p { flex: 0 0 auto; margin: 6px 0; }
+#panels { flex: 1 1 0; min-height: 0; overflow: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable; padding-right: 10px; }
+.workspace > .composer { flex: 0 0 auto; padding: 12px 16px; margin-top: 12px; }
+.workspace > .composer label { margin-bottom: 6px; }
+.workspace > .composer textarea { min-height: 40px; max-height: 18dvh; margin-bottom: 8px; }
+.workspace > footer { display: none; }
+.message-list { max-height: 55dvh; overflow: auto; overscroll-behavior: contain; }
+.message-content { overflow-wrap: anywhere; }
+.computer-picker { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 24px; margin: 24px 0; }
+#computer-entries { list-style: none; padding: 0; max-height: 40dvh; overflow: auto; overscroll-behavior: contain; }
+#computer-entries li { border-bottom: 1px solid var(--line); }
+#computer-entries button { width: 100%; text-align: left; overflow-wrap: anywhere; }
+#computer-status { overflow-wrap: anywhere; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 760px) { .computer-picker { grid-template-columns: 1fr; } }
+@media (max-width: 680px) {
+  body:has(.workspace) { display: flex; flex-direction: column; }
+  aside { flex: 0 0 auto; padding: 10px 16px; }
+  .workspace { height: auto; flex: 1 1 0; padding: 12px 16px; }
+  .workspace > header { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  .workspace > header .eyebrow { display: none; }
+  .workspace > .composer { margin-top: 8px; padding: 10px; }
+  .composer-footer { flex-direction: row; align-items: center; }
+  .composer-footer span { display: none; }
+  .composer-footer button { margin-left: auto; padding: 8px 12px; }
+  .workspace > .composer textarea { height: 44px; min-height: 36px; }
+}
+.finding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 16px; margin: 18px 0; }
+.finding-card, .followup-card { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.finding-card { border-top: 2px solid var(--violet); }
+.finding-card h4 { font-size: 17px; line-height: 1.5; margin: 0 0 18px; overflow-wrap: anywhere; }
+.finding-card dl { margin: 0 0 22px; }
+.finding-card dl > div { margin: 16px 0; }
+.finding-card dt { font: 11px/1.6 var(--mono); text-transform: uppercase; letter-spacing: .7px; color: var(--accent); }
+.finding-card dd { margin: 6px 0 0; line-height: 1.7; overflow-wrap: anywhere; }
+.finding-card .finding-uncertainty dt { color: #e5c389; }
+.finding-card .finding-next-action dt { color: var(--violet); }
+.finding-text { font: inherit; }
+.followup-card { margin-top: 18px; border-left: 2px solid var(--accent); overflow-wrap: anywhere; }
+.observer-report > details { border-top: 1px solid var(--line); padding-top: 14px; }

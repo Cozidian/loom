@@ -17,7 +17,7 @@ defmodule BeamAgent.CLI.Config do
   ]
 
   def path do
-    System.get_env("BEAM_AGENT_CONFIG") ||
+    System.get_env("LOOM_CONFIG") || System.get_env("BEAM_AGENT_CONFIG") ||
       Path.join([config_home(), "beam_agent", "config.json"])
   end
 

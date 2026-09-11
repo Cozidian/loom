@@ -6,6 +6,7 @@
 /.tmp/
 /.beam_agent/tmp/
 /beam_agent
+/loom
 /beam_agent_tui
 /beam_agent_ion
 /cmd/beam_agent_ion/target/
@@ -16,3 +17,14 @@
 /cmd/beam_agent_web/playwright-report/
 erl_crash.dump
 *.ez
+
+# Local credentials, editor state and generated document-trial artifacts.
+.DS_Store
+.env
+.env.*
+!.env.example
+/.beam_agent/sessions/
+/test.docx
+/test-ros*.docx
+/test-ros*.docx.review-*/
+/review-ros*/

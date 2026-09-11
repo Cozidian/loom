@@ -132,7 +132,7 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     if authorized?(token, %{request | query: %{}}) do
       case BeamAgent.ControlPlane.Catalog.route(request, opts) do
         {:ok, result} -> json(200, %{ok: true, result: result})
-        {:error, reason} -> json(200, %{ok: false, error: to_string(reason)})
+        {:error, reason} -> json(200, %{ok: false, error: catalog_error(reason)})
       end
     else
       json(401, %{ok: false, error: "bearer_token_required"})
@@ -178,6 +178,10 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
 
   defp route(_request, _control_plane, _token),
     do: response(404, "application/json", JSON.encode!(%{error: "not_found"}))
+
+  defp catalog_error(reason) when is_atom(reason), do: to_string(reason)
+  defp catalog_error({reason, _}) when is_atom(reason), do: to_string(reason)
+  defp catalog_error(_), do: "catalog_request_failed"
 
   defp read_request(socket), do: read_headers(socket, "")
 

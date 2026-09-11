@@ -3,6 +3,9 @@ defmodule BeamAgent.LocalEndpoint do
   use GenServer
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
+  def child_spec(opts),
+    do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}, restart: :transient}
+
   def init(opts) do
     Process.flag(:trap_exit, true)
     id = Keyword.fetch!(opts, :session_id)
@@ -34,7 +37,8 @@ defmodule BeamAgent.LocalEndpoint do
              Keyword.get(opts, :directory, BeamAgent.LocalDiscovery.directory())
            ) do
         {:ok, path} ->
-          {:ok, %{http: http, tui: tui, path: path, token: token}}
+          {:ok, goal} = BeamAgent.goal_pid(id)
+          {:ok, %{http: http, tui: tui, path: path, token: token, owner: Process.monitor(goal)}}
 
         error ->
           GenServer.stop(tui)
@@ -49,6 +53,9 @@ defmodule BeamAgent.LocalEndpoint do
 
   def handle_info({:EXIT, pid, reason}, state) when pid == state.http or pid == state.tui,
     do: {:stop, {:interface_stopped, reason}, state}
+
+  def handle_info({:DOWN, ref, :process, _, _}, %{owner: ref} = state),
+    do: {:stop, :normal, state}
 
   def handle_info(_, state), do: {:noreply, state}
 

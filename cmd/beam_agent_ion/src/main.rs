@@ -66,7 +66,7 @@ fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.iter().any(|x| x == "--help") {
         println!(
-            "ION / BeamAgent Ratatui frontend\n\nRun through the existing bridge:\n  BEAM_AGENT_TUI_BIN=./beam_agent_ion ./beam_agent\n\n  --demo       interactive preview; no backend or model calls\n  --snapshot   render a 120x38 demo frame to plain text\n  --help       show this help\n\nF1 mission · F2 actors · F3 ledger · Ctrl+P commands · Ctrl+Q exit"
+            "Loom / ION Ratatui frontend\n\nRun through the existing bridge:\n  BEAM_AGENT_TUI_BIN=./beam_agent_ion ./loom\n\n  --demo       interactive preview; no backend or model calls\n  --snapshot   render a 120x38 demo frame to plain text\n  --help       show this help\n\nF1 mission · F2 actors · F3 ledger · Ctrl+P commands · Ctrl+Q exit"
         );
         return Ok(());
     }

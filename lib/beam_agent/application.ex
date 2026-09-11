@@ -10,6 +10,8 @@ defmodule BeamAgent.Application do
       BeamAgent.Auth.CredentialStore,
       BeamAgent.Auth.SessionSupervisor,
       {DynamicSupervisor, strategy: :one_for_one, name: BeamAgent.LocalEndpointSupervisor},
+      {Task.Supervisor, name: BeamAgent.LocalStartupTasks},
+      BeamAgent.LocalSessionStarts,
       BeamAgent.ProjectRootSupervisor
     ]
 

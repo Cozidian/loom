@@ -242,6 +242,7 @@ var commands = []commandItem{
 	{ID: "repository", Label: "Repository intelligence", Hint: "/repository"},
 	{ID: "resources", Label: "Resource scheduler", Hint: "/resources"},
 	{ID: "organizations", Label: "Worker organizations", Hint: "/organizations"},
+	{ID: "mission", Label: "Documentation observer", Hint: "/mission [start|status|pause|resume|dismiss|stop|delete]"},
 	{ID: "worktrees", Label: "Git worktrees", Hint: "/worktrees"},
 	{ID: "toggle_tools", Label: "Expand or collapse tools", Hint: "ctrl+t"},
 	{ID: "clear", Label: "Clear transcript", Hint: "/clear"},
@@ -578,7 +579,7 @@ func (m model) View() tea.View {
 	composer := ""
 	if m.tab == tabChat {
 		composerBorder := colMint
-		label := " Ask BeamAgent "
+		label := " Ask Loom "
 		if m.status != "ready" {
 			composerBorder = colSand
 			label = " Working "
@@ -602,7 +603,7 @@ func (m model) View() tea.View {
 	view := tea.NewView(content)
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
-	view.WindowTitle = "BeamAgent · " + m.workspace
+	view.WindowTitle = "Loom · " + m.workspace
 	return view
 }
 
@@ -1182,6 +1183,10 @@ func (m *model) applyBackend(message packet) {
 		m.panelTitle, m.panelLines = message.Title, message.Lines
 		m.sheet = sheetPanel
 		m.notice = ""
+	case "mission_update":
+		if m.sheet == sheetPanel && m.panelTitle == "BACKGROUND / DOCUMENTATION" {
+			m.panelTitle, m.panelLines = message.Title, message.Lines
+		}
 	case "provider_picker":
 		m.clearFileSuggestions()
 		m.providers = message.Providers

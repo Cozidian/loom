@@ -121,3 +121,34 @@ polling is not token streaming; public event content is intentionally redacted.
 The full document, autonomous coding, background mission, personal-center and
 second-machine trials remain open. Current broad auto approval still does not
 enforce a separate publication category; no push or deployment was performed.
+
+## 2026-09-10 — Fresh Phoenix trial and wider browser checks
+
+Run `eval-aAqFDlRcCJ3h` used the configured provider in an isolated workspace.
+The protected three-test acceptance suite and compilation passed; supplied tests
+and the stand-in runtime retained their original hashes. The owner plus independent
+reviewer finished in 449,622 ms, with 66 tool calls, no permission denials or repair
+attempts. Two runtime model invocations had no token counters; total usage remains
+unknown. One executing-owner silence warning occurred before review, not a confirmed
+stall. No task fan-out occurred beyond completion review.
+
+Operator Chrome checks then exercised creation, refresh, cancellation, blank-input
+422 responses and escaped script text. Desktop and 390px-wide screenshots were
+inspected; neither had horizontal overflow. However, missing routes and rejected
+CSRF requests returned HTTP 500 because the generated app omitted its error-rendering
+module. The CSRF operation was rejected, but the error handoff was broken. The app
+was left unchanged so this defect remains visible in the trial evidence.
+
+**Assessment:** bounded acceptance passed; broader delivery is incomplete. The
+fixture still uses a stand-in API and browser checks were performed by the operator,
+not the harness. Next add HTTP error-path acceptance and an automated browser
+handoff before calling this unattended app delivery. Local report and screenshots:
+`/tmp/beam-phoenix-trial-0nwKdj/` (temporary, not portable evidence).
+
+Follow-up: the manifest now requires and fingerprints `test/http_delivery.exs`.
+It starts the real endpoint on loopback and requires a nonempty 200, unknown-route
+404 and missing-CSRF 403 with unchanged actor state. It rejects the previous
+artifact at the observed 500. An in-memory control supplying error templates and
+the missing HTML encoder dependency passes; neither the old artifact nor its
+recorded result was altered. No new autonomous provider run or harness-owned
+visual assessment has been performed for this follow-up.

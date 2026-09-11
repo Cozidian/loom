@@ -101,6 +101,23 @@ defmodule BeamAgentWeb.DeskTest do
     assert BeamAgentWeb.LaunchTicket.consume(ticket)
   end
 
+  test "fresh launch tickets reconnect after logout without invalidating another pending launch",
+       ctx do
+    first = String.duplicate("first-", 8)
+    second = String.duplicate("second-", 8)
+    :ok = BeamAgentWeb.LaunchTicket.issue(first)
+    :ok = BeamAgentWeb.LaunchTicket.issue(second)
+    assert BeamAgentWeb.LaunchTicket.consume(first)
+    refute BeamAgentWeb.LaunchTicket.consume(first)
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> post("/logout")
+    conn = get(recycle(conn), "/")
+    assert conn.resp_body =~ "./loom desk"
+    conn = post(recycle(conn), "/launch", %{ticket: second, _csrf_token: csrf(conn)})
+    assert conn.status == 204
+    assert get(recycle(conn), "/panels").status == 200
+    assert {:ok, _} = BeamAgent.agent_pid(ctx.id)
+  end
+
   test "submit reaches the actual supervised runtime; logout does not stop its goal", ctx do
     conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
 
@@ -231,6 +248,252 @@ defmodule BeamAgentWeb.DeskTest do
   end
 
   defp local_conn, do: %{build_conn() | host: "localhost"}
+
+  test "findings are escaped and follow-up confirmation uses server-owned evidence", ctx do
+    {:ok, pid} = BeamAgent.Names.pid(:documentation_mission, ctx.id)
+
+    report = %{
+      "status" => "advisory",
+      "worker_id" => "fixture",
+      "fingerprint" => "fixture",
+      "content" =>
+        "REVIEW_WARN\n1. **README <img src=x>**\n- **Evidence:** <script>attack()</script>\n- **Uncertainty:** Partial excerpt\n- **Next action:** Re-read the source"
+    }
+
+    :sys.replace_state(pid, fn state -> %{state | data: Map.put(state.data, "report", report)} end)
+
+    shown = BeamAgent.Missions.Report.present(report)
+    finding = hd(shown["findings"])
+    params = %{report_id: shown["id"], finding_id: finding["id"]}
+    assert get(local_conn(), "/observer/followup", params).status == 401
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
+    assert conn.resp_body =~ "finding-card"
+    assert conn.resp_body =~ "&lt;script&gt;"
+    refute conn.resp_body =~ "<script>attack()"
+    conn = get(recycle(conn), "/observer/followup", params)
+    assert conn.resp_body =~ "Start isolated fix agent"
+    assert conn.resp_body =~ "No automatic merge"
+    assert {:ok, []} = BeamAgent.worker_delegations(ctx.id)
+
+    assert_error_sent(403, fn ->
+      recycle(conn)
+      |> put_private(:plug_skip_csrf_protection, false)
+      |> post("/commands/documentation_mission", Map.put(params, :action, "prepare_fix"))
+    end)
+
+    rejected =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "prepare_fix",
+        report_id: "old",
+        finding_id: finding["id"],
+        _csrf_token: csrf(conn)
+      })
+
+    assert rejected.status == 422
+    assert {:ok, []} = BeamAgent.worker_delegations(ctx.id)
+  end
+
+  test "computer browsing and startup status are authenticated; creation errors return to the themed desk",
+       ctx do
+    for path <- [
+          "/workspaces",
+          "/workspaces/paths",
+          "/session-starts/unknown",
+          "/session-starts/unknown/status"
+        ] do
+      assert get(local_conn(), path).status == 401
+    end
+
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
+    # This fixture deliberately has only a single-session API, not a catalog.
+    result =
+      post(recycle(conn), "/sessions", %{
+        _csrf_token: csrf(conn),
+        request_id: "explicit-start-request"
+      })
+
+    assert redirected_to(result) == "/"
+    assert get_session(result, :notice) =~ "Session startup not confirmed"
+    assert get(recycle(conn), "/workspaces").resp_body =~ "Workspace browser unavailable"
+    assert get(recycle(conn), "/session-starts/unknown").resp_body =~ "Startup status unavailable"
+
+    assert_error_sent(403, fn ->
+      recycle(conn)
+      |> put_private(:plug_skip_csrf_protection, false)
+      |> post("/sessions", %{workspace: "/", request_id: "explicit-start-request"})
+    end)
+  end
+
+  test "documentation controls use the existing runtime and expose failures without claiming success",
+       ctx do
+    {:ok, context} = BeamAgent.Agent.construction_context(ctx.id)
+    System.cmd("git", ["init", "-q"], cd: context.workspace_root)
+    File.write!(Path.join(context.workspace_root, "README.md"), "Documentation fixture")
+    System.cmd("git", ["add", "README.md"], cd: context.workspace_root)
+    assert post(local_conn(), "/commands/documentation_mission", %{action: "start"}).status == 401
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/")
+    assert conn.resp_body =~ "Start documentation observer"
+    assert conn.resp_body =~ "provider allowance"
+
+    conn =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        "action" => "start",
+        "_csrf_token" => csrf(conn)
+      })
+
+    assert redirected_to(conn) == "/"
+
+    assert {:ok, %{"status" => "observing", "attempts" => 0}} =
+             BeamAgent.Missions.Documentation.command(ctx.id, "status")
+
+    conn = get(recycle(conn), "/")
+    assert conn.resp_body =~ "Pause observer"
+
+    conn =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        "action" => "start",
+        "_csrf_token" => csrf(conn)
+      })
+
+    assert conn.status == 422
+    assert conn.resp_body =~ "mission_already_configured"
+
+    conn =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        "action" => "pause",
+        "_csrf_token" => csrf(conn)
+      })
+
+    assert redirected_to(conn) == "/"
+    conn = get(recycle(conn), "/panels")
+    assert conn.resp_body =~ "Resume observer"
+
+    assert {:ok, %{"status" => "paused"}} =
+             BeamAgent.Missions.Documentation.command(ctx.id, "status")
+
+    assert conn.resp_body =~ "Stop observer & fixes"
+
+    conn =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "stop",
+        _csrf_token: csrf(conn)
+      })
+
+    assert redirected_to(conn) == "/"
+    conn = get(recycle(conn), "/panels")
+    assert conn.resp_body =~ "Delete observer"
+    assert conn.resp_body =~ "Session history and retained worktrees are always kept"
+
+    conn =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "delete",
+        _csrf_token: csrf(conn)
+      })
+
+    assert redirected_to(conn) == "/"
+
+    assert {:ok, %{"status" => "disabled"}} =
+             BeamAgent.Missions.Documentation.command(ctx.id, "status")
+
+    assert File.read!(Path.join(context.workspace_root, "README.md")) == "Documentation fixture"
+  end
+
+  test "mission reports are escaped and unavailable runtime status cannot offer start" do
+    html =
+      BeamAgentWeb.Page.panels(
+        %{
+          "documentation_mission" => %{
+            "status" => "paused",
+            "available_actions" => ["dismiss"],
+            "report" => %{
+              "status" => "advisory",
+              "content" => "<script>attack()</script>",
+              "worker_id" => "test"
+            }
+          }
+        },
+        "csrf"
+      )
+
+    assert html =~ "&lt;script&gt;"
+    refute html =~ "<script>attack()</script>"
+    assert html =~ "Dismiss report"
+    unavailable = BeamAgentWeb.Page.panels(%{}, "csrf")
+    assert unavailable =~ "Mission status unavailable"
+    refute unavailable =~ "Start documentation observer"
+  end
+
+  test "observer scope editor browses the runtime and forwards selected paths safely", ctx do
+    {:ok, context} = BeamAgent.Agent.construction_context(ctx.id)
+    File.mkdir_p!(Path.join(context.workspace_root, "docs with spaces"))
+    File.write!(Path.join(context.workspace_root, "docs with spaces/guide.md"), "guide")
+    System.cmd("git", ["init", "-q"], cd: context.workspace_root)
+    System.cmd("git", ["add", "docs with spaces"], cd: context.workspace_root)
+    assert get(local_conn(), "/observer").status == 401
+    assert get(local_conn(), "/observer/paths").status == 401
+    conn = login(get(local_conn(), "/"), ctx.token) |> recycle() |> get("/observer")
+    assert html_response(conn, 200) =~ "Choose what"
+    assert conn.resp_body =~ context.workspace_root
+    assert conn.resp_body =~ "docs with spaces"
+    listing = get(recycle(conn), "/observer/paths", %{path: "docs with spaces"})
+    assert [%{"name" => "guide.md"}] = json_response(listing, 200)["entries"]
+    assert get(recycle(conn), "/observer/paths", %{path: "../"}).status == 422
+
+    for paths <- ["", "../outside", ["docs with spaces"]] do
+      rejected =
+        post(recycle(conn), "/commands/documentation_mission", %{
+          action: "start",
+          paths: paths,
+          _csrf_token: csrf(conn)
+        })
+
+      assert rejected.status == 422
+
+      assert {:ok, %{"status" => "disabled"}} =
+               BeamAgent.Missions.Documentation.command(ctx.id, "status")
+    end
+
+    assert_error_sent(403, fn ->
+      recycle(conn)
+      |> put_private(:plug_skip_csrf_protection, false)
+      |> post("/commands/documentation_mission", %{action: "start", paths: "docs with spaces"})
+    end)
+
+    started =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "start",
+        paths: "docs with spaces",
+        _csrf_token: csrf(conn)
+      })
+
+    assert redirected_to(started) == "/"
+
+    assert {:ok, %{"paths" => ["docs with spaces"], "status" => "observing"}} =
+             BeamAgent.Missions.Documentation.command(ctx.id, "status")
+
+    stale =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "configure",
+        paths: ".",
+        _csrf_token: csrf(conn)
+      })
+
+    assert stale.status == 422
+    assert stale.resp_body =~ "pause_mission_before_changing_scope"
+    assert :ok = BeamAgent.Missions.Documentation.command(ctx.id, "pause")
+
+    saved =
+      post(recycle(conn), "/commands/documentation_mission", %{
+        action: "configure",
+        paths: ".",
+        _csrf_token: csrf(conn)
+      })
+
+    assert redirected_to(saved) == "/"
+
+    assert {:ok, %{"paths" => ["."], "status" => "paused", "attempts" => 0}} =
+             BeamAgent.Missions.Documentation.command(ctx.id, "status")
+  end
 
   defp login(conn, token),
     do: post(recycle(conn), "/login", %{"token" => token, "_csrf_token" => csrf(conn)})

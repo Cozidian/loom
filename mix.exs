@@ -7,7 +7,7 @@ defmodule BeamAgent.MixProject do
       version: "0.1.0",
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
-      escript: [main_module: BeamAgent.CLI, name: "beam_agent"],
+      escript: [main_module: BeamAgent.CLI, name: "loom"],
       deps: deps()
     ]
   end

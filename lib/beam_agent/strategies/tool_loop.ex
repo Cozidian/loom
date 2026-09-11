@@ -4,7 +4,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   alias BeamAgent.{
     CapabilityCatalog,
-    CapabilityEnvelope,
     MCP.Registry,
     ModelEndpoint,
     ModelInvocation,
@@ -19,7 +18,6 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   alias BeamAgent.Goal.{
     BudgetManager,
-    CapabilityManager,
     ModelLease,
     ProviderBidCoordinator,
     Tournament
@@ -1533,12 +1531,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
   defp available_tool_schemas(context) do
     (CapabilityCatalog.tool_schemas() ++ Registry.tool_schemas(context.goal_id))
-    |> Enum.filter(fn schema ->
-      resource = %{tools: schema.name}
-
-      CapabilityEnvelope.authorize(context.capability_envelope, resource) == :ok or
-        CapabilityManager.permits?(context.goal_id, context.session_id, resource)
-    end)
+    |> Enum.map(&ToolRunner.available_schema(&1, context))
+    |> Enum.reject(&is_nil/1)
     |> enforce_planning_gate(context)
   end
 

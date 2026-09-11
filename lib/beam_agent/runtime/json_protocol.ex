@@ -33,6 +33,18 @@ defmodule BeamAgent.Runtime.JSONProtocol do
   end
 
   defp execute(client, "snapshot", _arguments), do: BeamAgent.Runtime.snapshot(client)
+
+  defp execute(client, "documentation_mission", arguments) when is_map(arguments),
+    do:
+      BeamAgent.Runtime.documentation_mission(
+        client,
+        value(arguments, :action) || "status",
+        arguments
+      )
+
+  defp execute(_client, "documentation_mission", _arguments),
+    do: {:error, :invalid_mission_options}
+
   defp execute(client, "status", _arguments), do: BeamAgent.Runtime.status(client)
   defp execute(client, "goal_tree", _arguments), do: BeamAgent.Runtime.goal_tree(client)
   defp execute(client, "budget", _arguments), do: BeamAgent.Runtime.budget(client)

@@ -20,6 +20,9 @@ defmodule Mix.Tasks.BeamAgent.Build do
 
     Mix.shell().info("Building Elixir escript")
     Mix.Task.run("escript.build")
+    # Compatibility entry point for existing scripts; both run the same CLI.
+    File.cp!("loom", "beam_agent")
+    File.chmod!("beam_agent", 0o755)
   end
 
   defp build_web(root) do

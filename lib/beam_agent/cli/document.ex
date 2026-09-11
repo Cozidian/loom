@@ -1,7 +1,7 @@
 defmodule BeamAgent.CLI.Document do
   @moduledoc "Repeatable document delivery through the regular runtime, with a bounded tool set and protected original."
   alias BeamAgent.CLI.{Config, TurnRunner}
-  alias BeamAgent.Documents.{Docx, Renderer}
+  alias BeamAgent.Documents.{Docx, Renderer, VisualReview}
 
   def run(["doctor"], _config) do
     status = Renderer.preflight()
@@ -36,6 +36,33 @@ defmodule BeamAgent.CLI.Document do
     else
       error ->
         IO.puts(:stderr, "Rendering incomplete: #{inspect(error)}")
+        1
+    end
+  end
+
+  def run(["review", source, directory | args], config_path) do
+    {opts, rest, invalid} = OptionParser.parse(args, strict: [profile: :string])
+
+    with true <- rest == [] and invalid == [],
+         {:ok, _} <- VisualReview.prepare(Path.expand(source), Path.expand(directory)),
+         {:ok, stored} <- Config.load(config_path),
+         {:ok, config} <- Config.runtime(stored, opts[:profile]),
+         {:ok, provider} <- Config.provider_atom(config["provider"]),
+         {:ok, _} <- Application.ensure_all_started(:beam_agent) do
+      review_result(Path.expand(source), Path.expand(directory),
+        workspace_root: Path.dirname(Path.expand(source)),
+        data_dir: config["data_dir"],
+        provider: provider,
+        provider_profile: config["profile"],
+        provider_options: Config.provider_options(config)
+      )
+    else
+      error ->
+        IO.puts(
+          :stderr,
+          "Visual review could not start: #{inspect(error)}. Use a fresh render with intact fingerprint evidence."
+        )
+
         1
     end
   end
@@ -75,7 +102,7 @@ defmodule BeamAgent.CLI.Document do
       error ->
         IO.puts(
           :stderr,
-          "Document preflight failed: #{inspect(error)}. Run beam_agent document --help."
+          "Document preflight failed: #{inspect(error)}. Run loom document --help."
         )
 
         1
@@ -84,11 +111,12 @@ defmodule BeamAgent.CLI.Document do
 
   def run(_, _) do
     IO.puts("""
-    beam_agent document SOURCE.docx --output NEW.docx --prompt "Your requested edit"
+    loom document SOURCE.docx --output NEW.docx --prompt "Your requested edit"
       --workspace PATH    repository/document folder (default: current directory)
       --profile NAME      use an existing profile without changing saved settings
-    beam_agent document doctor
-    beam_agent document render OUTPUT.docx NEW_REVIEW_DIRECTORY
+    loom document doctor
+    loom document render OUTPUT.docx NEW_REVIEW_DIRECTORY
+    loom document review OUTPUT.docx REVIEW_DIRECTORY [--profile NAME]
 
     Uses the selected model, a solo owner and the regular runtime tool/approval
     boundary. Only read tools and insert-only DOCX filling are available to the
@@ -96,8 +124,11 @@ defmodule BeamAgent.CLI.Document do
     independent runtime reviewer checks the output. The original is
     protected by a fingerprint. After successful work, the CLI renders a COPY
     in Microsoft Word. macOS, Word and Poppler are required; no installs occur.
-    Page images still require visual review. No automatic visual-pass claim.
-    The render command retries rendering without another model call.
+    A separate read-only model inspects every rendered page (up to 10), using
+    the selected profile. Unsupported vision, incomplete assessments or changed
+    artifacts leave QA incomplete. Model visual review is not factual approval.
+    Render retries without a model call; review inspects an existing render
+    without repeating document generation or repository research.
     """)
 
     0
@@ -213,7 +244,7 @@ defmodule BeamAgent.CLI.Document do
       case result do
         {:ok, answer, _} ->
           IO.puts(answer)
-          finish(input, destination, hash)
+          finish(input, destination, hash, options)
 
         error ->
           IO.puts(:stderr, "Document mission incomplete: #{inspect(error)}")
@@ -226,7 +257,7 @@ defmodule BeamAgent.CLI.Document do
     end
   end
 
-  defp finish(source, output, hash) do
+  defp finish(source, output, hash, options) do
     render_dir =
       output <> ".review-" <> Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
 
@@ -236,13 +267,42 @@ defmodule BeamAgent.CLI.Document do
          :ok <-
            File.write(Path.join(render_dir, "evidence.json"), JSON.encode!(report), [:exclusive]) do
       IO.puts(
-        "Saved #{output}\nRendered #{report.page_count} pages in #{render_dir}\nVisual review pending: inspect every page image before accepting the document."
+        "Saved #{output}\nRendered #{report.page_count} pages in #{render_dir}\nInspecting page images with a separate read-only model…"
       )
 
-      0
+      review_result(output, render_dir, options)
     else
       error ->
         IO.puts(:stderr, "Document verification incomplete: #{inspect(error)}")
+        1
+    end
+  end
+
+  defp review_result(source, directory, options) do
+    with {:ok, assessment} <- VisualReview.run(source, directory, options),
+         path =
+           Path.join(
+             directory,
+             "visual-review-" <>
+               Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false) <> ".json"
+           ),
+         :ok <- File.write(path, JSON.encode!(assessment), [:exclusive]) do
+      IO.puts(
+        "Visual QA: #{assessment.status} · #{length(assessment.pages)} pages\nAssessment: #{path}\nThis is model-assessed layout, not factual or organizational approval."
+      )
+
+      for page <- assessment.pages, finding <- page["findings"] do
+        IO.puts("  Page #{page["page"]} (#{page["status"]}): #{finding}")
+      end
+
+      if assessment.status == :passed, do: 0, else: 1
+    else
+      error ->
+        IO.puts(
+          :stderr,
+          "Visual QA incomplete: #{inspect(error)}. The document and rendered pages are retained. Retry: loom document review #{source} #{directory}"
+        )
+
         1
     end
   end

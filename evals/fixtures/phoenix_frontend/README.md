@@ -15,6 +15,10 @@ build tool, and LiveView are unnecessary for this bounded acceptance task.
   303). Reject a blank objective with status 422 and a useful error message.
 - POST `/goals/:id/cancel` cancels through the runtime and redirects to `/`.
 - Escape goal text as HTML. Include CSRF protection in the browser pipeline.
+- Provide nonempty error pages: unknown routes must return HTTP 404, and a
+  POST without a valid CSRF token must return HTTP 403 without starting a goal.
+  Error rendering itself must not crash. Run `mix run --no-start test/http_delivery.exs`
+  in addition to `mix test`; the protected HTTP check starts its own loopback server.
 - Provide a clear, responsive page with readable goal status and a cancel action
   for active goals. Document `mix phx.server` as the local launch command.
 

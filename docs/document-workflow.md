@@ -6,12 +6,13 @@ copy; the runtime checks preservation and independently reviews the result.
 
 ## Run
 
-Build once with `mix beam_agent.build`. Configure your provider through the normal
-first launch (`./beam_agent`) if needed. Then:
+Build once with `mix loom.build`. Configure your provider through the normal
+first launch (`./loom`) if needed. Supply your own non-sensitive paragraph-based
+template; personal trial documents are intentionally not distributed. For example:
 
 ```sh
-./beam_agent document doctor
-./beam_agent document test.docx --output test-ros-new.docx \
+./loom document doctor
+./loom document template.docx --output assessment.docx \
   --prompt "Fill in the ROS analysis in Norwegian using this repository. Separate current controls, remaining risks and proposed measures; cite source files."
 ```
 
@@ -28,10 +29,16 @@ shell execution, publication and arbitrary output paths are not enabled by this
 command. The trusted CLI supplies the deterministic verification command.
 
 After successful runtime work, the CLI renders a private copy in Microsoft Word,
-then produces a PDF, page PNGs and machine evidence in a fresh sibling review
-directory. **Inspect every page before accepting the result.** Rendering alone
-is not visual or factual review; machine evidence deliberately leaves
-`visually_reviewed` false.
+then produces a PDF, page PNGs and fingerprint evidence in a fresh sibling review
+directory. A separate, read-only reviewer receives every page image and returns
+a per-page layout assessment. It has no tools and cannot rerun repository tests
+or research. The command succeeds only when every page is assessed as passed.
+
+This is **model-assessed layout, not factual or organizational approval**. It is
+fallible; inspect the pages before consequential use. The immutable render receipt
+still says `visually_reviewed: false`: rendering alone proves no visual review.
+A separate `visual-review-*.json` records the model assessment, source/page hashes
+and reviewer session. It does not retroactively change the render receipt.
 
 ## Dependencies and recovery
 
@@ -47,13 +54,28 @@ If rendering fails after the model has produced a valid output, recover without
 another model call:
 
 ```sh
-./beam_agent document render test-ros-new.docx review-ros-new
+./loom document render assessment.docx assessment-review
 ```
 
 The review directory must not already exist and its parent must exist. Failed
 attempts can leave partial review artifacts for inspection. The render-only
 command checks that its input stays unchanged; it does not rerun the original
 template comparison or model review.
+
+If visual assessment fails, retry it against the existing render without
+regenerating the document or repeating the repository research:
+
+```sh
+./loom document review assessment.docx assessment-review
+```
+
+`--profile NAME` can select an existing image-capable profile. The assessment
+uses provider allowance. This first implementation supports 1–10 PNG pages,
+10 MiB per image and 20 MiB total image data. Missing vision support, incomplete
+page assessments, concerns or uncertainty return a nonzero exit status and leave
+the output available. Missing/stale fingerprints are rejected before inference;
+source, PDF and page hashes are rechecked afterward. Old render receipts without
+page/PDF hashes require a fresh render. Each assessment gets a new report file.
 
 ## What is checked
 
@@ -66,6 +88,9 @@ template comparison or model review.
   tracked changes are rejected by this first filling implementation.
 - Word rendering rejects dynamic fields; PDF page count and all page images
   must be present. These checks do not establish factual correctness.
+- Visual assessment is isolated from general implementation/verification goals;
+  it cannot run workspace-discovered commands. Offline regressions cover image
+  delivery, stale/substituted evidence, all-page coverage and uncertainty.
 
 `read_document`, `fill_document` and `render_document` are also registered runtime
 tools. Outside this dedicated command, normal session capabilities and approval
@@ -74,6 +99,10 @@ policy apply; desktop rendering additionally requires the explicit
 capability, not a claim of OS-sandboxed document parsing.
 
 ## ROS trial — 2026-09-10
+
+These are historical observations from a private local trial, not downloadable
+fixtures or reproducible public benchmarks. Offline tests generate synthetic
+documents independently of those files.
 
 The owner supplied `test.docx`, a 14-paragraph ROS template. The live harness used
 the existing `openai-chatgpt / gpt-5.6-sol` profile to produce
@@ -98,3 +127,19 @@ render-only command, without another model turn. Regression tests cover document
 integrity, exact output binding, reviewer scope and canonical usage events.
 This is evidence of a real guarded delivery with supervised recovery, not a
 reliability benchmark or proof that arbitrary Word documents are supported.
+
+## Image-assessment trial — 2026-09-10
+
+The later `test-ros-trial-20260910.docx` output was rendered again unchanged and
+both pages were assessed through the new `document review` command. Reviewer
+`session-eu0UwFUZCfItQ5VH` reported both pages passed using one runtime model
+invocation, zero tools and zero repository verification commands. Tokens were
+not reported. The output fingerprint remained
+`c15afeea0f5cd5fc42a3aeb2f83be560e2c8fdfec7c9f5a1f24f3ed0c4f5ca26`.
+
+The first development attempt accidentally invoked general repository verification
+because its root goal was classified as a verification task. It failed, rather than
+claiming completion. The corrected path uses a dedicated supervised reviewer and
+has an offline regression ensuring workspace verification commands never run.
+This validates retrying QA without repeating generation; a fresh full document
+generation with automatic QA still needs another end-to-end trial.

@@ -6,7 +6,7 @@ defmodule BeamAgent.CLI.UI do
 
   def setup_header do
     blank()
-    line([:bright, @accent, "◆", :reset, :bright, " beam agent"])
+    line([:bright, @accent, "◆", :reset, :bright, " Loom"])
     line([:faint, "  First-time setup · choose a model and where sessions live"])
     divider()
   end
@@ -44,7 +44,7 @@ defmodule BeamAgent.CLI.UI do
 
   def session_header(config, session_id) do
     blank()
-    line([:bright, @accent, "◆", :reset, :bright, " beam agent"])
+    line([:bright, @accent, "◆", :reset, :bright, " Loom"])
 
     line([
       :faint,
@@ -62,7 +62,7 @@ defmodule BeamAgent.CLI.UI do
   def one_shot_header(config, session_id) do
     line([
       :faint,
-      "beam agent  ·  ",
+      "Loom  ·  ",
       provider_label(config),
       "  ·  ",
       short_session(session_id)

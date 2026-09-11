@@ -23,17 +23,93 @@ runtime_config =
   )
 
 runtime_config = Map.put(runtime_config, "workspace_root", Path.join(root, "workspace"))
-{:ok, id, _} = BeamAgent.CLI.create_local_session(runtime_config, Path.join(root, "config.json"))
 File.mkdir_p!(Path.join(root, "second-workspace"))
 
-{:ok, _, _} =
-  BeamAgent.CLI.create_local_session(
-    Map.put(runtime_config, "workspace_root", Path.join(root, "second-workspace")),
-    Path.join(root, "config.json")
-  )
+for folder <- ["workspace", "second-workspace"] do
+  workspace = Path.join(root, folder)
+  File.write!(Path.join(workspace, "README.md"), "Browser documentation observer fixture")
+  File.mkdir_p!(Path.join(workspace, "docs with spaces/nested"))
+  File.write!(Path.join(workspace, "docs with spaces/nested/guide.md"), "Tracked guide")
+  System.cmd("git", ["init", "-q"], cd: workspace)
+  System.cmd("git", ["add", "README.md", "docs with spaces"], cd: workspace)
 
-{:ok, _} = BeamAgent.ask(id, "Welcome to the real runtime")
+  System.cmd(
+    "git",
+    [
+      "-c",
+      "user.name=Browser Fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "core.hooksPath=/dev/null",
+      "commit",
+      "--no-gpg-sign",
+      "-qm",
+      "Initial fixture"
+    ],
+    cd: workspace
+  )
+end
+
+# Begin with NO sessions or TUI. Deliberately take longer than the old 8s HTTP
+# timeout on the first launch, without invoking any real provider.
+{:ok, first_start} = Agent.start_link(fn -> true end)
+
+:sys.replace_state(BeamAgent.LocalSessionStarts, fn state ->
+  %{
+    state
+    | create: fn config, path ->
+        if Agent.get_and_update(first_start, &{&1, false}), do: Process.sleep(9_000)
+        BeamAgent.CLI.create_local_session(config, path)
+      end
+  }
+end)
+
 token = "local-browser-fixture-token-only"
+
+# Supply one representative advisory per observer for presentation/action tests.
+# This is fixture-only state, never a real model evaluation or production endpoint.
+Task.start(fn ->
+  loop = fn recur, seen ->
+    {:ok, %{sessions: sessions}} = BeamAgent.LocalDiscovery.list()
+
+    seen =
+      Enum.reduce(sessions, seen, fn session, seen ->
+        id = session["session_id"]
+
+        if MapSet.member?(seen, id) do
+          seen
+        else
+          with {:ok, %{"status" => "observing", "paths" => paths}} <-
+                 BeamAgent.Missions.Documentation.command(id, "status"),
+               {:ok, context} <- BeamAgent.Agent.construction_context(id),
+               {:ok, snapshot} <- BeamAgent.Missions.Snapshot.capture(context, paths),
+               {:ok, pid} <- BeamAgent.Names.pid(:documentation_mission, id) do
+            report = %{
+              "status" => "advisory",
+              "worker_id" => "browser-observer-fixture",
+              "fingerprint" => snapshot.fingerprint,
+              "content" =>
+                "REVIEW_WARN\n\n1. **README.md — unsupported quality claims**\n- **Evidence:** The README claims full test coverage without a linked result.\n- **Uncertainty:** The excerpt may omit the supporting evidence.\n- **Next action:** Re-read the README and replace only unsupported claims.\n\n2. **Setup instructions need a closer look**\n- **Evidence:** The excerpt does not include install commands.\n- **Uncertainty:** They may be documented elsewhere.\n- **Next action:** Verify the full documentation before proposing an edit.\n\nCoverage is partial; these are fixture findings, not a model evaluation."
+            }
+
+            :sys.replace_state(pid, fn state ->
+              %{state | data: Map.put(state.data, "report", report)}
+            end)
+
+            MapSet.put(seen, id)
+          else
+            _ -> seen
+          end
+        end
+      end)
+
+    Process.sleep(200)
+    recur.(recur, seen)
+  end
+
+  loop.(loop, MapSet.new())
+end)
 
 {:ok, server} =
   BeamAgent.ControlPlane.HTTPServer.start_link(

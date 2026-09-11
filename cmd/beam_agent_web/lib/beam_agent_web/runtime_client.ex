@@ -3,11 +3,29 @@ defmodule BeamAgentWeb.RuntimeClient do
 
   def sessions, do: request(:get, "/api/v1/sessions", nil)
   def create_session, do: request(:post, "/api/v1/sessions", %{})
+  def create_session(args), do: request(:post, "/api/v1/sessions", args)
+
+  def session_start(id),
+    do: request(:get, "/api/v1/session-starts/" <> URI.encode(id, &URI.char_unreserved?/1), nil)
+
+  def workspaces(params \\ %{}),
+    do:
+      request(
+        :get,
+        "/api/v1/workspaces?" <> URI.encode_query(Map.take(params, ["path", "page"])),
+        nil
+      )
 
   def snapshot(session_id \\ nil) do
     prefix = session_prefix(session_id)
 
     with {:ok, snapshot} <- request(:get, prefix <> "/snapshot", nil) do
+      snapshot =
+        case command("documentation_mission", %{action: "status"}, session_id) do
+          {:ok, mission} -> Map.put(snapshot, "documentation_mission", mission)
+          {:error, _} -> Map.put(snapshot, "documentation_mission_unavailable", true)
+        end
+
       case request(:get, prefix <> "/conversation", nil) do
         {:ok, conversation} -> {:ok, Map.put(snapshot, "conversation", conversation)}
         {:error, _} -> {:ok, Map.put(snapshot, "conversation_unavailable", true)}

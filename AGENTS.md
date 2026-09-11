@@ -1,4 +1,4 @@
-# Working on BeamAgent
+# Working on Loom
 
 Start with [VISION.md](VISION.md) for evolving product intent. Read the relevant
 part of [ROADMAP.md](ROADMAP.md) for proposed experiments, then inspect current

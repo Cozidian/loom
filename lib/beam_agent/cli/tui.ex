@@ -4,7 +4,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.Config
   alias BeamAgent.CLI.TUI.Controller
 
-  @commands ~w(connect providers auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume)a
+  @commands ~w(connect providers auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume mission)a
   @competition_event_types ~w(tournament_started tournament_candidate_started tournament_candidate_completed tournament_judgment_requested tournament_winner_selected tournament_collapsed tournament_inconclusive tournament_judgment_unresolved race_started race_candidate_started race_candidate_completed race_candidate_rejected race_candidate_cancelled race_winner_selected race_settled race_inconclusive)
   @competition_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
@@ -27,7 +27,7 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   def executable(nil) do
-    case System.get_env("BEAM_AGENT_TUI_BIN") do
+    case System.get_env("LOOM_TUI_BIN") || System.get_env("BEAM_AGENT_TUI_BIN") do
       override when is_binary(override) and override != "" ->
         path = if String.contains?(override, "/"), do: Path.expand(override), else: override
         System.find_executable(path)
@@ -132,7 +132,7 @@ defmodule BeamAgent.CLI.TUI do
                 type: "notice",
                 tone: "warning",
                 message:
-                  "This is a live attachment. Exit and use beam_agent attach SESSION_ID to change sessions."
+                  "This is a live attachment. Exit and use loom attach SESSION_ID to change sessions."
               })
             )
 
@@ -338,6 +338,12 @@ defmodule BeamAgent.CLI.TUI do
 
   def notification_payload({:panel, title, lines}),
     do: %{type: "panel", title: title, lines: lines}
+
+  def notification_payload({:mission_panel, payload}),
+    do: Map.put(payload, :type, "panel")
+
+  def notification_payload({:mission_update, payload}),
+    do: Map.put(payload, :type, "mission_update")
 
   def notification_payload({:provider_picker, providers}),
     do: %{type: "provider_picker", providers: json_safe(providers)}
@@ -627,6 +633,15 @@ defmodule BeamAgent.CLI.TUI do
        )
        when is_binary(query) do
     Controller.command(controller, {:connect, query})
+    :ok
+  end
+
+  defp dispatch_action(
+         %{"type" => "command", "command" => "mission", "query" => query},
+         controller
+       )
+       when is_binary(query) do
+    Controller.command(controller, {:mission, query})
     :ok
   end
 

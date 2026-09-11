@@ -7,6 +7,27 @@ defmodule BeamAgent.ToolRunner do
 
   @write_tools ~w(apply_patch create_file edit_file fill_document render_document)
 
+  @doc "Projects fixed operation choices through current authority without granting it."
+  def available_schema(%{name: "git_inspect"} = schema, context) do
+    operations =
+      Enum.filter(schema.input_schema.properties.operation.enum, fn operation ->
+        permitted?(context, %{tools: "git_inspect", git_operations: operation})
+      end)
+
+    if operations != [],
+      do: put_in(schema, [:input_schema, :properties, :operation, :enum], operations)
+  end
+
+  def available_schema(schema, context) do
+    resource = %{tools: schema.name, browser_scopes: browser_scope(schema.name)}
+    if permitted?(context, resource), do: schema
+  end
+
+  defp permitted?(context, resource) do
+    CapabilityEnvelope.authorize(context.capability_envelope, resource) == :ok or
+      CapabilityManager.permits?(context.goal_id, context.session_id, resource)
+  end
+
   def execute(module, arguments, context) do
     arguments = normalize_workspace_arguments(arguments, context)
     access = if function_exported?(module, :access, 0), do: module.access(), else: :execute

@@ -19,8 +19,12 @@ defmodule BeamAgent.CLITest do
 
   test "new entry points are discoverable without loading a provider configuration", ctx do
     {0, help} = run_stdout(["--help", "--config", ctx.config_path])
-    assert help =~ "beam_agent desk"
-    assert help =~ "beam_agent document"
+    assert help =~ "loom desk"
+    assert help =~ "loom document"
+    assert help =~ "loom mission"
+    {0, mission} = run_stdout(["mission", "--help", "--config", ctx.config_path])
+    assert mission =~ "--max-assessments 3"
+    assert mission =~ "not an installed background service"
     {0, desk} = run_stdout(["desk", "--help", "--config", ctx.config_path])
     assert desk =~ "No exported variables"
     assert desk =~ "--tui"
@@ -34,7 +38,9 @@ defmodule BeamAgent.CLITest do
 
     for flags <- [[], ["--no-tui"]] do
       {status, output} =
-        run_stderr(["desk", "--config", context.config_path, "--port", "-1"] ++ flags)
+        run_stderr(
+          ["desk", "--foreground", "--config", context.config_path, "--port", "-1"] ++ flags
+        )
 
       assert status == 2
       assert output =~ "--port must be between 0 and 65535"
@@ -94,7 +100,7 @@ defmodule BeamAgent.CLITest do
     {status, output} = run_stdout(["run", "hello from cli", "--config", context.config_path])
 
     assert status == 0
-    assert output =~ "beam agent  ·  echo  ·  session"
+    assert output =~ "Loom  ·  echo  ·  session"
     assert output =~ "◆ assistant"
     assert output =~ "echo(1): hello from cli"
     assert File.ls!(context.data_dir) != []
@@ -110,7 +116,7 @@ defmodule BeamAgent.CLITest do
       )
 
     assert status == 0
-    assert output =~ "◆ beam agent"
+    assert output =~ "◆ Loom"
     assert output =~ "echo  ·  session"
     assert output =~ "Type a message · /help commands"
     assert output =~ "◆ assistant"
@@ -231,7 +237,7 @@ defmodule BeamAgent.CLITest do
 
   test "command-specific help is available without configuration", context do
     {0, init_help} = run_stdout(["init", "--help", "--config", context.config_path])
-    assert init_help =~ "Configure beam agent"
+    assert init_help =~ "Configure Loom"
     assert init_help =~ "--non-interactive"
 
     {0, run_help} = run_stdout(["run", "--help", "--config", context.config_path])
@@ -325,7 +331,7 @@ defmodule BeamAgent.CLITest do
 
     assert status == 1
     assert output =~ "not configured"
-    assert output =~ "beam_agent init"
+    assert output =~ "loom init"
   end
 
   test "resume refuses to silently create a missing durable session", context do

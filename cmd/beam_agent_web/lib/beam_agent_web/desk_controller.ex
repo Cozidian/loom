@@ -51,18 +51,98 @@ defmodule BeamAgentWeb.DeskController do
     end
   end
 
-  def create_session(conn, _) do
+  def create_session(conn, params) do
+    args =
+      params
+      |> Map.take(["workspace", "request_id"])
+      |> Map.put_new("request_id", Page.start_id())
+
     with true <- authenticated?(conn),
-         {:ok, %{"session_id" => id}} <- RuntimeClient.create_session() do
-      redirect(conn, to: "/sessions/" <> id)
+         {:ok, %{"request_id" => id}} <- RuntimeClient.create_session(args) do
+      redirect(conn,
+        to: "/session-starts/" <> id <> if(params["observer"] == "1", do: "?observer=1", else: "")
+      )
     else
       false ->
         conn |> send_resp(401, "Sign in first.")
 
-      _ ->
+      {:ok, %{"session_id" => id}} when not is_map_key(args, "workspace") ->
+        # Compatibility with a still-running older, synchronous catalog.
+        redirect(conn, to: session_path(id))
+
+      {:ok, _} ->
         conn
-        |> put_status(422)
-        |> html("Session creation not confirmed. Check the overview before retrying.")
+        |> put_session(
+          :notice,
+          "An older runtime could not confirm the chosen workspace. Restart Desk after rebuilding and check live sessions before retrying."
+        )
+        |> redirect(to: "/")
+
+      {:error, reason} ->
+        conn
+        |> put_session(
+          :notice,
+          "Session startup not confirmed (#{inspect(reason)}). Check live sessions before retrying."
+        )
+        |> redirect(to: "/")
+    end
+  end
+
+  def session_start(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.session_start(params["id"]) do
+        {:ok, %{"status" => "ready", "session_id" => id}} ->
+          redirect(conn,
+            to: session_path(id) <> if(params["observer"] == "1", do: "/observer", else: "")
+          )
+
+        result ->
+          html(conn, Page.session_start(result))
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def session_start_status(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.session_start(params["id"]) do
+        {:ok, job} ->
+          json(conn, job)
+
+        _ ->
+          conn
+          |> put_status(404)
+          |> json(%{
+            error: "Startup status unavailable. Check live sessions; no request was repeated."
+          })
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def workspaces(conn, params) do
+    if authenticated?(conn) do
+      html(conn, Page.workspaces(RuntimeClient.workspaces(), csrf(), params["observer"] == "1"))
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def workspace_paths(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.workspaces(params) do
+        {:ok, listing} ->
+          json(conn, listing)
+
+        _ ->
+          conn
+          |> put_status(422)
+          |> json(%{error: "Directory unavailable or not readable by the runtime."})
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
     end
   end
 
@@ -92,7 +172,9 @@ defmodule BeamAgentWeb.DeskController do
     else
       conn
       |> put_status(401)
-      |> html("Launch link expired or already used. Restart Desk to get a new link.")
+      |> html(
+        "Launch link expired or already used. Run ./loom desk for a fresh link. Your agents keep running."
+      )
     end
   end
 
@@ -112,7 +194,9 @@ defmodule BeamAgentWeb.DeskController do
           |> html("Runtime unavailable. Reconnecting; your work remains runtime-owned.")
       end
     else
-      conn |> put_status(401) |> html("Session expired. Reload to sign in.")
+      conn
+      |> put_status(401)
+      |> html("Session expired. Run ./loom desk to reconnect; your agents keep running.")
     end
   end
 
@@ -144,6 +228,80 @@ defmodule BeamAgentWeb.DeskController do
     end
   end
 
+  def observer(conn, params) do
+    if authenticated?(conn) do
+      id = params["session_id"]
+
+      with {:ok, mission} <-
+             RuntimeClient.command("documentation_mission", %{action: "status"}, id),
+           {:ok, listing} <-
+             RuntimeClient.command("documentation_mission", %{action: "browse"}, id) do
+        html(conn, Page.observer(mission, listing, csrf(), id))
+      else
+        {:error, reason} ->
+          conn
+          |> put_status(422)
+          |> html(
+            Page.desk(
+              RuntimeClient.snapshot(id),
+              csrf(),
+              "Folder browser unavailable: #{inspect(reason)}. The observer needs a readable Git workspace.",
+              id
+            )
+          )
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def observer_paths(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.command(
+             "documentation_mission",
+             %{action: "browse", path: params["path"] || "."},
+             params["session_id"]
+           ) do
+        {:ok, listing} ->
+          json(conn, listing)
+
+        {:error, _} ->
+          conn
+          |> put_status(422)
+          |> json(%{error: "Cannot browse that path within this session's Git workspace."})
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def observer_followup(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.command(
+             "documentation_mission",
+             %{
+               action: "preview_fix",
+               report_id: params["report_id"],
+               finding_id: params["finding_id"]
+             },
+             params["session_id"]
+           ) do
+        {:ok, finding} ->
+          html(conn, Page.observer_followup(finding, params, csrf()))
+
+        _ ->
+          conn
+          |> put_session(
+            :notice,
+            "This finding is no longer available. Reload the current report."
+          )
+          |> redirect(to: session_path(params["session_id"]))
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
   defp session_path(nil), do: "/"
   defp session_path(id), do: "/sessions/" <> URI.encode(id, &URI.char_unreserved?/1)
 
@@ -154,6 +312,41 @@ defmodule BeamAgentWeb.DeskController do
   end
 
   defp arguments(%{"command" => "cancel"}), do: {:ok, "cancel", %{}}
+
+  defp arguments(%{
+         "command" => "documentation_mission",
+         "action" => "prepare_fix",
+         "report_id" => report,
+         "finding_id" => finding
+       })
+       when is_binary(report) and is_binary(finding),
+       do:
+         {:ok, "documentation_mission",
+          %{action: "prepare_fix", report_id: report, finding_id: finding}}
+
+  defp arguments(%{
+         "command" => "documentation_mission",
+         "action" => "cancel_fix",
+         "followup_id" => id
+       })
+       when is_binary(id),
+       do: {:ok, "documentation_mission", %{action: "cancel_fix", followup_id: id}}
+
+  defp arguments(%{"command" => "documentation_mission", "action" => action, "paths" => paths})
+       when action in ["start", "configure"] and is_binary(paths) and byte_size(paths) <= 4200 do
+    selected = paths |> String.split(~r/\r?\n/, trim: true) |> Enum.uniq()
+
+    if selected != [],
+      do: {:ok, "documentation_mission", %{action: action, paths: selected}},
+      else: {:error, :choose_at_least_one_path}
+  end
+
+  defp arguments(%{"command" => "documentation_mission", "paths" => _}),
+    do: {:error, :invalid_mission_paths}
+
+  defp arguments(%{"command" => "documentation_mission", "action" => action})
+       when action in ["start", "pause", "resume", "dismiss", "stop", "delete"],
+       do: {:ok, "documentation_mission", %{action: action}}
 
   defp arguments(%{"command" => "approval", "approval_id" => id, "decision" => decision})
        when is_binary(id) and decision in ["allow_once", "deny"],
