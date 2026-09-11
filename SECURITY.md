@@ -29,10 +29,10 @@ independent security audit. Start with non-sensitive workspaces and the default
 ## Reporting a vulnerability
 
 Do not post secrets, exploit details against live systems, or private workspace
-content in public issues. Use the hosting platform's private vulnerability-report
-channel if the maintainer has enabled it. If no private channel is available,
-request one without disclosing the vulnerability publicly. This checkout does
-not currently declare a dedicated security contact or a response-time guarantee.
+content in public issues. Use Loom's
+[private vulnerability report form](https://github.com/Cozidian/loom/security/advisories/new).
+If that channel is unavailable, request a private contact without disclosing the
+vulnerability publicly. There is no response-time guarantee.
 
 Include the affected revision, platform, minimal sanitized reproduction, expected
 boundary and observed impact. Rotate a credential through its provider if it has
