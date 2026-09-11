@@ -64,7 +64,8 @@ defmodule BeamAgent.GoalSupervisor do
         {Task.Supervisor, name: Names.via(:goal_verification_supervisor, goal_id)},
         {Registry, opts},
         session,
-        {ProgressMonitor, opts}
+        {ProgressMonitor, opts},
+        {BeamAgent.Missions.Documentation, opts}
       ],
       strategy: :rest_for_one
     )

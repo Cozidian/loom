@@ -21,7 +21,7 @@ defmodule BeamAgent.CLI.Desk do
       launch(session, opts, dir, mix)
     else
       false ->
-        {:error, "Desk needs its one-time build: mix beam_agent.build --frontend web"}
+        {:error, "Desk needs its one-time build: mix loom.build --frontend web"}
 
       nil ->
         {:error,

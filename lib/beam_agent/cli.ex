@@ -34,6 +34,12 @@ defmodule BeamAgent.CLI do
     {config_path, args} = extract_config_path(args)
 
     case args do
+      ["service" | rest] ->
+        BeamAgent.CLI.Service.run(rest, config_path)
+
+      ["tui" | rest] ->
+        BeamAgent.CLI.Service.tui(rest, config_path)
+
       ["attach", id | rest] ->
         with {:ok, opts, []} <- parse(rest, frontend: :string),
              :ok <- validate_frontend(opts[:frontend]),
@@ -50,11 +56,27 @@ defmodule BeamAgent.CLI do
       ["document" | rest] ->
         BeamAgent.CLI.Document.run(rest, config_path)
 
+      ["mission" | rest] ->
+        BeamAgent.CLI.Mission.run(rest, config_path)
+
       ["desk", flag] when flag in ["--help", "-h"] ->
         desk_help()
 
       ["desk" | rest] ->
-        desk_command(config_path, rest)
+        if "--foreground" in rest do
+          desk_command(config_path, List.delete(rest, "--foreground"))
+        else
+          case Config.load(config_path) do
+            {:error, {:not_initialized, _}} ->
+              case init_command(config_path, []) do
+                0 -> BeamAgent.CLI.Service.desk(rest, config_path)
+                status -> status
+              end
+
+            _ ->
+              BeamAgent.CLI.Service.desk(rest, config_path)
+          end
+        end
 
       [] ->
         default_command(config_path)
@@ -123,7 +145,7 @@ defmodule BeamAgent.CLI do
         help()
 
       ["--version"] ->
-        output("beam_agent #{@version}")
+        output("loom #{@version}")
 
       ["--" <> _option | _rest] ->
         run_command(config_path, args)
@@ -136,11 +158,13 @@ defmodule BeamAgent.CLI do
   defp default_command(config_path) do
     case Config.load(config_path) do
       {:ok, _config} ->
-        run_command(config_path, [])
+        if TUI.available?(),
+          do: BeamAgent.CLI.Service.tui([], config_path),
+          else: run_command(config_path, [])
 
       {:error, {:not_initialized, ^config_path}} ->
         case init_command(config_path, []) do
-          0 -> run_command(config_path, [])
+          0 -> default_command(config_path)
           status -> status
         end
 
@@ -435,9 +459,24 @@ defmodule BeamAgent.CLI do
   @doc false
   def create_local_session(config, config_path) do
     with {:ok, provider} <- Config.provider_atom(config["provider"]),
-         {:ok, id} <- ensure_session(nil, config, provider),
-         {:ok, endpoint} <- publish_local_session(id, config, config_path),
-         do: {:ok, id, endpoint}
+         {:ok, id} <- ensure_session(nil, config, provider) do
+      case publish_local_session(id, config, config_path) do
+        {:ok, endpoint} ->
+          case BeamAgent.Service.remember(id, config) do
+            :ok ->
+              {:ok, id, endpoint}
+
+            error ->
+              DynamicSupervisor.terminate_child(BeamAgent.LocalEndpointSupervisor, endpoint)
+              BeamAgent.stop_session(id)
+              error
+          end
+
+        error ->
+          BeamAgent.stop_session(id)
+          error
+      end
+    end
   end
 
   defp publish_local_session(id, config, config_path) do
@@ -445,6 +484,33 @@ defmodule BeamAgent.CLI do
       BeamAgent.LocalEndpointSupervisor,
       {BeamAgent.LocalEndpoint, session_id: id, config: config, config_path: config_path}
     )
+  end
+
+  @doc false
+  def restore_local_session(id, saved, config_path) do
+    case BeamAgent.LocalDiscovery.lookup(id) do
+      {:ok, _} ->
+        :ok
+
+      _ ->
+        with true <- BeamAgent.LocalDiscovery.valid_id?(id),
+             true <- File.dir?(Path.join(saved["data_dir"], id)),
+             {:ok, root} <- Workspace.canonical_root(saved["workspace_root"]),
+             {:ok, stored} <- Config.load(config_path),
+             {:ok, config} <- Config.runtime(stored, saved["profile"]),
+             config =
+               Map.merge(config, %{
+                 "workspace_root" => root,
+                 "data_dir" => saved["data_dir"],
+                 "model_endpoints" => Config.model_endpoints(stored, config)
+               }),
+             {:ok, provider} <- Config.provider_atom(config["provider"]),
+             :ok <- BeamAgent.LocalDiscovery.clear_stale(id),
+             {:ok, ^id} <- ensure_session(id, config, provider),
+             {:ok, _} <- publish_local_session(id, config, config_path),
+             do: :ok,
+             else: (_ -> {:error, :session_recovery_unavailable})
+    end
   end
 
   defp validate_frontend(nil), do: :ok
@@ -461,21 +527,22 @@ defmodule BeamAgent.CLI do
     output("""
     Open the local session control center in your browser
 
-      beam_agent desk [--workspace PATH] [--profile NAME]
-      --port PORT       browser port (default: choose an available port)
+      loom desk [--workspace PATH] [--session ID]
       --no-open         print the one-time launch link without opening a browser
       --session ID      open an existing LIVE session without resuming its storage
-      --tui             also open a TUI on the SAME live session (new if no ID given)
+      --tui             also open a TUI on the SAME live session (reuses workspace session)
 
     No exported variables or separate server terminals. The browser authenticates
     through a short-lived, single-use launch link; the runtime token stays private.
-    Keep this command running. Closing the tab does not stop work; stopping this
-    command stops Desk and sessions created by this Desk process, not other TUIs.
+    Starts or connects to the per-user Loom service on macOS. This command exits;
+    closing the tab or an attached TUI does not stop work. Run it again to renew login.
     Plain desk creates no work session. The overview discovers live CLI sessions.
     Older running binaries need one restart to publish their connection.
-    Use beam_agent attach SESSION_ID to attach a terminal without a second owner.
-    With --tui, exiting the TUI also stops this Desk launcher.
-    One-time build: mix beam_agent.build
+    Use loom attach SESSION_ID to attach a terminal without a second owner.
+    loom service start|stop|status|logs manages the backend explicitly.
+    loom service install opts into starting at login; uninstall removes that registration.
+    --foreground retains the legacy terminal-owned launcher (supports --port PORT).
+    One-time build: mix loom.build
     """)
   end
 
@@ -492,7 +559,7 @@ defmodule BeamAgent.CLI do
         {:error, {:session_not_found, session_id}}
 
       match?({:ok, _}, BeamAgent.LocalDiscovery.lookup(session_id)) ->
-        {:error, "Session is already live. Use beam_agent attach #{session_id}, not resume."}
+        {:error, "Session is already live. Use loom attach #{session_id}, not resume."}
 
       true ->
         :ok
@@ -1558,32 +1625,35 @@ defmodule BeamAgent.CLI do
 
   defp help do
     output("""
-    beam agent #{@version}
+    Loom #{@version}
 
     Start here:
-      beam_agent                             open an interactive chat
-      beam_agent desk                        start runtime + Phoenix Desk in one command
-      beam_agent attach SESSION_ID           attach a TUI to an existing live runtime
-      beam_agent document --help             guarded Word editing and verification
-      beam_agent run "your prompt"           run once and exit
-      beam_agent resume SESSION              continue a saved session
-      beam_agent serve SESSION               web control plane + JSON API
+      loom                             connect a TUI to your workspace in the service
+      loom tui                         connect a TUI (explicit command)
+      loom desk                        open/reconnect Loom Desk; service stays running
+      loom service --help              start, stop, inspect or install the backend
+      loom attach SESSION_ID           attach a TUI to an existing live runtime
+      loom document --help             guarded Word editing and verification
+      loom mission --help              opt-in read-only documentation observer
+      loom run "your prompt"           run once and exit
+      loom resume SESSION              continue a saved session
+      loom serve SESSION               web control plane + JSON API
 
     Setup and inspect:
-      beam_agent init                        configure a provider
-      beam_agent doctor                      check the active provider
-      beam_agent provider list               list configured provider profiles
-      beam_agent provider add NAME           add a provider profile
-      beam_agent provider use NAME           change the active profile
-      beam_agent auth login PROFILE          connect with an API key or browser code
-      beam_agent auth list                   list profile authentication methods
-      beam_agent auth logout PROFILE         remove a stored credential
-      beam_agent sessions                    list durable sessions
-      beam_agent providers                   list available providers
-      beam_agent tools                       list model-callable tools
-      beam_agent skills                      list project skills in this workspace
-      beam_agent config show                 show active configuration
-      beam_agent config path                 show configuration path
+      loom init                        configure a provider
+      loom doctor                      check the active provider
+      loom provider list               list configured provider profiles
+      loom provider add NAME           add a provider profile
+      loom provider use NAME           change the active profile
+      loom auth login PROFILE          connect with an API key or browser code
+      loom auth list                   list profile authentication methods
+      loom auth logout PROFILE         remove a stored credential
+      loom sessions                    list durable sessions
+      loom providers                   list available providers
+      loom tools                       list model-callable tools
+      loom skills                      list project skills in this workspace
+      loom config show                 show active configuration
+      loom config path                 show configuration path
 
     Common options:
       --provider NAME                        demo, echo, ollama, openai,
@@ -1604,16 +1674,16 @@ defmodule BeamAgent.CLI do
       --no-tui                               use the line-oriented interactive UI
       --frontend rust|go                     choose a TUI (default: ION, Go fallback)
 
-    Running `beam_agent init` opens a guided setup. For automated setup, add
+    Running `loom init` opens a guided setup. For automated setup, add
     --non-interactive and provide provider/model flags explicitly.
     """)
   end
 
   defp init_help do
     output("""
-    Configure beam agent
+    Configure Loom
 
-      beam_agent init [options]
+      loom init [options]
 
       --provider NAME        demo, echo, ollama, openai, anthropic, xai, or grok
       --profile NAME         name for the initial provider profile
@@ -1637,9 +1707,9 @@ defmodule BeamAgent.CLI do
     output("""
     Manage provider profiles
 
-      beam_agent provider list
-      beam_agent provider add NAME [options]
-      beam_agent provider use NAME
+      loom provider list
+      loom provider add NAME [options]
+      loom provider use NAME
 
       --provider ADAPTER     ollama, openai, anthropic, xai, grok, demo, or echo
       --model MODEL          required for real LLM providers
@@ -1659,13 +1729,13 @@ defmodule BeamAgent.CLI do
     output("""
     Authenticate provider profiles
 
-      beam_agent auth login PROFILE --api-key
-      beam_agent auth login PROFILE --api-key-stdin
-      beam_agent auth login PROFILE --chatgpt
-      beam_agent auth login PROFILE --device-endpoint URL \\
+      loom auth login PROFILE --api-key
+      loom auth login PROFILE --api-key-stdin
+      loom auth login PROFILE --chatgpt
+      loom auth login PROFILE --device-endpoint URL \\
         --token-endpoint URL --client-id ID [--scope SCOPES]
-      beam_agent auth list
-      beam_agent auth logout PROFILE
+      loom auth list
+      loom auth logout PROFILE
 
       --api-key             read an API key without terminal echo
       --api-key-stdin       read an API key from standard input
@@ -1688,11 +1758,11 @@ defmodule BeamAgent.CLI do
     output("""
     Chat with beam agent
 
-      beam_agent run [options] [prompt]
+      loom run [options] [prompt]
 
     Omit the prompt for interactive chat. Supplying one runs a single turn and
     exits. Provider, model, endpoint, limits, and session storage can be
-    overridden with the common options shown by `beam_agent help`. Interactive
+    overridden with the common options shown by `loom help`. Interactive
     chat opens the full-screen TUI on a capable terminal; use `--no-tui` for the
     line-oriented fallback.
     """)
@@ -1702,9 +1772,9 @@ defmodule BeamAgent.CLI do
     output("""
     Resume a durable session
 
-      beam_agent resume SESSION [prompt]
+      loom resume SESSION [prompt]
 
-    Use `beam_agent sessions` to find session IDs. Omit the prompt to continue
+    Use `loom sessions` to find session IDs. Omit the prompt to continue
     interactively.
     """)
   end
@@ -1713,7 +1783,7 @@ defmodule BeamAgent.CLI do
     output("""
     Serve a durable session through interface-neutral runtime clients
 
-      beam_agent serve SESSION [options]
+      loom serve SESSION [options]
 
       --web-port PORT       loopback web-control-plane port (default: dynamic)
       --api-port PORT       loopback JSON-lines API port (default: dynamic)
@@ -1726,14 +1796,14 @@ defmodule BeamAgent.CLI do
   end
 
   defp usage_error(message) do
-    IO.puts(:stderr, "error: #{message}\nRun `beam_agent help` for usage.")
+    IO.puts(:stderr, "error: #{message}\nRun `loom help` for usage.")
     2
   end
 
   defp error({:not_initialized, path}) do
     IO.puts(
       :stderr,
-      "error: BeamAgent is not configured. Run `beam_agent init --config #{path}`."
+      "error: Loom is not configured. Run `loom init --config #{path}`."
     )
 
     1
@@ -1791,7 +1861,7 @@ defmodule BeamAgent.CLI do
   defp error({:unknown_profile, name}) do
     IO.puts(
       :stderr,
-      "error: provider profile #{inspect(name)} was not found; run `beam_agent provider list`"
+      "error: provider profile #{inspect(name)} was not found; run `loom provider list`"
     )
 
     1

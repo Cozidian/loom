@@ -130,7 +130,10 @@ defmodule BeamAgent.Goal.ProgressMonitor do
   defp phase("verification_check_started", data, _worker),
     do: {:active, :verification, data["check_id"]}
 
-  defp phase("implementation_review_started", _data, _worker), do: {:active, :review, nil}
+  # The owner is waiting, not doing silent inference. The reviewer is a separate
+  # monitored worker: a quiet reviewer must still be flagged on its own identity.
+  defp phase("implementation_review_started", _data, _worker),
+    do: {:waiting, :review, :completion_reviewer}
 
   defp phase(type, _data, _worker)
        when type in ["verification_recovery_started", "implementation_review_recovery_started"],

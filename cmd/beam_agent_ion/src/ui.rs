@@ -248,7 +248,7 @@ fn header(f: &mut Frame, area: Rect, a: &App) {
         vec![
             Line::from(vec![
                 Span::styled(
-                    "  I O N  ",
+                    "  L O O M  ",
                     Style::default()
                         .fg(INK)
                         .bg(ACID)
@@ -798,7 +798,23 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
         ],
     );
     let body = zones[1];
-    let help = if kind == "models" {
+    let help = if d["mission_actions"].is_array() {
+        let actions = crate::app::array(d, "mission_actions");
+        let shortcuts: Vec<_> = actions
+            .iter()
+            .filter_map(|action| match action.as_str() {
+                Some("start") => Some("s start"),
+                Some("pause") => Some("p pause"),
+                Some("resume") => Some("r resume"),
+                Some("dismiss") => Some("d dismiss"),
+                _ => None,
+            })
+            .collect();
+        format!(
+            " {} · f refresh · ↑↓ scroll · Esc close",
+            shortcuts.join(" · ")
+        )
+    } else if kind == "models" {
         " Enter chooses model · p manages providers · ^Y copy · Esc back".into()
     } else if kind == "provider_settings" {
         " n new · e edit · u use · x remove · l login · r reload · Enter models".into()
@@ -942,6 +958,7 @@ fn command_hint(cmd: &str) -> &str {
         "tournament" => "compare candidate solutions",
         "models" => "choose a model or inspect endpoints",
         "providers" => "add, edit and select providers/models",
+        "mission" => "start/manage the read-only documentation observer",
         "files" => "inspect changed files and diffs",
         "connect" => "select a configured provider",
         _ => "runtime command",

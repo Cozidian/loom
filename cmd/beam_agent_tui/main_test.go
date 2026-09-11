@@ -254,6 +254,23 @@ func TestModelsSlashCommandForwardsHealthRefresh(t *testing.T) {
 	}
 }
 
+func TestMissionSlashCommandForwardsExplicitStart(t *testing.T) {
+	var wire bytes.Buffer
+	m := testModel(&wire)
+	_, cmd := m.runSlash("/mission start")
+	if cmd == nil {
+		t.Fatal("expected mission command")
+	}
+	cmd()
+	action, err := newProtocol(&wire, &bytes.Buffer{}).read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Command != "mission" || action.Query != "start" {
+		t.Fatalf("unexpected mission command: %#v", action)
+	}
+}
+
 func TestRaceSlashCommandIsDiscoverableAndForwardsTheGoal(t *testing.T) {
 	var wire bytes.Buffer
 	m := testModel(&wire)

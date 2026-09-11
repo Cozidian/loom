@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/beam-agent-header.svg" alt="BeamAgent — Independent work. Visible progress." width="100%">
+  <img src="docs/assets/beam-agent-header.svg" alt="Loom — Independent work. Visible progress." width="100%">
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@
 Build the feature. Understand the codebase. Edit the document. Follow a longer
 goal through to something you can actually use.
 
-BeamAgent is growing into an independent collaborator for code, documents and
+Loom is growing into an independent collaborator for code, documents and
 long-running work. The ambition is simple: it makes sensible decisions, asks
 when your judgment genuinely matters, and verifies the result before calling
 the job done. You see **what changed, why, and what remains unfinished**—with
@@ -29,8 +29,8 @@ of independence, reliability and visibility.
 
 > **Early, working foundation—not the finished promise.** Coding tools,
 > supervised teams, terminal/browser clients and bounded Word-template filling
-> run today. Reliable autonomous visual delivery, persistent workspace missions
-> and a personal control center remain things to prove and build.
+> run today, alongside opt-in documentation observers and a local service-backed
+> Desk. Broad unattended reliability and cross-machine work remain unproven.
 
 ## Why this harness?
 
@@ -52,15 +52,19 @@ something better is learned. Knowledge is never a frozen specification.
 ## Start with ION
 
 ION is the Rust/Ratatui terminal frontend. Build from the repository root with
-Elixir 1.19 and compatible OTP, plus Rust 1.88 or newer:
+Elixir 1.19 and compatible OTP (tested with OTP 28), plus Rust 1.88 or newer.
+The default service-backed workflow targets macOS; Git is needed for repository
+work. Phoenix dependencies are downloaded during the first build:
 
 ```sh
-mix beam_agent.build
-./beam_agent
+mix loom.build
+./loom
 ```
 
 The one-time build prepares ION, Phoenix Desk and the CLI. After that,
-`./beam_agent` is all you need; ION is the default. The first launch guides
+`./loom` is all you need; ION is the default. On macOS, it connects to a
+long-running local service, reusing a live session in your workspace when available.
+The first launch guides
 provider setup. To preview the interface without
 credentials or model calls:
 
@@ -68,10 +72,10 @@ credentials or model calls:
 ./beam_agent_ion --demo
 ```
 
-After setup, run `./beam_agent doctor` to check the selected provider. In ION,
+After setup, run `./loom doctor` to check the selected provider. In ION,
 use `/providers` to manage connections, `/models` to select a model and team
 mode, and `Ctrl+P` to discover commands. Start in another repository or document
-folder with `--workspace /path/to/workspace`. For guarded Word-template edits,
+folder with `./loom tui --workspace /path/to/workspace`. For guarded Word-template edits,
 see the [document workflow](docs/document-workflow.md).
 
 File mutations and commands use the `ask` approval policy by default. Explicit
@@ -81,17 +85,18 @@ leaving publication to you is not yet a separate enforced permission category.
 Sandboxed command execution currently has a macOS backend; other platforms
 fail closed until an enforcing backend is available.
 
-The original Go TUI remains available with `mix beam_agent.build --frontend go`
-and `./beam_agent --frontend go`. A terminal-only build can use `--frontend rust`.
+The original Go TUI remains available with `mix loom.build --frontend go`
+and `./loom tui --frontend go`. A terminal-only build can use `--frontend rust`
+with the legacy terminal-owned `./loom run` entry point; the service build includes Desk.
 See the [operations guide](docs/operations.md) for provider
 authentication, saved profiles, line mode, sessions and embedding.
 
 ### One model. A useful team.
 
-Keep the selected model while allowing task-based delegation:
+In a terminal-owned session, keep the selected model while allowing task-based delegation:
 
 ```sh
-./beam_agent \
+./loom \
   --model-strategy manual --team-mode auto \
   --max-workers 5 --model-concurrency 6
 ```
@@ -104,12 +109,12 @@ not an account-wide quota. [How teams work →](docs/task-teams.md)
 
 ### A desk in your browser
 
-[BeamAgent Desk](cmd/beam_agent_web/README.md) is a separate Phoenix client for
+[Loom Desk](cmd/beam_agent_web/README.md) is a separate Phoenix client for
 the real authenticated HTTP API: prompt submission, active cancellation,
 approvals, actor inspection and live public activity. Start everything together:
 
 ```sh
-./beam_agent desk
+./loom desk
 ```
 
 Desk opens a **live-session overview**, without creating a work session. Normal
@@ -120,7 +125,7 @@ rebuilding to become discoverable.
 To attach another terminal to existing work, use the command on its session card:
 
 ```sh
-./beam_agent attach SESSION_ID
+./loom attach SESSION_ID
 ```
 
 Attachments share the existing runtime; they never reopen its storage. Closing an
@@ -128,27 +133,46 @@ attached TUI does not stop the owner. `desk --tui` remains a combined-launch
 shortcut, and `desk --session ID` opens an already-live session. Browser login
 uses a one-use link: no token copying or exports.
 
-Keep Desk's terminal open. Stopping it stops sessions created by that Desk
-process, but not separately running TUIs. This is same-user, same-machine live
-discovery—not an archive browser, daemon or network control center.
+The launcher exits; the local service owns the work. Close Desk or an attached TUI
+freely. If browser login expires, run `./loom desk` again for a fresh one-time link,
+without restarting agents. This is same-user, same-machine control, not network access.
+
+```sh
+./loom service status
+./loom service logs
+./loom service install    # optional: start at macOS login
+./loom service stop       # explicitly interrupt work; retain history
+```
+
+Service-owned sessions restore idle after a restart; observers restore paused,
+and deleted observers remain deleted. Model calls and interrupted edits are not
+automatically replayed. Legacy terminal-owned workflows remain available through
+`loom run`, `loom resume`, and `loom desk --foreground`.
+
+**Renamed, not reset:** existing `beam_agent` configuration, credentials, session
+directories and module/API names remain compatible. `mix loom.build` also builds a
+`beam_agent` CLI alias. See [the service guide](docs/loom-service.md) for lifecycle,
+login renewal, provider credentials and recovery limits.
 [Connection details and limits](cmd/beam_agent_web/README.md).
 
 ## What exists—and what we are reaching for
 
 | Area | Working foundation | Next proof |
 | --- | --- | --- |
-| Delivery | Coding tools, verification, artifact evidence; a real ROS template filled through the runtime and rendered in Word | Repeat reliable app/document delivery with less intervention and automated visual review |
+| Delivery | Coding tools, verification, artifact evidence; guarded Word templates with rendering and image-backed model layout assessment | Repeat reliable app/document delivery; broader document support and factual review remain separate |
+| Background | [Opt-in documentation observer](docs/documentation-missions.md): bounded assessments, finding cards, explicit isolated fix agents, stop/delete controls | Repeated real-world usefulness without stale reports or wasted allowance |
 | Teams | Same-model subagents, task graphs, capacity queues, races and tournaments | Show that the chosen workflow improves useful outcomes without waste |
 | Visibility | ION mission/actor/evidence views, live events and replay | Make changes, decision explanations and unfinished work effortless to understand |
 | Continuity | Durable sessions, project context, instructions and skills | Share revisable knowledge across sessions and tools without turning notes into rules |
-| Background work | Delegation and isolation building blocks | Persistent, mission-scoped observers that avoid reacting to unfinished work |
-| Reach | Shared runtime API, local clients and execution-node policy foundations | A personal multi-workspace control center and workers on trusted machines |
+| Reach | Shared runtime API, local multi-session Desk and per-user macOS service | Broader personal coordination and workers on trusted machines |
 
 The long-term shape has two entry points: open a harness inside a workspace,
 or open a personal control center that sees work across repositories and
 document folders. Background missions—documentation, regressions, investigation—
-report to a coordinator and prepare isolated proposals. They do not race another
-tool to edit its working tree. This is **direction**, not shipped functionality.
+report to a coordinator. The documentation observer produces read-only advice;
+you can explicitly launch a fix agent for a finding in a retained isolated worktree.
+It does not merge, commit or push that proposal. Broader mission types and
+cross-machine fleet management remain **direction**, not shipped functionality.
 
 ## Explore
 
@@ -162,6 +186,8 @@ tool to edit its working tree. This is **direction**, not shipped functionality.
 - [Earlier roadmap](docs/roadmap-history.md) — preserved history, not a second backlog.
 
 Working on this repository with an AI? Start with [AGENTS.md](AGENTS.md).
+For development checks and useful bug reports, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Read [SECURITY.md](SECURITY.md) before running agents against sensitive workspaces.
 
 ---
 

@@ -88,6 +88,63 @@ defmodule BeamAgent.CLITUITest do
     assert payload.attachments == []
   end
 
+  test "mission panel starts explicitly and observes changes made by another runtime client",
+       context do
+    workspace = context.config["workspace_root"]
+    System.cmd("git", ["init", "-q"], cd: workspace)
+    File.write!(Path.join(workspace, "README.md"), "Documentation fixture")
+    System.cmd("git", ["add", "README.md"], cd: workspace)
+
+    controller =
+      start_supervised!(
+        {Controller,
+         client: self(),
+         session_id: context.session_id,
+         config: context.config,
+         config_path: context.config_path}
+      )
+
+    Controller.command(controller, :mission)
+
+    assert_receive {:beam_agent_tui, {:mission_panel, %{mission_actions: ["start"]} = panel}},
+                   2_000
+
+    assert TUI.notification_payload({:mission_panel, panel}).type == "panel"
+    assert Enum.any?(panel.lines, &String.contains?(&1, "provider allowance"))
+    Controller.command(controller, {:mission, "start"})
+
+    assert_receive {:beam_agent_tui, {:mission_panel, %{mission_actions: ["pause", "stop"]}}},
+                   2_000
+
+    {:ok, other} = BeamAgent.Runtime.connect(context.session_id)
+    on_exit(fn -> BeamAgent.Runtime.disconnect(other) end)
+    assert :ok = BeamAgent.Runtime.documentation_mission(other, "pause")
+
+    assert_receive {:beam_agent_tui, {:mission_update, %{mission_actions: ["resume", "stop"]}}},
+                   2_000
+
+    Controller.command(controller, {:mission, "start"})
+    assert_receive {:beam_agent_tui, {:notice, :error, message}}, 2_000
+    assert message =~ "mission_already_configured"
+
+    assert {:ok, %{"status" => "paused", "attempts" => 0}} =
+             BeamAgent.Runtime.documentation_mission(other, "status")
+
+    Controller.command(controller, {:mission, "stop"})
+
+    assert_receive {:beam_agent_tui, {:mission_panel, %{mission_actions: ["resume", "delete"]}}},
+                   2_000
+
+    assert {:ok, %{"status" => "stopped"}} =
+             BeamAgent.Runtime.documentation_mission(other, "status")
+
+    Controller.command(controller, {:mission, "delete"})
+    assert_receive {:beam_agent_tui, {:mission_panel, %{mission_actions: ["start"]}}}, 2_000
+
+    assert {:ok, %{"status" => "disabled"}} =
+             BeamAgent.Runtime.documentation_mission(other, "status")
+  end
+
   test "web submission is visible as a live turn in a TUI on the same session", context do
     {:ok, controller} =
       Controller.start_link(

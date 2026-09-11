@@ -20,7 +20,7 @@ defmodule BeamAgent.Goal.Reviewer do
         role: "Mandatory completion reviewer",
         template: "reviewer",
         instructions: [
-          "Inspect the current diff and relevant source before reaching a conclusion.",
+          "Inspect relevant source and available diff evidence before reaching a conclusion.",
           "Do not modify files or accept claims unsupported by deterministic evidence."
         ],
         capabilities: read_capabilities(construction),
@@ -120,7 +120,8 @@ defmodule BeamAgent.Goal.Reviewer do
     Deterministic verification evidence supplied by the runtime:
     #{JSON.encode!(verification || %{status: :unverified, checks: []})}
 
-    Inspect the Git diff and relevant source/tests using read-only tools. Do not report tests as
+    Inspect relevant source/tests using the offered read-only tools. Inspect the Git diff only
+    when git_inspect is offered with a permitted diff operation. Do not report tests as
     missing or failed when the runtime evidence says they passed. Prioritize correctness,
     security, missing acceptance criteria, concurrency hazards, and verification gaps.
     If Git metadata is unavailable, inspect the relevant source and tests directly;

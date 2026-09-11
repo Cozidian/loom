@@ -624,3 +624,47 @@ fn copying_is_explicit_full_text_and_local_only() {
     assert!(a.outgoing.is_empty());
     assert!(a.resolving.is_none());
 }
+
+#[test]
+fn documentation_observer_commands_are_explicit_and_runtime_acknowledged() {
+    let mut a = ready();
+    a.editor.set("/mission");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        crate::app::command("mission", "")
+    );
+    a.apply(json!({"type":"panel","title":"BACKGROUND / DOCUMENTATION","lines":["disabled"],"mission_actions":["start"]}));
+    key(&mut a, KeyCode::Char('p'));
+    assert!(a.outgoing.is_empty());
+    key(&mut a, KeyCode::Char('s'));
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        crate::app::command("mission", "start")
+    );
+    assert_eq!(a.drawer.as_ref().unwrap()["lines"][0], "disabled");
+    a.apply(json!({"type":"mission_update","title":"BACKGROUND / DOCUMENTATION","lines":["observing"],"mission_actions":["pause"]}));
+    assert_eq!(a.drawer.as_ref().unwrap()["lines"][0], "observing");
+    key(&mut a, KeyCode::Char('p'));
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        crate::app::command("mission", "pause")
+    );
+    a.apply(json!({"type":"mission_update","mission_actions":["stop"],"lines":["paused"]}));
+    key(&mut a, KeyCode::Char('X'));
+    assert!(a.outgoing.is_empty());
+    key(&mut a, KeyCode::Char('x'));
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        crate::app::command("mission", "stop")
+    );
+    a.apply(json!({"type":"mission_update","mission_actions":["delete"],"lines":["stopped"]}));
+    key(&mut a, KeyCode::Char('X'));
+    assert_eq!(
+        a.outgoing.pop().unwrap(),
+        crate::app::command("mission", "delete")
+    );
+    key(&mut a, KeyCode::Esc);
+    a.apply(json!({"type":"mission_update","mission_actions":["resume"],"lines":["paused"]}));
+    assert!(a.drawer.is_none());
+}

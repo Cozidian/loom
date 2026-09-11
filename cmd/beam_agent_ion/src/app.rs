@@ -14,6 +14,7 @@ pub fn command(name: &str, query: &str) -> Value {
     json!({"type":"command","command":name,"query":query})
 }
 pub const COMMANDS: &[&str] = &[
+    "mission",
     "models",
     "providers",
     "files",
@@ -421,6 +422,17 @@ impl App {
                 self.model = s(&p, "model").into();
                 self.attachments = array(&p, "attachments");
                 self.outgoing.push(command("tree", ""));
+            }
+            "mission_update" => {
+                if self
+                    .drawer
+                    .as_ref()
+                    .is_some_and(|d| d["mission_actions"].is_array())
+                {
+                    let mut updated = p;
+                    updated["type"] = json!("panel");
+                    self.drawer = Some(updated);
+                }
             }
             "models" | "files" | "sessions" | "diff" | "session_detail" | "panel" | "events"
             | "provider_picker" => {
@@ -1194,6 +1206,30 @@ impl App {
             return;
         }
         if self.drawer.is_some() {
+            if let Some(d) = &self.drawer
+                && d["mission_actions"].is_array()
+            {
+                let action = match k.code {
+                    KeyCode::Char('s') => "start",
+                    KeyCode::Char('p') => "pause",
+                    KeyCode::Char('r') => "resume",
+                    KeyCode::Char('d') => "dismiss",
+                    KeyCode::Char('x') => "stop",
+                    KeyCode::Char('X') => "delete",
+                    KeyCode::Char('f') => "status",
+                    _ => "",
+                };
+                if !action.is_empty() {
+                    if action == "status"
+                        || array(d, "mission_actions")
+                            .iter()
+                            .any(|v| v.as_str() == Some(action))
+                    {
+                        self.outgoing.push(command("mission", action));
+                    }
+                    return;
+                }
+            }
             let kind = self
                 .drawer
                 .as_ref()

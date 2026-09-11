@@ -30,6 +30,8 @@ defmodule BeamAgent.DocumentToolsTest do
   end
 
   test "guarded template filling preserves binary originals and every unrelated ZIP part", ctx do
+    original_bytes = File.read!(ctx.original)
+
     assert {:ok, encoded} =
              ToolRunner.execute(ReadDocument, %{"path" => "original.docx"}, ctx.context)
 
@@ -39,7 +41,7 @@ defmodule BeamAgent.DocumentToolsTest do
     assert %{"original_preserved" => true, "rendered" => false, "visually_reviewed" => false} =
              JSON.decode!(result)
 
-    assert File.read!(ctx.original) == fixture_bytes()
+    assert File.read!(ctx.original) == original_bytes
     assert {:ok, before} = Docx.read(ctx.original)
     assert {:ok, after_doc} = Docx.read(Path.join(ctx.root, "result.docx"))
     assert Enum.at(after_doc.paragraphs, 1).text == "Kodegrunnlag <usikkert> & tiltak æøå"
@@ -92,6 +94,39 @@ defmodule BeamAgent.DocumentToolsTest do
     assert {:ok, _} = ToolRunner.execute(ReadDocument, %{"path" => "original.docx"}, ctx.context)
     assert {:error, _} = ToolRunner.execute(FillDocument, insertion(), ctx.context)
     refute File.exists?(Path.join(ctx.root, "result.docx"))
+  end
+
+  test "model-facing Git choices match authority without expanding it", ctx do
+    schema = Enum.find(BeamAgent.CapabilityCatalog.tool_schemas(), &(&1.name == "git_inspect"))
+    envelope = BeamAgent.CapabilityEnvelope.root(%{tools: ["git_inspect"], paths: ["."]})
+    context = %{ctx.context | capability_envelope: envelope}
+    assert is_nil(ToolRunner.available_schema(schema, context))
+
+    envelope =
+      BeamAgent.CapabilityEnvelope.root(%{tools: ["git_inspect"], git_operations: ["status"]})
+
+    context = %{context | capability_envelope: envelope}
+
+    assert ToolRunner.available_schema(schema, context).input_schema.properties.operation.enum ==
+             ["status"]
+
+    assert {:error, {:capability_denied, :git_operations, "diff"}} =
+             ToolRunner.execute(BeamAgent.Tools.GitInspect, %{"operation" => "diff"}, context)
+
+    assert ToolRunner.available_schema(schema, ctx.context) == schema
+  end
+
+  test "desktop rendering is not advertised without its desktop scope", ctx do
+    schema =
+      Enum.find(BeamAgent.CapabilityCatalog.tool_schemas(), &(&1.name == "render_document"))
+
+    envelope = BeamAgent.CapabilityEnvelope.root(%{tools: ["render_document"], paths: ["."]})
+
+    assert is_nil(
+             ToolRunner.available_schema(schema, %{ctx.context | capability_envelope: envelope})
+           )
+
+    assert ToolRunner.available_schema(schema, ctx.context) == schema
   end
 
   test "rejects stale anchors, duplicate anchors, traversal and unsupported active XML", ctx do

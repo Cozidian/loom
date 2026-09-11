@@ -1,4 +1,4 @@
-# BeamAgent — evolving vision
+# Loom — evolving vision
 
 Last discussed: 2026-09-10.
 

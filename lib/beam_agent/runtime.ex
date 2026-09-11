@@ -68,6 +68,11 @@ defmodule BeamAgent.Runtime do
 
   def status(client), do: Client.status(client)
 
+  def documentation_mission(client, action, options \\ %{}) do
+    with {:ok, goal_id} <- Client.goal_id(client),
+         do: BeamAgent.Missions.Documentation.command(goal_id, action, options)
+  end
+
   def inspect_events(client, query \\ "", opts \\ []),
     do: Client.inspect_events(client, query, opts)
 

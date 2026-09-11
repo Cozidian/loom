@@ -26,8 +26,15 @@ defmodule BeamAgent.AsyncDelegationTest do
     def id, do: :progress_monitor_test
 
     @impl true
-    def complete(_messages, _tools, _options) do
-      Process.sleep(180)
+    def complete(_messages, _tools, options) do
+      send(options[:test_pid], {:quiet_provider_started, self()})
+
+      receive do
+        :finish_quiet_work -> :ok
+      after
+        5_000 -> :ok
+      end
+
       {:ok, %{content: "finished after quiet work", tool_calls: []}}
     end
   end
@@ -176,17 +183,24 @@ defmodule BeamAgent.AsyncDelegationTest do
                workspace_root: context.workspace,
                data_dir: context.data_dir,
                provider: :progress_monitor_test,
+               provider_options: [test_pid: self()],
                progress_stall_after_ms: 40,
                progress_check_interval_ms: 20
              )
 
     task = Task.async(fn -> BeamAgent.ask(root_id, "do a quiet investigation") end)
-    Process.sleep(90)
+    assert_receive {:quiet_provider_started, provider}, 2_000
+
+    eventually(fn ->
+      {:ok, progress} = BeamAgent.Goal.ProgressMonitor.check_now(root_id)
+      Enum.any?(progress.workers, &(&1.worker_id == root_id and &1.suspected_stalled))
+    end)
 
     assert {:ok, progress} = BeamAgent.Goal.ProgressMonitor.check_now(root_id)
     worker = Enum.find(progress.workers, &(&1.worker_id == root_id))
     assert worker.suspected_stalled
 
+    send(provider, :finish_quiet_work)
     assert {:ok, "finished after quiet work"} = Task.await(task, 2_000)
     Process.sleep(30)
     assert :ok = BeamAgent.sync_goal(root_id)
@@ -223,6 +237,53 @@ defmodule BeamAgent.AsyncDelegationTest do
     assert Enum.any?(events, &(&1["type"] == "delegation_started"))
     assert Enum.any?(events, &(&1["type"] == "delegation_completed"))
     refute Enum.any?(events, &(&1["type"] == "model_completion_deferred"))
+  end
+
+  test "review waits never masquerade as owner stalls while quiet reviewers remain monitored",
+       context do
+    {:ok, root_id} =
+      BeamAgent.start_session(
+        workspace_root: context.workspace,
+        data_dir: context.data_dir,
+        provider: :async_delegation_test,
+        progress_stall_after_ms: 40,
+        progress_check_interval_ms: 10
+      )
+
+    on_exit(fn -> BeamAgent.stop_session(root_id) end)
+
+    {:ok, child} =
+      BeamAgent.spawn_worker(root_id, %{goal: "review current work", template: "reviewer"})
+
+    {:ok, _} = BeamAgent.Session.EventLog.append(root_id, :implementation_review_started, %{})
+    {:ok, _} = BeamAgent.Session.EventLog.append(child.worker_id, :model_response_started, %{})
+
+    eventually(fn ->
+      {:ok, snapshot} = BeamAgent.progress(root_id)
+      Enum.any?(snapshot.workers, &(&1.worker_id == child.worker_id and &1.suspected_stalled))
+    end)
+
+    {:ok, snapshot} = BeamAgent.progress(root_id)
+    owner = Enum.find(snapshot.workers, &(&1.worker_id == root_id))
+    assert owner.state == :waiting
+    assert owner.phase == :review
+    assert owner.blocking_reason == :completion_reviewer
+    refute owner.suspected_stalled
+
+    {:ok, _} =
+      BeamAgent.Session.EventLog.append(child.worker_id, :tool_result, %{"name" => "read_file"})
+
+    eventually(fn ->
+      {:ok, snapshot} = BeamAgent.progress(root_id)
+      Enum.any?(snapshot.workers, &(&1.worker_id == child.worker_id and not &1.suspected_stalled))
+    end)
+
+    {:ok, events} = BeamAgent.events(root_id)
+
+    refute Enum.any?(
+             events,
+             &(&1["type"] == "worker_stall_suspected" and &1["data"]["worker_id"] == root_id)
+           )
   end
 
   defp eventually(fun, attempts \\ 40)

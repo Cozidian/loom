@@ -124,6 +124,8 @@ defmodule BeamAgent.Documents.Renderer do
            page_count: pages,
            pdf: pdf,
            pages: images,
+           page_sha256: Map.new(images, &{Path.basename(&1), FileSupport.sha256(File.read!(&1))}),
+           pdf_sha256: FileSupport.sha256(File.read!(pdf)),
            visually_reviewed: false,
            next_action:
              "Inspect EVERY page image. Rendering alone does not prove layout or factual correctness."

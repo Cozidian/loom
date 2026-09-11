@@ -4,11 +4,12 @@ defmodule BeamAgent.LocalDiscovery do
 
   def directory,
     do:
-      Application.get_env(
-        :beam_agent,
-        :discovery_dir,
-        Path.join(System.user_home!(), ".local/share/beam_agent/live")
-      )
+      System.get_env("LOOM_DISCOVERY_DIR") ||
+        Application.get_env(
+          :beam_agent,
+          :discovery_dir,
+          Path.join(System.user_home!(), ".local/share/beam_agent/live")
+        )
 
   def valid_id?(id), do: is_binary(id) and Regex.match?(~r/\Asession-[A-Za-z0-9_-]{1,100}\z/, id)
 
@@ -113,6 +114,19 @@ defmodule BeamAgent.LocalDiscovery do
     with {:ok, bytes} <- File.read(path),
          {:ok, %{"token" => ^token}} <- JSON.decode(bytes),
          do: File.rm(path)
+  end
+
+  def clear_stale(id, dir \\ directory()) do
+    with true <- valid_id?(id),
+         :ok <- check_directory(dir),
+         {:error, :runtime_unavailable} <- lookup(id, dir),
+         path = Path.join(dir, id <> ".json"),
+         {:ok, %{type: :regular, uid: uid, mode: mode}} <- File.lstat(path),
+         true <- uid == owner_uid() and band(mode, 0o077) == 0,
+         {:ok, bytes} <- File.read(path),
+         {:ok, %{"session_id" => ^id, "token" => token}} <- JSON.decode(bytes),
+         do: remove(path, token),
+         else: (_ -> :ok)
   end
 
   defp private_directory(dir) do

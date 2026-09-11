@@ -283,6 +283,14 @@ defmodule BeamAgent.CLI.TUI.Controller do
   def handle_info({:beam_agent_runtime, runtime, {:event, event}}, %{runtime: runtime} = state) do
     state = observe_shared_turn(state, event)
     notify(state, {:stream, event})
+
+    if to_string(event.payload[:type] || event.payload["type"] || "") in [
+         "documentation_mission_state",
+         "documentation_mission_report"
+       ] do
+      send(self(), :refresh_documentation_mission)
+    end
+
     state = schedule_work_projection(state, event)
 
     cursor =
@@ -305,6 +313,15 @@ defmodule BeamAgent.CLI.TUI.Controller do
 
     notify(state, {:work_projection, payload})
     {:noreply, %{state | work_projection_timer: nil}}
+  end
+
+  def handle_info(:refresh_documentation_mission, state) do
+    case Runtime.documentation_mission(state.runtime, "status") do
+      {:ok, status} -> notify(state, {:mission_update, mission_panel(status)})
+      _ -> :ok
+    end
+
+    {:noreply, state}
   end
 
   def handle_info(
@@ -753,6 +770,37 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   defp run_command(:models, state), do: run_command({:models, ""}, state)
+
+  defp run_command(:mission, state), do: run_command({:mission, "status"}, state)
+  defp run_command({:mission, ""}, state), do: run_command(:mission, state)
+
+  defp run_command({:mission, action}, state)
+       when action in ["start", "status", "pause", "resume", "dismiss", "stop", "delete"] do
+    case Runtime.documentation_mission(state.runtime, action) do
+      result when result == :ok or (is_tuple(result) and elem(result, 0) == :ok) ->
+        case Runtime.documentation_mission(state.runtime, "status") do
+          {:ok, status} ->
+            notify(state, {:mission_panel, mission_panel(status)})
+
+          {:error, reason} ->
+            notify(state, {:notice, :error, "Mission unavailable: #{inspect(reason)}"})
+        end
+
+      {:error, reason} ->
+        notify(state, {:notice, :error, "Mission action not accepted: #{inspect(reason)}"})
+    end
+
+    state
+  end
+
+  defp run_command({:mission, _}, state) do
+    notify(
+      state,
+      {:notice, :error, "Use /mission [start|status|pause|resume|dismiss|stop|delete]"}
+    )
+
+    state
+  end
 
   defp run_command({:race, ""}, state) do
     notify(state, {:notice, :warning, "Usage: /race GOAL"})
@@ -1542,6 +1590,39 @@ defmodule BeamAgent.CLI.TUI.Controller do
     [:model_tokens, :wall_time_ms, :shell_commands, :test_runs]
     |> Enum.map(fn key -> "#{key}=#{usage[key] || 0}/#{limit_label(limits[key])}" end)
     |> Enum.join(" · ")
+  end
+
+  defp mission_panel(status) do
+    actions = status["available_actions"] || []
+
+    shortcuts = %{
+      "start" => "s",
+      "pause" => "p",
+      "resume" => "r",
+      "dismiss" => "d",
+      "stop" => "x",
+      "delete" => "X"
+    }
+
+    controls = Enum.map_join(actions, " · ", &"#{shortcuts[&1]} #{&1}")
+    report = status["report"] || %{}
+
+    %{
+      title: "BACKGROUND / DOCUMENTATION",
+      mission_actions: actions,
+      lines: [
+        "#{status["status"]} · #{status["attempts"] || 0}/#{status["max_assessments"] || 3} assessments",
+        "Read-only advice · selected session model · may consume provider allowance",
+        "Tracks future Git changes: #{Enum.join(status["paths"] || ["lib", "src", "test", "docs", "README.md"], ", ")}",
+        "Quiet #{status["quiet_seconds"] || 60}s · cooldown #{status["cooldown_seconds"] || 300}s · owner must stay running",
+        "ION keys: #{controls} · f refresh · Esc close",
+        "Both TUIs: /mission #{Enum.join(actions ++ ["status"], " | ")}",
+        "Stop cancels observer + fix agents. Delete removes configuration/report, keeps history/worktrees.",
+        "#{status["reason"] || ""}",
+        "#{report["status"] || "No report yet"}",
+        report["content"] || "Suggestions are not applied automatically."
+      ]
+    }
   end
 
   defp limit_label(:infinity), do: "∞"

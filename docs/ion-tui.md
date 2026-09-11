@@ -1,6 +1,6 @@
 # ION / OTP control surface
 
-A separate Rust/Ratatui frontend for BeamAgent. Ink-dark surfaces, acid-yellow
+A separate Rust/Ratatui frontend for Loom. Ink-dark surfaces, acid-yellow
 intent, cyan actors, violet evidence. It is organized around directing work,
 inspecting its owners, and examining what actually happened.
 
@@ -15,14 +15,16 @@ when building only ION. Use a UTF-8 terminal with true-color support for the ful
 palette; the UI also adapts to narrow terminals without requiring a Nerd Font.
 
 ```sh
-mix beam_agent.build --frontend rust
-./beam_agent
+mix loom.build
+./loom
 ```
 
 The existing CLI configuration, setup wizard, flags, workspace and provider
 profiles apply unchanged. To launch from another directory, use an absolute path
-to `beam_agent` and keep `beam_agent_ion` beside it. The default
-`mix beam_agent.build` prepares ION and Desk; `--frontend all` also builds Go.
+to `loom` and keep `beam_agent_ion` beside it. The default
+`mix loom.build` prepares ION and Desk; `--frontend all` also builds Go.
+For a terminal-only build (`--frontend rust`), use `loom run` instead of the
+service-backed entry point; the service normally hosts Desk as well.
 
 ```sh
 ./beam_agent_ion --demo       # interactive simulated workspace, no model calls
@@ -32,7 +34,7 @@ to `beam_agent` and keep `beam_agent_ion` beside it. The default
 The standalone executable needs inherited bridge descriptors unless `--demo` or
 `--snapshot` is selected. Do not launch it directly for a real session.
 
-To join an existing live runtime, use `./beam_agent attach SESSION_ID` with the ID
+To join an existing live runtime, use `./loom attach SESSION_ID` with the ID
 shown in Desk. This starts only a frontend/connection, not a second session owner.
 Closing it leaves the owner running. Desk discovers interactive CLI sessions
 started with the rebuilt binary; older processes need one restart.
@@ -119,7 +121,16 @@ record returns to its previous list and selection.
 | `/sessions`, `/resume ID`, `/new` | Inspect, resume, or create a session; `r` resumes an open session dossier |
 | `/attach PATH`, `/detach ID` | Import an image file (up to 10 MiB), or remove a draft attachment |
 | `/verify`, `/budget`, `/status` | Existing runtime verification and operational views |
+| `/mission` | Documentation observer: `s` start, `p` pause, `r` resume, `d` dismiss report, `x` stop observer and fixes, `X` delete stopped observer, `f` refresh |
 | `/help` | In-app field manual |
+
+The [documentation observer](documentation-missions.md) is opt-in and read-only.
+Its panel shows the bounded assessment allowance before starting; assessments use
+the session's selected model and may consume provider allowance. Mission state and
+reports come from the runtime, including updates made through Desk. With Loom's
+service-backed entry point, the owner remains running after the TUI closes.
+Login startup is optional: `loom service install`. Legacy `loom run` is still
+terminal-owned. See the [service guide](loom-service.md).
 
 ### Providers and models
 
@@ -232,7 +243,7 @@ Unavailable-model errors list the catalogue and explain `--model MODEL`; nested
 provider JSON errors are unwrapped into readable messages in both TUIs.
 
 If a saved model is rejected, select an available model explicitly using
-`./beam_agent --model MODEL`, or update
+`./loom --model MODEL`, or update
 the saved provider profile through `/models` or `/providers`. No model or account
 configuration is silently changed.
 

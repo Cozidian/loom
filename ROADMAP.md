@@ -1,4 +1,4 @@
-# BeamAgent — next experiments
+# Loom — next experiments
 
 Updated: 2026-09-10 · [Vision](VISION.md) · [Implementation history](docs/roadmap-history.md)
 
@@ -27,10 +27,41 @@ These are code/test foundations, not proof that the whole product vision works.
 Earlier [coding evaluations](docs/coding-usability.md) are useful evidence, but
 not a reliability benchmark or proof of visual inspection and document delivery.
 The execution-node registry provides policy/selection foundations, not a working
-cross-machine dispatch product. Persistent missions and a personal control center
-remain future work.
+cross-machine dispatch product. A bounded read-only documentation observer now
+exists under a live owner. Loom now has an initial per-user macOS service and
+live-session Desk; broader control-center and distributed work remain experiments.
+
+### Service-backed Loom progression
+
+- [x] Rebrand the CLI and client surfaces without moving credentials or durable storage.
+- [x] Separate the backend lifetime from Desk/TUI clients; make login renewal local and explicit.
+- [x] Add start/stop/status/logs and opt-in login startup, with idle/paused recovery.
+- [ ] Package a standalone install/update flow; the current service uses the checkout and Mix.
+- [ ] Exercise prolonged sleep/wake, provider refresh and interrupted real coding work.
+
+See [service behavior and checks](docs/loom-service.md). Recovery is not permission
+to replay unfinished model calls or automatically apply old proposed edits.
 
 ## Now — earn trust with two real deliveries
+
+### Trial follow-up — current slice
+
+- [x] Mark completion-review owners as waiting; monitor the reviewer separately.
+- [x] Advertise only permitted Git operations and desktop-rendering capabilities.
+- [x] Add fingerprint-bound, read-only image assessment and a review-only retry
+  command for Word outputs; exercise it on the existing two-page ROS output.
+- [x] Repeat the larger Phoenix fixture and inspect its running desktop/mobile UI.
+- [x] Extend app acceptance with protected real-HTTP 403/404 checks. The new check
+  rejects the previous artifact's missing error renderer without provider calls.
+- [ ] Add harness-owned browser QA and rerun autonomous app delivery. The old
+  artifact remains unchanged; broader unattended delivery is not yet proven.
+- [ ] Run a fresh full document generation with the new automatic QA step;
+  the review-only path has live evidence, the combined path does not yet.
+
+See [coding trial](docs/coding-usability.md#2026-09-10--fresh-phoenix-trial-and-wider-browser-checks)
+and [document QA](docs/document-workflow.md#image-assessment-trial--2026-09-10).
+The read-only documentation mission below is a first live-owner implementation,
+not a persistent OS service.
 
 ### Trial readiness — first implementation slice
 
@@ -198,18 +229,23 @@ first two deliveries. Existing configurable capacity and safety limits stay usef
 ## Later — accountable background missions
 
 Start with one opt-in mission in one workspace before managing a fleet.
+The [documentation observer](docs/documentation-missions.md) now provides a bounded
+read-only first slice. These checks do not claim proactive edit delivery.
 
-- [ ] Define a mission's purpose, scope, reporting coordinator and permitted
+- [x] Define a mission's purpose, scope, reporting coordinator and permitted
   actions. Candidate modes: documentation, regressions, analysis/goal discovery.
-- [ ] Observe changes cheaply. Experiment with checkpoints, quiet periods and
+- [x] Observe changes without model calls. Experiment with checkpoints, quiet periods and
   change coalescing before invoking models; distinguish unfinished from forgotten.
-- [ ] Deduplicate repeated observations and test that continuous edits do not
+- [x] Deduplicate repeated observations and test that continuous edits do not
   cause repeated expensive analyses of essentially the same change.
-- [ ] Prepare proactive edits in isolation and record the source revision or
-  document version. Revalidate relevance before presenting or integrating them.
-- [ ] Report findings, proposed goals and unfinished work to the coordinator.
-  A proposed goal is not automatic authority to execute it.
-- [ ] Design review/apply/dismiss/pause controls; learn from rejected suggestions
+- [x] Prepare user-requested documentation fixes in isolated, snapshot-seeded
+  worktrees; record the source revision/fingerprint and reject stale findings.
+  Automatic integration and live-model usefulness remain unproven.
+- [x] Report advisory findings to the coordinating runtime's durable history.
+  Suggestions are not automatic authority to execute goals; model steering is separate.
+- [x] Start, pause, resume and dismiss the read-only documentation observer from
+  ION and Desk using the shared runtime; show reports and synchronize state.
+- [ ] Design isolated-edit review/apply controls; learn from rejected suggestions
   without making those rejections permanent bans.
 - [ ] Test coexistence with another editor/agent actively changing the workspace,
   plus coordinator restarts, stale proposals and cancellation.
