@@ -6,7 +6,10 @@ mod ui;
 
 use app::App;
 use crossterm::{
-    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    },
     execute,
 };
 use serde_json::{Value, json};
@@ -96,11 +99,11 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         previous_hook(info);
     }));
     let result = (|| -> io::Result<()> {
-        execute!(io::stdout(), EnableBracketedPaste)?;
+        execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
         let mut exit_started = None;
         let mut dirty = true;
         let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
@@ -212,13 +215,23 @@ fn main() -> io::Result<()> {
                             a.command_index = 0;
                         }
                     }
+                    Event::Mouse(m) => {
+                        let code = match m.kind {
+                            MouseEventKind::ScrollUp => Some(KeyCode::PageUp),
+                            MouseEventKind::ScrollDown => Some(KeyCode::PageDown),
+                            _ => None,
+                        };
+                        if let Some(code) = code {
+                            a.key(KeyEvent::new(code, KeyModifiers::NONE));
+                        }
+                    }
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
         }
     })();
-    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     ratatui::restore();
     result
 }
