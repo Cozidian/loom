@@ -10,11 +10,17 @@ under `~/.local/share/loom/service`, in owner-private files.
 
 ```sh
 mix loom.build
+mix loom.install               # optional: symlink `loom` onto your PATH
 ./loom                         # initialize if needed; attach a workspace TUI
 ./loom desk                    # open or reauthenticate the web view
 ./loom tui --workspace /path/to/repo
 ./loom attach SESSION_ID        # explicitly choose another live session
 ```
+
+`mix loom.install` (`--bin-dir DIR` to choose where, `--no-build` to skip the
+build) links the executable into `~/.local/bin` by default, so `loom` works
+from any workspace once that directory is on your PATH. It is a symlink, not a
+standalone copy: the checkout still has to stay put next to it.
 
 The service starts on demand under your user account, independent of the invoking
 terminal. A TUI reuses the most recently started live session in its canonical
