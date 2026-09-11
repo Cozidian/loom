@@ -70,6 +70,9 @@ defmodule BeamAgent.Runtime.Client do
 
   def goal_id(client), do: GenServer.call(client, :goal_id)
 
+  def model_catalog(client), do: GenServer.call(client, :model_catalog)
+  def refresh_model_catalog(client), do: GenServer.call(client, :refresh_model_catalog)
+
   def models(client), do: GenServer.call(client, :models)
 
   def refresh_models(client, endpoint_id),
@@ -366,6 +369,12 @@ defmodule BeamAgent.Runtime.Client do
     do: {:reply, BeamAgent.set_project_preferences(state.project_id, preferences), state}
 
   def handle_call(:goal_id, _from, state), do: {:reply, {:ok, state.goal_id}, state}
+
+  def handle_call(:model_catalog, _from, state),
+    do: {:reply, BeamAgent.ModelRegistry.catalog(state.project_id), state}
+
+  def handle_call(:refresh_model_catalog, _from, state),
+    do: {:reply, BeamAgent.ModelRegistry.refresh_catalog(state.project_id), state}
 
   def handle_call(:models, _from, state),
     do: {:reply, BeamAgent.models(state.project_id), state}

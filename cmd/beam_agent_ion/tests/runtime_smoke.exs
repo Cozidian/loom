@@ -21,9 +21,10 @@ config_path = Path.join(root, "config.json")
   BeamAgent.start_session(
     provider: :echo,
     provider_profile: "echo",
+    provider_options: [model: "echo"],
     model_strategy: :manual,
     team_mode: :solo,
-    model_endpoints: [%{id: "echo", provider: :echo}],
+    model_endpoints: [%{id: "echo", provider: :echo, model: "echo"}],
     workspace_root: root,
     data_dir: Path.join(root, "runtime")
   )

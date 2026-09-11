@@ -531,6 +531,9 @@ defmodule BeamAgent do
     opts
     |> Keyword.take([
       :model_endpoints,
+      :discover_models,
+      :model_discovery,
+      :model_discovery_options,
       :provider,
       :provider_options,
       :provider_profile,
@@ -567,7 +570,9 @@ defmodule BeamAgent do
       provider: provider,
       model: Keyword.get(provider_options, :model),
       base_url: Keyword.get(provider_options, :base_url),
-      api_key_env: Keyword.get(provider_options, :api_key_env)
+      api_key_env: Keyword.get(provider_options, :api_key_env),
+      credential_ref: Keyword.get(provider_options, :credential_ref),
+      auth: Keyword.get(provider_options, :auth)
     }
 
     ModelRegistry.register(project_id, endpoint)

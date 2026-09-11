@@ -388,8 +388,11 @@ defmodule BeamAgent.Goal.Tournament do
     input = %{
       prompt: candidates |> hd() |> then(&(value(&1, :prompt) || value(&1, :goal))),
       workspace_root: parent.workspace_root,
-      strategy: :auto,
-      preferred_endpoint_id: parent.provider_profile,
+      strategy: parent.model_strategy,
+      preferred_connection_id:
+        parent.provider_options[:profile] || parent.provider_profile || to_string(parent.provider),
+      preferred_model: parent.provider_options[:model],
+      preferred_endpoint_id: parent.provider_profile || to_string(parent.provider),
       preferred_provider: parent.provider,
       tools: [],
       context_tokens: 0,

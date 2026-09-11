@@ -12,7 +12,7 @@ defmodule BeamAgent.ProviderSettings do
          true <- settings["model_strategy"] in ["manual", "auto", "local_only"],
          true <- settings["team_mode"] in [nil, "auto", "solo"],
          true <-
-           provider[:model_required] != true or
+           settings["model_strategy"] != "manual" or provider[:model_required] != true or
              (is_binary(settings["model"]) and settings["model"] != ""),
          true <- not Map.has_key?(config, "api_key"),
          true <- optional_match?(settings["api_key_env"], ~r/\A[A-Za-z_][A-Za-z0-9_]*\z/),

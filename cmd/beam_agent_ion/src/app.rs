@@ -85,6 +85,8 @@ pub struct App {
     pub settings_confirm: Option<Value>,
     pub settings_pending: bool,
     pub model_strategy: String,
+    pub model_query: String,
+    pub model_searching: bool,
     pub team_mode: String,
     pub activity: String,
     pub last_activity: Option<Instant>,
@@ -146,7 +148,9 @@ impl Default for App {
             settings_form: None,
             settings_confirm: None,
             settings_pending: false,
-            model_strategy: "manual".into(),
+            model_strategy: "auto".into(),
+            model_query: String::new(),
+            model_searching: false,
             team_mode: "solo".into(),
             activity: String::new(),
             last_activity: None,
@@ -228,7 +232,10 @@ impl App {
         }
         self.notice = format!("Action not sent: {reason}. Draft/approval preserved.");
     }
-    pub fn apply(&mut self, p: Value) {
+    pub fn apply(&mut self, mut p: Value) {
+        if s(&p, "type") == "models" && p["combined"] == true {
+            p["type"] = json!("model_catalog");
+        }
         match s(&p, "type") {
             "init" => {
                 self.initialized = true;
@@ -458,8 +465,39 @@ impl App {
             }
             "model_catalog" => {
                 self.settings_pending = false;
-                self.notice = "Model catalogue ready · Enter selects · m enters a model ID".into();
-                self.open_drawer(p);
+                if p["combined"] == true {
+                    self.model_strategy = s(&p, "model_strategy").into();
+                    self.notice = if p["refreshing"] == true {
+                        "Refreshing model catalogue · r checks again"
+                    } else {
+                        "Loom picks by default · Enter locks a model for this conversation"
+                    }
+                    .into();
+                    let problems: Vec<String> = array(&p, "sources")
+                        .iter()
+                        .filter(|source| matches!(s(source, "status"), "stale" | "unavailable"))
+                        .map(|source| format!("{} {}", s(source, "profile"), s(source, "status")))
+                        .collect();
+                    if !problems.is_empty() {
+                        self.notice = format!("{} · r refresh · p providers", problems.join(" · "));
+                    }
+                    // Refresh replaces this drawer rather than growing the back stack.
+                    if self
+                        .drawer
+                        .as_ref()
+                        .is_some_and(|d| s(d, "type") == "model_catalog" && d["combined"] == true)
+                    {
+                        self.drawer = Some(p);
+                    } else {
+                        self.model_query.clear();
+                        self.model_searching = false;
+                        self.open_drawer(p);
+                    }
+                } else {
+                    self.notice =
+                        "Model catalogue ready · Enter selects · m enters a model ID".into();
+                    self.open_drawer(p);
+                }
             }
             "settings_applied" => {
                 if let Some(mode) = p["team_mode"].as_str() {
@@ -472,7 +510,7 @@ impl App {
                 self.model = s(&p, "model").into();
                 self.model_strategy = s(&p, "model_strategy").into();
                 self.notice = format!(
-                    "Saved · {} / {} · {} routing · {} team · conversation preserved",
+                    "Selection applied · {} / {} · {} · {} team",
                     self.profile, self.model, self.model_strategy, self.team_mode
                 );
             }
@@ -637,6 +675,9 @@ impl App {
             "verification_finished" => {
                 self.signal("Verification finished · inspect results");
             }
+            "model_route_selected" if root => {
+                self.entry("info", &format!("Model choice · {}", s(data, "reason")));
+            }
             "model_response_started" if root => {
                 self.signal("Waiting for provider");
             }
@@ -788,6 +829,20 @@ impl App {
             "provider_picker" => array(d, "providers"),
             "provider_settings" => array(d, "providers"),
             "provider_kind_picker" => array(d, "kinds"),
+            "model_catalog" if d["combined"] == true => {
+                let mut rows = vec![json!({"automatic":true})];
+                rows.extend(array(d, "models").into_iter().filter(|row| {
+                    format!(
+                        "{} {} {}",
+                        s(row, "profile"),
+                        s(row, "provider"),
+                        s(row, "model")
+                    )
+                    .to_lowercase()
+                    .contains(&self.model_query.to_lowercase())
+                }));
+                rows
+            }
             "model_catalog" => array(d, "models"),
             "events" => array(d, "events"),
             "output_picker" => array(d, "outputs"),
@@ -908,6 +963,17 @@ impl App {
             .collect();
         self.open_drawer(json!({"type":"output_picker","outputs":outputs}));
     }
+    pub fn poll_catalog(&mut self) -> bool {
+        let refreshing = self.drawer.as_ref().is_some_and(|d| {
+            s(d, "type") == "model_catalog" && d["combined"] == true && d["refreshing"] == true
+        });
+        if refreshing && !self.busy && !self.settings_pending && self.connected && !self.demo {
+            self.request_settings(json!({"action":"catalog"}));
+            true
+        } else {
+            false
+        }
+    }
     fn request_settings(&mut self, mut request: Value) {
         if !self.initialized || !self.connected || self.settings_pending {
             self.notice = "Wait for the runtime/settings request".into();
@@ -925,7 +991,7 @@ impl App {
     fn provider_form(&mut self, row: &Value, editing: bool) {
         let mut fields = vec![];
         for key in ["profile", "model", "base_url", "api_key_env", "auth_mode"] {
-            if editing && key == "profile" {
+            if (editing && key == "profile") || (!editing && key == "model") {
                 continue;
             }
             let mut editor = Editor::default();
@@ -1236,6 +1302,60 @@ impl App {
                 .map(|d| s(d, "type"))
                 .unwrap_or("")
                 .to_owned();
+            let combined = kind == "model_catalog"
+                && self.drawer.as_ref().is_some_and(|d| d["combined"] == true);
+            if combined && self.model_searching {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Enter => self.model_searching = false,
+                    KeyCode::Backspace => {
+                        self.model_query.pop();
+                        self.selection = 0;
+                    }
+                    KeyCode::Char(c) if !ctrl => {
+                        self.model_query.push(c);
+                        self.selection = 0;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            if combined {
+                let revision = self.drawer.as_ref().unwrap()["revision"].clone();
+                match k.code {
+                    KeyCode::Char('/') => {
+                        self.model_searching = true;
+                        return;
+                    }
+                    KeyCode::Char('p') => {
+                        self.request_settings(json!({"action":"list"}));
+                        return;
+                    }
+                    KeyCode::Char('r') => {
+                        self.request_settings(json!({"action":"refresh_catalog"}));
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(row) = self.rows().get(self.selection).cloned() {
+                            if row["automatic"] == true {
+                                self.request_settings(
+                                    json!({"action":"automatic","revision":revision}),
+                                );
+                            } else if row["enabled"] == false
+                                || row["selectable"] == false
+                                || s(&row, "health") == "unavailable"
+                            {
+                                self.notice =
+                                    "This model is unavailable · check its provider or refresh"
+                                        .into();
+                            } else {
+                                self.request_settings(json!({"action":"lock","profile":row["profile"],"model":row["model"],"revision":revision}));
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             if kind == "models" && k.code == KeyCode::Char('p') {
                 self.request_settings(json!({"action":"list"}));
                 return;
@@ -1257,6 +1377,12 @@ impl App {
                     }
                     KeyCode::Char('r') => {
                         self.request_settings(json!({"action":"list"}));
+                        return;
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(row) = selected {
+                            self.request_settings(json!({"action":"toggle","profile":row["profile"],"revision":self.settings["revision"]}));
+                        }
                         return;
                     }
                     KeyCode::Char('u') => {
@@ -1283,7 +1409,7 @@ impl App {
                     _ => {}
                 }
             }
-            if kind == "model_catalog" && k.code == KeyCode::Char('m') {
+            if kind == "model_catalog" && !combined && k.code == KeyCode::Char('m') {
                 let d = self.drawer.clone().unwrap();
                 self.selection_form(
                     s(&d, "profile"),

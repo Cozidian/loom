@@ -668,3 +668,57 @@ fn documentation_observer_commands_are_explicit_and_runtime_acknowledged() {
     a.apply(json!({"type":"mission_update","mission_actions":["resume"],"lines":["paused"]}));
     assert!(a.drawer.is_none());
 }
+
+#[test]
+fn combined_picker_defaults_to_loom_filters_and_locks_without_submitting() {
+    let mut a = ready();
+    a.editor.set("unfinished draft");
+    a.apply(
+        json!({"type":"models","combined":true,"model_strategy":"auto","revision":"rev1","models":[
+            {"profile":"local","model":"coder","enabled":true,"health":"available"},
+            {"profile":"cloud","model":"strong","enabled":true,"health":"available"}
+        ]}),
+    );
+    assert!(render(&mut a, 110, 35).contains("Loom picks · active"));
+    key(&mut a, KeyCode::Char('/'));
+    for c in "strong".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    key(&mut a, KeyCode::Enter); // finish searching, never selects
+    assert!(a.outgoing.is_empty());
+    assert_eq!(a.rows().len(), 2);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    let request = a.outgoing.pop().unwrap();
+    assert_eq!(request["action"], "lock");
+    assert_eq!(request["profile"], "cloud");
+    assert_eq!(request["model"], "strong");
+    assert_eq!(a.editor.text, "unfinished draft");
+    assert_eq!(a.model_strategy, "auto"); // waits for runtime acknowledgment
+    a.apply(json!({"type":"settings_applied","profile":"cloud","model":"strong","model_strategy":"manual"}));
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.outgoing.pop().unwrap()["action"], "automatic");
+}
+
+#[test]
+fn combined_picker_handles_no_matches_disabled_models_and_refresh_without_stack_growth() {
+    let mut a = ready();
+    let catalog = json!({"type":"model_catalog","combined":true,"model_strategy":"auto","revision":"rev1","models":[{"profile":"cloud","model":"strong","enabled":false}]});
+    a.apply(catalog.clone());
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    assert!(a.outgoing.is_empty());
+    let depth = a.drawer_stack.len();
+    a.apply(catalog);
+    assert_eq!(a.drawer_stack.len(), depth);
+    key(&mut a, KeyCode::Char('/'));
+    for c in "no-match".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    assert_eq!(a.rows().len(), 1); // automatic selection always remains accessible
+    assert!(render(&mut a, 80, 24).contains("Loom picks"));
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Char('r'));
+    assert_eq!(a.outgoing.pop().unwrap()["action"], "refresh_catalog");
+}

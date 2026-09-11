@@ -202,16 +202,17 @@ be recreated with `after: cursor` without making terminal state authoritative.
 Public connections use redacted events unless a trusted in-process client
 explicitly requests `view: :internal`.
 
-`/models` lists every configured profile registered in the current project,
-including provider/model, locality, health, declared capabilities, verified
-sample count, verified pass rate, call count, and observed latency. Use
-`/models refresh` to run supervised provider health checks, or `/models PROFILE`
-to refresh one endpoint. Its Provider Market section shows the most recent
-content-free auction, every endpoint bid, the awarded leases, confidence,
-latency estimate, cost tier, and the deterministic score components that explain
-why one bid outranked another. During work, the chat reports `providers
-bidding` and `racing N providers` instead of hiding orchestration behind a
-generic spinner.
+In ION, `/models` opens a combined model catalogue with **Loom picks** first.
+Enter on a model locks the current conversation and its workers to that exact
+connection/model; Enter on Loom picks releases the lock. `/` searches, `r`
+refreshes, and `p` opens provider management. Add connections without choosing a
+favorite model; Space enables/disables a connection. See [ION](ion-tui.md#providers-and-models)
+for discovery adapters, cache behavior, and the legacy default-selection form.
+The Go client retains its model inventory, health and Provider Market views.
+`/models refresh` refreshes discovery and health; `/models ENDPOINT_ID` checks
+one endpoint. Runtime callers can use `BeamAgent.Runtime.model_catalog/1` and
+`refresh_model_catalog/1`; programmatic projects opt into background discovery
+with `discover_models: true`.
 
 Use `/tournament GOAL` when quality matters more than latency. It runs every
 candidate, then retains one winner only when consensus or deterministic
@@ -303,11 +304,16 @@ cannot satisfy the planning or implementation completion guards; a `replan`
 decision returns control to structured planning with the failed and blocked
 nodes still inspectable.
 
-The default routing strategy is `auto`: orchestration and difficult work may
-stay on the selected cloud profile while simple child work can route to an
-available local Ollama profile. Use `--model-strategy manual` for the selected
-profile only or `--model-strategy local_only` to prohibit remote models. Each
-choice appears as a `Model routed` information event in the chat. Recent
+The default routing strategy is `auto`: the runtime chooses among eligible models
+from enabled connections, with no implicit preference for the setup profile.
+Discovery produces stable connection/model identities, keeping credentials tied
+to the connection. The router filters known tool, modality and context mismatches
+before scoring capability fit, cost, latency and outcome evidence. Unknown
+capabilities stay unknown; catalogues do not establish model quality or quota.
+Use `--model-strategy manual` to lock the exact selected model, including children,
+or `--model-strategy local_only` to prohibit remote models. A manual lock fails
+when its model is unavailable and never falls through to another endpoint.
+Recent
 verified outcomes also produce a shadow recommendation. It remains advisory
 until enough comparative evidence has been evaluated; unverified provider
 success never counts as model-quality evidence.
@@ -720,3 +726,10 @@ unredacted.
 
 See [architecture.md](architecture.md) for the DeepSeek Harness to OTP
 mapping, process tree, and deliberate differences from Cordis.
+
+Provider discovery API references: [OpenAI model IDs](https://developers.openai.com/api/reference/resources/models/methods/list),
+[Ollama model metadata](https://docs.ollama.com/api-reference/show-model-details),
+[xAI language models](https://docs.x.ai/developers/rest-api-reference/inference/models),
+and [Anthropic model pagination](https://platform.claude.com/docs/en/api/models/list).
+These describe discovery, not evidence that every listed model supports Loom's
+transport or is suitable for every task.

@@ -147,7 +147,7 @@ defmodule BeamAgent.CodingUsabilityTest do
       start_session(ctx,
         provider: :echo,
         provider_profile: "primary",
-        model_strategy: :manual,
+        model_strategy: :auto,
         provider_options: [model: "primary-model", api_key: "primary-test-credential"],
         model_endpoints: [
           %{id: "primary", provider: :echo, model: "primary-model"},
@@ -166,7 +166,7 @@ defmodule BeamAgent.CodingUsabilityTest do
       BeamAgent.spawn_subagent(root,
         provider: :echo,
         provider_profile: "primary",
-        model_strategy: :manual,
+        model_strategy: :auto,
         provider_options: [model: "primary-model", api_key: "primary-test-credential"],
         agent_proposal: %{
           goal: "Investigate actor lifecycle",

@@ -6,6 +6,12 @@ defmodule BeamAgent.CLI.ProviderManager do
 
   def snapshot(state) do
     with {:ok, stored} <- Config.load(state.config_path) do
+      sources =
+        case Runtime.model_catalog(state.runtime) do
+          {:ok, catalog} -> Map.new(catalog.sources, &{&1.profile, &1})
+          _ -> %{}
+        end
+
       providers =
         Enum.map(Config.profiles(stored), fn {name, profile} ->
           profile
@@ -14,6 +20,9 @@ defmodule BeamAgent.CLI.ProviderManager do
             "profile" => name,
             "auth_mode" => auth_mode(profile),
             "has_credentials" => not is_nil(profile["credential_ref"]),
+            "enabled" => Map.get(profile, "enabled", true),
+            "discovery" => to_string(get_in(sources, [name, :status]) || :configured),
+            "model_count" => get_in(sources, [name, :model_count]) || 0,
             "active" => name == state.config["profile"]
           })
         end)
@@ -38,6 +47,40 @@ defmodule BeamAgent.CLI.ProviderManager do
          model: state.config["model"],
          model_strategy: state.config["model_strategy"],
          team_mode: state.config["team_mode"] || stored["team_mode"]
+       }}
+    end
+  end
+
+  def catalog(state, nil) do
+    with {:ok, stored} <- Config.load(state.config_path),
+         {:ok, catalog} <- Runtime.model_catalog(state.runtime) do
+      models =
+        Enum.map(catalog.models, fn endpoint ->
+          %{
+            "id" => endpoint.id,
+            "profile" => endpoint.connection_id,
+            "provider" => to_string(endpoint.provider),
+            "model" => endpoint.model,
+            "enabled" => endpoint.enabled,
+            "health" => to_string(endpoint.health.status),
+            "capabilities" => Enum.map(endpoint.claims.capabilities, &to_string/1),
+            "selectable" =>
+              :text_generation in endpoint.claims.capabilities or
+                endpoint.claims.source in [:unknown, :provider],
+            "capability_source" => to_string(endpoint.claims.source)
+          }
+        end)
+
+      {:ok,
+       %{
+         models: models,
+         sources: catalog.sources,
+         refreshing: catalog.refreshing,
+         revision: revision(stored),
+         model_strategy: state.config["model_strategy"],
+         active_profile: state.config["profile"],
+         configured_model: state.config["model"],
+         combined: true
        }}
     end
   end
@@ -93,7 +136,7 @@ defmodule BeamAgent.CLI.ProviderManager do
       with :ok <- idle(state),
            {:ok, latest} <- Config.load(state.config_path),
            :ok <- current_revision(latest, revision(before)),
-           {:ok, _} <- Config.write(next, state.config_path) do
+           {:ok, _} <- write_if_changed(before, next, state.config_path) do
         endpoints = Config.model_endpoints(next, runtime)
         removed_ids = Map.keys(before["profiles"]) -- Map.keys(next["profiles"])
 
@@ -111,8 +154,47 @@ defmodule BeamAgent.CLI.ProviderManager do
     end)
   end
 
+  defp write_if_changed(same, same, path), do: {:ok, path}
+  defp write_if_changed(_before, next, path), do: Config.write(next, path)
+
+  defp change(stored, current, %{"action" => "lock", "profile" => name, "model" => model}) do
+    with {:ok, profile} <- fetch(stored, name),
+         true <- Map.get(profile, "enabled", true),
+         {:ok, runtime} <- Config.runtime(stored, name) do
+      runtime =
+        runtime
+        |> Map.put("model", model)
+        |> Map.put("model_strategy", "manual")
+        |> Map.put("team_mode", current["team_mode"] || "auto")
+
+      {:ok, stored, Map.merge(current, runtime)}
+    else
+      false -> {:error, :provider_disabled}
+      error -> error
+    end
+  end
+
+  defp change(stored, current, %{"action" => "automatic"}) do
+    next = Map.put(stored, "model_strategy", "auto")
+    {:ok, next, Map.put(current, "model_strategy", "auto")}
+  end
+
+  defp change(stored, current, %{"action" => "toggle", "profile" => name}) do
+    with {:ok, profile} <- fetch(stored, name),
+         true <- not (current["model_strategy"] == "manual" and current["profile"] == name) do
+      profile = Map.put(profile, "enabled", not Map.get(profile, "enabled", true))
+      {:ok, next} = Config.put_profile(stored, name, profile, force: true)
+      {:ok, runtime} = runtime_after_edit(next, current, name)
+      {:ok, next, runtime}
+    else
+      false -> {:error, :release_model_lock_before_disabling_provider}
+      error -> error
+    end
+  end
+
   defp change(stored, current, %{"action" => "select", "profile" => name} = request) do
     with {:ok, profile} <- fetch(stored, name),
+         true <- Map.get(profile, "enabled", true),
          mode when mode in ["manual", "auto", "local_only"] <- request["strategy"] || "manual",
          team when team in ["auto", "solo"] <-
            request["team_mode"] || stored["team_mode"] || "solo",
@@ -182,6 +264,7 @@ defmodule BeamAgent.CLI.ProviderManager do
 
     profile =
       Map.new(@editable, &{&1, nullable(fields[&1])})
+      |> Map.put("enabled", Map.get(previous, "enabled", true))
       |> Map.put("credential_ref", if(preserve?, do: previous["credential_ref"]))
       |> Map.put(
         "auth",
@@ -211,8 +294,7 @@ defmodule BeamAgent.CLI.ProviderManager do
   end
 
   defp validate_selection(runtime, request, codex) do
-    if request["action"] == "select" or
-         (request["action"] == "save" and request["profile"] == runtime["profile"]) do
+    if request["action"] in ["select", "lock"] do
       with {:ok, provider} <- Providers.fetch(runtime["provider"]) do
         case discover(runtime, codex) do
           {:ok, models} ->
@@ -236,32 +318,25 @@ defmodule BeamAgent.CLI.ProviderManager do
     end
   end
 
-  defp discover(%{"provider" => "openai", "auth" => %{"type" => "chatgpt"}}, codex) do
-    with {:ok, %{"account" => %{"type" => "chatgpt"}}} <- codex.account(),
-         {:ok, models} <- codex.models() do
-      {:ok, Enum.reject(models, &(&1["hidden"] == true))}
-    else
-      {:error, _} = e -> e
-      _ -> {:error, :chatgpt_login_required}
+  defp discover(profile, codex) do
+    {:ok, provider} = Providers.fetch(profile["provider"])
+
+    {:ok, endpoint} =
+      BeamAgent.ModelEndpoint.new(%{
+        id: profile["profile"] || "catalogue",
+        provider: provider.id,
+        model: profile["model"],
+        base_url: profile["base_url"],
+        api_key_env: profile["api_key_env"],
+        credential_ref: profile["credential_ref"],
+        auth: profile["auth"]
+      })
+
+    case BeamAgent.ModelCatalog.discover(endpoint, codex_app_server: codex) do
+      {:manual, _} -> {:manual, "No discovery adapter. Enter a model ID to lock this connection."}
+      result -> result
     end
   end
-
-  defp discover(%{"provider" => "ollama", "base_url" => url}, _) do
-    with {:ok, 200, %{"models" => models}} <-
-           BeamAgent.HTTPClient.Httpc.get_json(String.trim_trailing(url, "/") <> "/api/tags", [],
-             timeout: 5_000
-           ) do
-      {:ok, Enum.map(models, &%{"model" => &1["name"], "displayName" => &1["name"]})}
-    else
-      {:error, _} = e -> e
-      _ -> {:error, :invalid_ollama_catalogue}
-    end
-  end
-
-  defp discover(_, _),
-    do:
-      {:manual,
-       "Enter the exact model ID. This provider has no discovery adapter; access is checked on invocation."}
 
   defp model_id(model), do: model["model"] || model["id"]
 

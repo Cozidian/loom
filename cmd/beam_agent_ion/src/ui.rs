@@ -272,11 +272,15 @@ fn header(f: &mut Frame, area: Rect, a: &App) {
             ]),
             line(
                 format!(
-                    "  OTP CONTROL SURFACE    {} / {}    APPROVAL {} · ROUTING {}",
+                    "  {} / {}    APPROVAL {} · {}",
                     a.profile,
                     a.model,
                     a.approval_mode.to_uppercase(),
-                    a.model_strategy.to_uppercase()
+                    match a.model_strategy.as_str() {
+                        "auto" => "LOOM PICKS",
+                        "manual" => "MODEL LOCKED",
+                        _ => "LOCAL ONLY",
+                    }
                 ),
                 if a.approval_mode == "auto" {
                     ACID
@@ -779,7 +783,11 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
     );
     f.render_widget(Clear, rect);
     let kind = s(d, "type");
-    let title = if s(d, "title").is_empty() {
+    let title = if kind == "model_catalog" && d["combined"] == true {
+        "MODEL SELECTION".into()
+    } else if kind == "provider_settings" {
+        "PROVIDERS".into()
+    } else if s(d, "title").is_empty() {
         kind.to_uppercase()
     } else {
         s(d, "title").into()
@@ -817,7 +825,13 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
     } else if kind == "models" {
         " Enter chooses model · p manages providers · ^Y copy · Esc back".into()
     } else if kind == "provider_settings" {
-        " n new · e edit · u use · x remove · l login · r reload · Enter models".into()
+        " n add · e edit · Space enable/disable · x remove · l login · Enter models".into()
+    } else if kind == "model_catalog" && d["combined"] == true {
+        format!(
+            " Enter selects · / search: {}{} · p providers · r refresh",
+            a.model_query,
+            if a.model_searching { "▏" } else { "" }
+        )
     } else if kind == "model_catalog" {
         " Enter chooses · m manual model ID · Esc back".into()
     } else if kind == "provider_kind_picker" {
@@ -856,14 +870,60 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
                 "sessions" => format!("{}  {}", s(row, "session_id"), s(row, "goal_preview")),
                 "provider_picker" => format!("{}  {}", s(row, "profile"), s(row, "model")),
                 "provider_settings" => format!(
-                    "{} {} / {}  {}  [{}]",
-                    if row["active"] == true { "●" } else { " " },
+                    "{} {} / {}  {}  [{}] {}",
+                    if row["enabled"] == false {
+                        "○"
+                    } else {
+                        "●"
+                    },
                     s(row, "profile"),
                     s(row, "provider"),
                     s(row, "model"),
-                    s(row, "auth_mode")
+                    s(row, "auth_mode"),
+                    s(row, "discovery")
                 ),
                 "provider_kind_picker" => s(row, "provider").into(),
+                "model_catalog" if row["automatic"] == true => format!(
+                    "Loom picks{}",
+                    if a.model_strategy == "auto" {
+                        " · active"
+                    } else {
+                        " · release model lock"
+                    }
+                ),
+                "model_catalog" if d["combined"] == true => format!(
+                    "{} / {}{}{}{}",
+                    s(row, "profile"),
+                    s(row, "model"),
+                    if row["enabled"] == false {
+                        " · disabled"
+                    } else if s(row, "health") == "unavailable" {
+                        " · unavailable"
+                    } else {
+                        ""
+                    },
+                    if row["selectable"] == false {
+                        " · not a chat model"
+                    } else if s(row, "capability_source") == "unknown" {
+                        " · capabilities unknown"
+                    } else if !crate::app::array(row, "capabilities")
+                        .iter()
+                        .any(|v| v == "tool_use")
+                        && row["capabilities"].is_array()
+                    {
+                        " · no tools"
+                    } else {
+                        ""
+                    },
+                    if a.model_strategy == "manual"
+                        && s(row, "profile") == a.profile
+                        && s(row, "model") == a.model
+                    {
+                        " · locked"
+                    } else {
+                        ""
+                    }
+                ),
                 "model_catalog" => format!(
                     "{} {}",
                     s(row, "model"),

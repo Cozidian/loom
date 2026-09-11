@@ -115,7 +115,7 @@ record returns to its previous list and selection.
 | Esc | Close overlay, leave actor/ledger view, or resume following live output |
 | Ctrl+C | Request active-turn cancellation, or clear an idle draft |
 | Ctrl+Q | Exit from any surface, including a pending approval |
-| `/models` | Enter on an endpoint opens model selection; `p` opens provider management |
+| `/models` | Loom picks by default; Enter locks a model, `/` searches, `p` manages providers |
 | `/providers` | Add, edit, use, log in to, or remove saved provider profiles |
 | `/connect` | Existing authentication flow (can start a new session) |
 | `/sessions`, `/resume ID`, `/new` | Inspect, resume, or create a session; `r` resumes an open session dossier |
@@ -134,17 +134,21 @@ terminal-owned. See the [service guide](loom-service.md).
 
 ### Providers and models
 
-`/models` → Enter on a saved endpoint → Enter on a model → **Ctrl+S** saves
-and applies the choice. The form defaults to `manual` routing: the chosen model
-is pinned. Change the strategy field to `auto` or `local_only` to let the runtime
-route work again. The header shows the active routing mode.
+`/models` opens one catalogue across the enabled provider connections. The first
+row, **Loom picks**, releases any model lock. Select another row and press Enter
+to lock that exact connection and model for the current conversation, including
+its workers and review. A lock never silently switches to another model. It is
+journaled for session recovery and does not change the default for new sessions.
+Press `/` to search by model or connection, Enter/Esc to finish searching, `r` to
+refresh discovery, or `p` to manage providers. The header distinguishes **LOOM
+PICKS**, **MODEL LOCKED**, and **LOCAL ONLY**; model calls update the displayed
+connection/model and record the selection reason.
 
-The separate `team_mode` field accepts `auto` or `solo`. Use `manual` strategy
-with `auto` team mode to pin the owner model while allowing bounded helpers.
-Use `solo` to disable automatic helpers without disabling model routing.
-Selecting another model preserves team mode. Older saved configurations retain
-their previous parallelism until you explicitly change this field. Helpers still
-require suitable endpoints, permission, budget, and a substantial task.
+Team mode remains independent. `auto` permits bounded helpers using the locked
+model; `solo` disables automatic helpers without disabling automatic model
+selection. The legacy per-provider selection form still exposes `team_mode`,
+`manual`, `auto`, and `local_only`, and saves a default with Ctrl+S. Existing
+saved manual defaults remain manual until explicitly changed.
 
 Mission now shows live tool starts/results, command output, team decisions, and
 a pinned activity line even when the model sends no assistant text. Tool details
@@ -161,24 +165,33 @@ summaries and ignores raw reasoning-text notifications. Providers need not emit
 summaries; tool activity and the waiting indicator work without them. Summary
 events are checkpointed internally and remain redacted in public event views.
 
-ChatGPT/Codex and Ollama offer live catalogues. For other adapters, press `m` in
-the catalogue to enter an exact model ID; model access is checked on invocation.
-Runtime-only endpoints without a saved profile cannot be edited here.
+The project runtime discovers models on CLI startup and refreshes every five
+minutes. Adapters cover ChatGPT/Codex, Ollama, OpenAI API, xAI language models,
+and Anthropic (including pagination). Ollama discovery also reads `/api/show`
+metadata; it does not load models or generate responses. An embedding-only model
+is visible but cannot own chat work. Unknown capabilities are labeled and excluded
+from automatic work; an explicit manual selection can use an unknown model.
+Known context limits and tool/modality requirements constrain routing. Model
+quality ranking remains heuristic; catalogue metadata is not proof of performance.
 
-In `/providers`: `n` adds a profile (choose a provider type first), `e` edits,
-`u` selects its configured model, `l` starts the existing login flow, `r` reloads,
-and `x` opens removal confirmation. Enter browses its models. Forms use Tab/Up/Down
-to select fields, Ctrl+U to clear, Ctrl+S to save, and Esc to cancel. API-key fields
-accept **environment variable names**, never raw keys. Existing saved credentials
-can be retained; changing the endpoint clears their reference. Removing a profile
-does not delete its keychain credentials or session history.
+A failed refresh retains the last successful in-memory catalogue and marks it
+stale. A failed connection with no catalogue is shown as unavailable; it does not
+prevent other connections from being used. Catalogue caches rebuild after a
+registry restart. No credentials or generated content are stored in the catalogue.
 
-Selecting a model or editing the active profile preserves the current session
-and conversation and applies to subsequent turns. These mutations require idle
-work and are persisted by Elixir, not the frontend. Saved endpoints are shared
-within the project; unrelated dynamically registered endpoints are preserved.
-Stale forms are rejected—cancel, reload, and retry. Active/default profiles cannot
-be removed. Adding a profile does not activate it automatically.
+In `/providers`: `n` adds a connection without requiring a favorite model, `e`
+edits it, Space enables/disables it, `l` starts login, `r` reloads, and `x` opens
+removal confirmation. Enter browses a single provider's models; providers without
+a discovery adapter allow `m` for a manual model ID. Forms use Tab/Up/Down to
+select fields, Ctrl+U to clear, Ctrl+S to save, and Esc to cancel. API-key fields
+accept environment variable names. Saved credentials can be retained; changing
+the endpoint clears their reference. Removing a connection preserves its keychain
+credentials and session history.
+
+Settings mutations require idle work and preserve the current conversation.
+Release a model lock before disabling its connection. Active/default profiles
+cannot be removed. Stale forms are rejected; reload before retrying. Provider
+connections are shared within a project; unrelated runtime endpoints are preserved.
 
 ## Startup and protocol
 

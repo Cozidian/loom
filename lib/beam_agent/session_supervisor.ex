@@ -228,6 +228,7 @@ defmodule BeamAgent.SessionSupervisor do
       |> Keyword.put_new(:team_mode, Map.get(parent, :team_mode, :solo))
       |> Keyword.put(:capability_envelope, spec.effective_capabilities)
       |> Keyword.put(:agent_spec, spec)
+      |> inherit_model_lock(parent)
 
     case DynamicSupervisor.start_child(supervisor, {__MODULE__, child_opts}) do
       {:ok, child_pid} ->
@@ -391,4 +392,14 @@ defmodule BeamAgent.SessionSupervisor do
     # Dormant until invoked; supports changing provider without replacing a session.
     [{BeamAgent.CodexAppServer.Conversation, opts}]
   end
+
+  defp inherit_model_lock(opts, %{model_strategy: :manual} = parent) do
+    opts
+    |> Keyword.put(:model_strategy, :manual)
+    |> Keyword.put(:provider, parent.provider)
+    |> Keyword.put(:provider_profile, parent.provider_profile)
+    |> Keyword.put(:provider_options, parent.provider_options)
+  end
+
+  defp inherit_model_lock(opts, _parent), do: opts
 end

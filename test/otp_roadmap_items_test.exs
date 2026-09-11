@@ -11,7 +11,7 @@ defmodule BeamAgent.OTPRoadmapItemsTest do
       do: %{
         name: "roadmap_remote",
         label: "Roadmap remote",
-        capabilities: [:text_generation, :tool_use],
+        capabilities: [:text_generation, :tool_use, :reasoning],
         locality: :remote,
         privacy: :provider,
         cost_hint: :metered

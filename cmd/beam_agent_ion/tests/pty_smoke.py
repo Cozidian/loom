@@ -90,6 +90,19 @@ def run(binary):
               "profile": "echo", "model": "echo", "approval_mode": "ask", "entries": [],
               "workspace_files": ["my file.ex"]})
         wait_screen("READY")
+        send({"type": "model_catalog", "combined": True, "model_strategy": "auto", "revision": "r1",
+              "models": [{"profile": "fixture", "model": "coder", "enabled": True, "health": "available"}]})
+        wait_screen("Loom picks")
+        type_text("\x1b[B\r")
+        assert action() == {"type": "provider_settings", "action": "lock", "profile": "fixture", "model": "coder", "revision": "r1"}
+        send({"type": "settings_applied", "profile": "fixture", "model": "coder", "model_strategy": "manual"})
+        wait_screen("MODEL LOCKED")
+        type_text("\x1b[A\r")
+        assert action() == {"type": "provider_settings", "action": "automatic", "revision": "r1"}
+        send({"type": "settings_applied", "profile": "fixture", "model": "coder", "model_strategy": "auto"})
+        wait_screen("LOOM PICKS")
+        type_text("\x1b")
+        time.sleep(0.05)
         type_text("\r")
         assert action() == {"type": "submit", "prompt": "early draft", "attachments": []}
         send({"type": "turn_started", "prompt": "early draft"})
