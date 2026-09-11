@@ -72,6 +72,18 @@ credentials or model calls:
 ./beam_agent_ion --demo
 ```
 
+To run `loom` from any directory instead of typing `./loom` from the checkout,
+link it onto your PATH once:
+
+```sh
+mix loom.install
+```
+
+This builds Loom (skip with `--no-build` if already built) and symlinks the
+executable into `~/.local/bin` (override with `--bin-dir`). The checkout still
+has to stay where it is—the executable finds Desk and ION beside itself, not
+beside the symlink.
+
 After setup, run `./loom doctor` to check the selected provider. In ION,
 use `/providers` to manage connections, `/models` to select a model and team
 mode, and `Ctrl+P` to discover commands. Start in another repository or document

@@ -18,7 +18,9 @@ mix loom.build
 ./beam_agent_ion --demo
 ```
 
-The demo does not need provider credentials. Tests use temporary workspaces and
+The demo does not need provider credentials. Run `mix loom.install` if you'd
+rather have `loom` on your PATH than type `./loom` from the checkout; it
+symlinks the executable into `~/.local/bin` (`--bin-dir` to change that). Tests use temporary workspaces and
 fixtures; do not substitute real credentials or invoke paid models to test a
 routine change. Build output and local trial documents do not belong in Git.
 
