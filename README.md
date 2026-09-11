@@ -193,3 +193,8 @@ Read [SECURITY.md](SECURITY.md) before running agents against sensitive workspac
 
 The first milestone is not a larger feature list. It is opening the finished
 app and edited document and thinking: **yes, it actually did the work.**
+
+## License
+
+Loom is available under the [MIT License](LICENSE). Third-party dependencies
+retain their own licenses.
