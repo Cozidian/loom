@@ -36,6 +36,29 @@ approval gates just to update an understanding.
 - Keep the handoff centered on what changed, why and what remains unfinished.
   Prefer the smallest useful experiment over speculative platform expansion.
 
+## Public maintainer workflow
+
+As of 2026-09-11, Loom is public at https://github.com/Cozidian/loom. The owner
+asked for a maintainer mindset and useful GitHub-native workflows going forward.
+This supersedes assumptions that development history is private or disposable;
+it is not blanket permission to publish, merge, change access or rewrite history.
+
+- Work on focused branches. When publication is authorized, use pull requests
+  with intent, linked issues, verification evidence and remaining limitations.
+- Inspect live GitHub checks, reviews and mergeability with `gh`; a local green
+  suite is not proof that hosted CI passed. Never bypass a failing check casually.
+- Use issues and labels for actionable bugs/tasks, milestones for coherent
+  delivery goals, and Projects or Discussions when coordination warrants them.
+  Avoid duplicating every roadmap idea into an issue automatically.
+- Prefer clear PR titles and squash-merge summaries for future history. Do not
+  reword published commits, force-push shared branches or delete release tags
+  without explicit, scoped authorization.
+- Use releases for verified milestones, with changes, upgrade notes and known
+  limits. Route vulnerability details through private reporting, not public issues.
+- Recheck repository rules, dependency updates and security features as the
+  project evolves. Propose protections that fit a solo maintainer; do not require
+  an unavailable second reviewer or silently change permissions/automation.
+
 ## Navigation and checks
 
 - [Operations](docs/operations.md): setup, providers, runtime APIs and commands.
