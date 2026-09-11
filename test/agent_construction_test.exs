@@ -91,6 +91,7 @@ defmodule BeamAgent.AgentConstructionTest do
                data_dir: context.data_dir,
                workspace_root: context.workspace,
                provider: :echo,
+               model_strategy: :auto,
                capabilities: parent_capabilities
              )
 

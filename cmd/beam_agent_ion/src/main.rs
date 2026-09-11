@@ -106,8 +106,11 @@ fn main() -> io::Result<()> {
         let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
         let mut activity_tick = Instant::now();
         loop {
-            if a.busy && activity_tick.elapsed() >= Duration::from_secs(1) {
-                dirty = true;
+            if activity_tick.elapsed() >= Duration::from_secs(1) {
+                dirty = dirty || a.busy;
+                if a.poll_catalog() {
+                    dirty = true;
+                }
                 activity_tick = Instant::now();
             }
             if dirty {

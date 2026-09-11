@@ -105,6 +105,9 @@ defmodule BeamAgent.Runtime do
     with {:ok, goal_id} <- Client.goal_id(client), do: BeamAgent.cancel_verification(goal_id)
   end
 
+  def model_catalog(client), do: Client.model_catalog(client)
+  def refresh_model_catalog(client), do: Client.refresh_model_catalog(client)
+
   def models(client), do: Client.models(client)
   def refresh_models(client, endpoint_id \\ :all), do: Client.refresh_models(client, endpoint_id)
   def permissions(client), do: Client.permissions(client)

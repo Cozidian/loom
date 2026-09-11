@@ -388,7 +388,11 @@ defmodule BeamAgent.AgentConstructor do
       if parent.model_strategy == :local_only, do: :local, else: :provider_allowed
 
     %{
-      preferred_endpoint_id: preferred_endpoint_id(requested),
+      preferred_endpoint_id:
+        if(parent.model_strategy == :manual,
+          do: parent.provider_profile,
+          else: preferred_endpoint_id(requested)
+        ),
       reasoning:
         enum_value(
           requested,

@@ -74,7 +74,13 @@ defmodule BeamAgent.ModelRouter do
   def handle_call({:route, input}, _from, state) do
     {:ok, endpoints} = ModelRegistry.list(state.project_id)
 
-    endpoints = Enum.reject(endpoints, &MapSet.member?(state.excluded_endpoint_ids, &1.id))
+    endpoints =
+      Enum.reject(
+        endpoints,
+        &(MapSet.member?(state.excluded_endpoint_ids, &1.id) or
+            MapSet.member?(state.excluded_endpoint_ids, &1.connection_id))
+      )
+
     input = Map.put_new(input, :project_preferred_endpoint_ids, state.preferred_endpoint_ids)
 
     result =
@@ -156,6 +162,8 @@ defmodule BeamAgent.ModelRouter do
   end
 
   defp choose(endpoints, input) do
+    input = Map.put(input, :registered_connections, Enum.map(endpoints, & &1.connection_id))
+
     classification =
       input.prompt
       |> TaskClassifier.classify(input.workspace_root)
@@ -208,7 +216,10 @@ defmodule BeamAgent.ModelRouter do
 
   defp candidates(endpoints, input, strategy) do
     endpoints
+    |> Enum.filter(& &1.enabled)
     |> Enum.reject(&(&1.health.status == :unavailable))
+    |> Enum.filter(&compatible?(&1, input))
+    |> Enum.filter(&(strategy != :manual or locked_match?(&1, input)))
     |> Enum.filter(fn endpoint ->
       strategy != :local_only or endpoint.claims.locality == :local
     end)
@@ -232,12 +243,32 @@ defmodule BeamAgent.ModelRouter do
     end)
   end
 
-  defp select_manual(candidates, input, classification) do
-    selected =
-      Enum.find(candidates, &(&1.id == input.preferred_endpoint_id)) ||
-        Enum.find(candidates, &(&1.provider == input.preferred_provider))
+  defp locked_match?(endpoint, input) do
+    connection = input[:preferred_connection_id] || input[:preferred_endpoint_id]
+    identity? = endpoint.id == connection or endpoint.connection_id == connection
 
-    selected = selected || eligible_fallback(input)
+    identity? and endpoint.provider == input.preferred_provider and
+      (not Map.has_key?(input, :preferred_model) or endpoint.model == input.preferred_model)
+  end
+
+  defp compatible?(endpoint, input) do
+    capabilities = endpoint.claims.capabilities
+
+    legacy? =
+      endpoint.claims.source == :provider or
+        (endpoint.claims.source == :unknown and input[:strategy] == :manual)
+
+    tools? = Map.get(input, :tools, []) != []
+    limit = endpoint.claims.context_window_tokens
+
+    (not Map.get(endpoint.claims, :model_required, false) or is_binary(endpoint.model)) and
+      (legacy? or :text_generation in capabilities) and
+      (not tools? or legacy? or :tool_use in capabilities) and
+      (not is_integer(limit) or limit >= Map.get(input, :context_tokens, 0))
+  end
+
+  defp select_manual(candidates, input, classification) do
+    selected = Enum.find(candidates, &locked_match?(&1, input))
 
     if selected,
       do:
@@ -246,7 +277,7 @@ defmodule BeamAgent.ModelRouter do
            selected,
            Enum.uniq_by([selected | candidates], & &1.id),
            classification,
-           "manual endpoint override"
+           "locked to the selected connection and model"
          )},
       else: {:error, {:manual_model_unavailable, input.preferred_endpoint_id}}
   end
@@ -305,15 +336,16 @@ defmodule BeamAgent.ModelRouter do
       cond do
         endpoint.id != input.preferred_endpoint_id -> 0
         authoritative_preference?(input) -> 40
-        # Session affinity protects ordinary direct turns from unrelated endpoints in the
-        # project inventory. Competitive implementation markets ignore this router seed and
-        # award from bids below.
-        Map.get(input, :preference_source) == :session_default -> 20
+        # Automatic selection has no implicit affinity to the setup profile.
+        Map.get(input, :preference_source) == :session_default -> 0
         true -> 0
       end
 
     project_preferred =
-      if endpoint.id in Map.get(input, :project_preferred_endpoint_ids, []), do: 20, else: 0
+      if endpoint.id in Map.get(input, :project_preferred_endpoint_ids, []) or
+           endpoint.connection_id in Map.get(input, :project_preferred_endpoint_ids, []),
+         do: 20,
+         else: 0
 
     available = if endpoint.health.status == :available, do: 15, else: 5
 
@@ -329,9 +361,16 @@ defmodule BeamAgent.ModelRouter do
          else: 0
 
     strong =
-      if classification.reasoning == :high and :reasoning in endpoint.claims.capabilities,
-        do: 50,
-        else: 0
+      if (classification.reasoning == :high or
+            classification.task_type in [
+              :implementation,
+              :debugging,
+              :architecture,
+              :verification,
+              :orchestration
+            ]) and :reasoning in endpoint.claims.capabilities,
+         do: 50,
+         else: 0
 
     context_fit =
       case endpoint.claims.context_window_tokens do
@@ -496,9 +535,12 @@ defmodule BeamAgent.ModelRouter do
   end
 
   defp eligible_fallback(%{fallback_endpoint: %ModelEndpoint{} = endpoint} = input) do
-    if fallback_eligible?(endpoint, input),
-      do: endpoint,
-      else: nil
+    registered? = endpoint.connection_id in Map.get(input, :registered_connections, [])
+
+    if not registered? and endpoint.enabled and locked_match?(endpoint, input) and
+         compatible?(endpoint, input) and fallback_eligible?(endpoint, input),
+       do: endpoint,
+       else: nil
   end
 
   defp eligible_fallback(_input), do: nil

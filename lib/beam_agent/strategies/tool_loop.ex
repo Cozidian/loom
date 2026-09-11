@@ -565,7 +565,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
       "turn" => turn,
       "step" => step,
       "provider" => to_string(request.provider),
-      "provider_profile" => request.endpoint_id,
+      "provider_profile" => request.options[:profile] || request.endpoint_id,
+      "endpoint_id" => request.endpoint_id,
       "model" => request.model,
       "stream" => request.stream,
       "timeout" => if(request.timeout == :infinity, do: "infinity", else: request.timeout)
@@ -589,7 +590,8 @@ defmodule BeamAgent.Strategies.ToolLoop do
     requested_endpoint_id =
       requirements[:preferred_endpoint_id] || requirements["preferred_endpoint_id"]
 
-    preferred_endpoint_id = requested_endpoint_id || context.provider_profile
+    preferred_endpoint_id =
+      requested_endpoint_id || context.provider_profile || to_string(context.provider)
 
     preference_source = preference_source(context, requested_endpoint_id)
     planning = planning_decision(context)
@@ -600,6 +602,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
         workspace_root: context.workspace_root,
         strategy: context.model_strategy,
         preferred_endpoint_id: preferred_endpoint_id,
+        preferred_connection_id:
+          context.provider_options[:profile] || context.provider_profile ||
+            to_string(context.provider),
+        preferred_model: context.provider_options[:model],
         preference_source: preference_source,
         preferred_provider: context.provider,
         job_role: context.agent_spec.role,
@@ -624,7 +630,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
              purpose: :work_contract,
              award_count: 1,
              pinned_endpoint_ids:
-               if(preference_source in [:manual, :work_assignment],
+               if(preference_source == :work_assignment,
                  do: [preferred_endpoint_id],
                  else: []
                )
@@ -699,13 +705,10 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp provider_module(%{endpoint: endpoint}, _context), do: endpoint.provider_module
   defp provider_options(%{endpoint: nil}, context), do: context.provider_options
 
-  defp provider_options(
-         %{endpoint: %{id: endpoint_id, provider: provider}},
-         %{model_strategy: :manual, provider_profile: profile, provider: selected_provider} =
-           context
-       )
-       when provider == selected_provider and (endpoint_id == profile or is_nil(profile)),
-       do: context.provider_options
+  defp provider_options(%{endpoint: endpoint}, %{model_strategy: :manual} = context) do
+    # Keep session transport hooks, but the leased endpoint owns model and account.
+    Keyword.merge(context.provider_options, ModelEndpoint.invocation_options(endpoint))
+  end
 
   defp provider_options(%{endpoint: endpoint}, _context),
     do: ModelEndpoint.invocation_options(endpoint)
@@ -750,6 +753,7 @@ defmodule BeamAgent.Strategies.ToolLoop do
     {:ok, endpoint} =
       ModelEndpoint.new(%{
         id: context.provider_profile || to_string(context.provider),
+        connection_id: context.provider_options[:profile] || context.provider_profile,
         provider: context.provider,
         provider_module: context.provider_module,
         model: context.provider_options[:model],

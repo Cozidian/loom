@@ -582,6 +582,7 @@ defmodule BeamAgent.CLI do
           model_strategy: Config.model_strategy_atom(config["model_strategy"]),
           team_mode: Config.team_mode_atom(config["team_mode"]),
           approval_handler: self(),
+          discover_models: true,
           model_endpoints: config["model_endpoints"] || []
         ]
     )
@@ -609,6 +610,7 @@ defmodule BeamAgent.CLI do
               model_strategy: Config.model_strategy_atom(config["model_strategy"]),
               team_mode: Config.team_mode_atom(config["team_mode"]),
               approval_handler: self(),
+              discover_models: true,
               model_endpoints: config["model_endpoints"] || []
             ]
         )

@@ -12,6 +12,7 @@ defmodule BeamAgent.ModelEndpoint do
   @enforce_keys [:id, :provider, :provider_module]
   defstruct [
     :id,
+    :connection_id,
     :provider,
     :provider_module,
     :model,
@@ -20,7 +21,8 @@ defmodule BeamAgent.ModelEndpoint do
     :auth,
     :claims,
     :measurements,
-    :health
+    :health,
+    enabled: true
   ]
 
   @type t :: %__MODULE__{}
@@ -33,12 +35,15 @@ defmodule BeamAgent.ModelEndpoint do
     provider = value(spec, :provider)
 
     with :ok <- validate_id(id),
+         :ok <- validate_enabled(Map.get(spec, :enabled, Map.get(spec, "enabled", true))),
          {:ok, provider, module} <- provider_module(provider, value(spec, :provider_module)) do
       configuration = configuration(module, provider)
 
       {:ok,
        %__MODULE__{
          id: id,
+         connection_id: value(spec, :connection_id) || id,
+         enabled: Map.get(spec, :enabled, Map.get(spec, "enabled", true)),
          provider: provider,
          provider_module: module,
          model: value(spec, :model) || Map.get(configuration, :default_model),
@@ -61,7 +66,7 @@ defmodule BeamAgent.ModelEndpoint do
       api_key_env: credential_environment(endpoint.credential),
       credential_ref: credential_reference(endpoint.credential),
       auth: endpoint.auth,
-      profile: endpoint.id
+      profile: endpoint.connection_id || endpoint.id
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end
@@ -71,7 +76,16 @@ defmodule BeamAgent.ModelEndpoint do
   end
 
   def same_configuration?(%__MODULE__{} = left, %__MODULE__{} = right) do
-    Map.take(left, [:provider, :provider_module, :model, :transport, :credential, :auth, :claims]) ==
+    Map.take(left, [
+      :provider,
+      :provider_module,
+      :model,
+      :transport,
+      :credential,
+      :auth,
+      :claims,
+      :enabled
+    ]) ==
       Map.take(right, [
         :provider,
         :provider_module,
@@ -79,7 +93,8 @@ defmodule BeamAgent.ModelEndpoint do
         :transport,
         :credential,
         :auth,
-        :claims
+        :claims,
+        :enabled
       ])
   end
 
@@ -104,6 +119,7 @@ defmodule BeamAgent.ModelEndpoint do
   defp claims(configuration, overrides) do
     defaults = %{
       capabilities: Map.get(configuration, :capabilities, [:text_generation]),
+      model_required: Map.get(configuration, :model_required, false),
       modalities: Map.get(configuration, :modalities, [:text]),
       context_window_tokens: Map.get(configuration, :context_window_tokens),
       cost_hint: Map.get(configuration, :cost_hint, :unknown),
@@ -147,6 +163,9 @@ defmodule BeamAgent.ModelEndpoint do
   defp initial_health do
     %{status: :unknown, checked_at: nil}
   end
+
+  defp validate_enabled(value) when is_boolean(value), do: :ok
+  defp validate_enabled(_), do: {:error, :invalid_endpoint_enabled}
 
   defp validate_id(id) when is_binary(id) do
     if Regex.match?(~r/\A[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\z/, id),

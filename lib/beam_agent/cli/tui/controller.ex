@@ -183,9 +183,19 @@ defmodule BeamAgent.CLI.TUI.Controller do
         Task.start(fn ->
           result =
             case request["action"] do
-              "list" -> BeamAgent.CLI.ProviderManager.snapshot(state)
-              "catalog" -> BeamAgent.CLI.ProviderManager.catalog(state, request["profile"])
-              _ -> BeamAgent.CLI.ProviderManager.prepare(state, request)
+              "list" ->
+                BeamAgent.CLI.ProviderManager.snapshot(state)
+
+              "catalog" ->
+                BeamAgent.CLI.ProviderManager.catalog(state, request["profile"])
+
+              "refresh_catalog" ->
+                with :ok <- Runtime.refresh_model_catalog(state.runtime),
+                     :ok <- BeamAgent.ModelRegistry.await_catalog(state.project_id),
+                     do: BeamAgent.CLI.ProviderManager.catalog(state, nil)
+
+              _ ->
+                BeamAgent.CLI.ProviderManager.prepare(state, request)
             end
 
           send(owner, {:settings_result, ref, result})
@@ -226,7 +236,7 @@ defmodule BeamAgent.CLI.TUI.Controller do
         notify(state, {:provider_settings, payload})
         {:noreply, state}
 
-      {"catalog", {:ok, payload}} ->
+      {action, {:ok, payload}} when action in ["catalog", "refresh_catalog"] ->
         notify(state, {:model_catalog, payload})
         {:noreply, state}
 
@@ -240,9 +250,16 @@ defmodule BeamAgent.CLI.TUI.Controller do
               {:settings_applied, Map.take(config, ~w(profile model model_strategy team_mode))}
             )
 
-            case BeamAgent.CLI.ProviderManager.snapshot(state) do
-              {:ok, payload} -> notify(state, {:provider_settings, payload})
-              {:error, reason} -> notify(state, {:settings_failed, format_error(reason)})
+            if task.action in ["lock", "automatic"] do
+              case BeamAgent.CLI.ProviderManager.catalog(state, nil) do
+                {:ok, payload} -> notify(state, {:model_catalog, payload})
+                {:error, reason} -> notify(state, {:settings_failed, format_error(reason)})
+              end
+            else
+              case BeamAgent.CLI.ProviderManager.snapshot(state) do
+                {:ok, payload} -> notify(state, {:provider_settings, payload})
+                {:error, reason} -> notify(state, {:settings_failed, format_error(reason)})
+              end
             end
 
             {:noreply, state}
@@ -896,6 +913,12 @@ defmodule BeamAgent.CLI.TUI.Controller do
           session_settings: model_session_settings(state)
         }
 
+        payload =
+          case BeamAgent.CLI.ProviderManager.catalog(state, nil) do
+            {:ok, catalog} -> Map.merge(payload, catalog)
+            _ -> payload
+          end
+
         notify(state, {:models, payload})
 
       {:error, reason} ->
@@ -906,6 +929,8 @@ defmodule BeamAgent.CLI.TUI.Controller do
   end
 
   defp run_command({:models, "refresh"}, state) do
+    :ok = Runtime.refresh_model_catalog(state.runtime)
+
     case Runtime.refresh_models(state.runtime) do
       {:ok, endpoint_ids} ->
         notify(
@@ -1255,14 +1280,6 @@ defmodule BeamAgent.CLI.TUI.Controller do
     state
   end
 
-  defp latest_provider_market(goal_id) do
-    case BeamAgent.provider_market(goal_id) do
-      {:ok, market} -> market
-      :not_found -> nil
-      {:error, _reason} -> nil
-    end
-  end
-
   defp provider_picker(state) do
     with {:ok, config} <- Config.load(state.config_path) do
       chatgpt_available? = chatgpt_account?(state)
@@ -1549,26 +1566,6 @@ defmodule BeamAgent.CLI.TUI.Controller do
     }
   end
 
-  defp model_session_settings(state) do
-    token_budget =
-      case Runtime.status(state.runtime) do
-        {:ok, status} -> status.context_stats.window_tokens
-        {:error, _reason} -> nil
-      end
-
-    mcp_server_count =
-      case Runtime.mcp_servers(state.runtime) do
-        {:ok, servers} -> length(servers)
-        {:error, _reason} -> nil
-      end
-
-    %{
-      approval_mode: to_string(state.approval_policy),
-      token_budget: token_budget,
-      mcp_server_count: mcp_server_count
-    }
-  end
-
   defp session_status(%{session_id: session_id}, %{session_id: session_id}), do: "current"
 
   defp session_status(%{session_id: session_id}, _state) do
@@ -1657,5 +1654,33 @@ defmodule BeamAgent.CLI.TUI.Controller do
       end
 
     String.slice(suffix, 0, 8)
+  end
+
+  defp model_session_settings(state) do
+    token_budget =
+      case Runtime.status(state.runtime) do
+        {:ok, status} -> status.context_stats.window_tokens
+        {:error, _reason} -> nil
+      end
+
+    mcp_server_count =
+      case Runtime.mcp_servers(state.runtime) do
+        {:ok, servers} -> length(servers)
+        {:error, _reason} -> nil
+      end
+
+    %{
+      approval_mode: to_string(state.approval_policy),
+      token_budget: token_budget,
+      mcp_server_count: mcp_server_count
+    }
+  end
+
+  defp latest_provider_market(goal_id) do
+    case BeamAgent.provider_market(goal_id) do
+      {:ok, market} -> market
+      :not_found -> nil
+      {:error, _reason} -> nil
+    end
   end
 end

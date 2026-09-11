@@ -274,7 +274,7 @@ defmodule BeamAgent.TaskTeamTest do
           %{
             id: "single",
             provider: :task_team_test,
-            options: [model: "capable"],
+            model: "capable",
             claims: %{
               capabilities: [:text_generation, :tool_use, :reasoning],
               locality: :remote,

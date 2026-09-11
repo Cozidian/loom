@@ -79,6 +79,7 @@ defmodule BeamAgent.Providers.OpenAI do
 
   defp provider_options(options) do
     options
+    |> Keyword.put(:auth, :bearer)
     |> Keyword.put_new(:base_url, configuration().default_base_url)
     |> Keyword.put_new(:default_api_key_env, configuration().default_api_key_env)
   end

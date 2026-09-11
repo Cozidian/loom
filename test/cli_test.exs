@@ -366,20 +366,7 @@ defmodule BeamAgent.CLITest do
     refute output =~ "api_key"
   end
 
-  test "cloud providers require a model and store only an API-key environment name", context do
-    {status, missing_model} =
-      run_stderr([
-        "init",
-        "--config",
-        context.config_path,
-        "--provider",
-        "openai",
-        "--non-interactive"
-      ])
-
-    assert status == 1
-    assert missing_model =~ "invalid configuration value for model"
-
+  test "cloud providers store only an API-key environment name", context do
     {status, output} =
       run_stdout([
         "init",

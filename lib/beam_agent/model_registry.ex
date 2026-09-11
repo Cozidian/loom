@@ -43,8 +43,23 @@ defmodule BeamAgent.ModelRegistry do
     end
   end
 
-  def preflight(project_id, endpoint_id \\ :all) do
+  def catalog(project_id) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id), do: GenServer.call(pid, :catalog)
+  end
+
+  def refresh_catalog(project_id) do
     with {:ok, pid} <- Names.pid(:model_registry, project_id),
+         do: GenServer.call(pid, :refresh_catalog)
+  end
+
+  def await_catalog(project_id) do
+    with {:ok, pid} <- Names.pid(:model_registry, project_id),
+         do: GenServer.call(pid, :await_catalog, 30_000)
+  end
+
+  def preflight(project_id, endpoint_id \\ :all) do
+    with :ok <- await_catalog(project_id),
+         {:ok, pid} <- Names.pid(:model_registry, project_id),
          {:ok, supervisor} <- Names.pid(:model_health_supervisor, project_id),
          {:ok, endpoints} <- GenServer.call(pid, :list),
          {:ok, targets} <- preflight_targets(endpoints, endpoint_id) do
@@ -58,23 +73,65 @@ defmodule BeamAgent.ModelRegistry do
     state = %{
       project_id: Keyword.fetch!(opts, :project_id),
       endpoints: %{},
-      checks: %{}
+      checks: %{},
+      catalogs: %{},
+      catalog_task: nil,
+      catalog_waiters: [],
+      discover_models: Keyword.get(opts, :discover_models, false),
+      discovery: Keyword.get(opts, :model_discovery, BeamAgent.ModelCatalog),
+      discovery_options: Keyword.get(opts, :model_discovery_options, []),
+      catalog_dirty: false,
+      catalog_timer: nil
     }
 
     case normalize_many(Keyword.get(opts, :model_endpoints, [])) do
-      {:ok, endpoints} -> {:ok, %{state | endpoints: endpoints}}
-      {:error, reason} -> {:stop, reason}
+      {:ok, endpoints} ->
+        if state.discover_models, do: send(self(), :refresh_catalog)
+        {:ok, %{state | endpoints: endpoints}}
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 
   @impl true
+  def handle_call(:catalog, _from, state) do
+    sources =
+      Enum.map(state.endpoints, fn {id, endpoint} ->
+        entry = Map.get(state.catalogs, id, %{})
+
+        %{
+          profile: id,
+          enabled: endpoint.enabled,
+          status: entry[:status] || :configured,
+          checked_at: entry[:checked_at],
+          message: entry[:message],
+          model_count: length(entry[:models] || [])
+        }
+      end)
+      |> Enum.sort_by(& &1.profile)
+
+    {:reply,
+     {:ok, %{models: inventory(state), sources: sources, refreshing: state.catalog_task != nil}},
+     state}
+  end
+
+  def handle_call(:refresh_catalog, _from, state),
+    do: {:reply, :ok, start_catalog(%{state | discover_models: true})}
+
+  def handle_call(:await_catalog, from, state) do
+    if state.catalog_task,
+      do: {:noreply, %{state | catalog_waiters: [from | state.catalog_waiters]}},
+      else: {:reply, :ok, state}
+  end
+
   def handle_call(:list, _from, state) do
-    endpoints = state.endpoints |> Map.values() |> Enum.sort_by(& &1.id)
+    endpoints = inventory(state)
     {:reply, {:ok, endpoints}, state}
   end
 
   def handle_call({:fetch, endpoint_id}, _from, state) do
-    case Map.fetch(state.endpoints, endpoint_id) do
+    case Map.fetch(all_endpoints(state), endpoint_id) do
       {:ok, endpoint} -> {:reply, {:ok, endpoint}, state}
       :error -> {:reply, {:error, {:unknown_model_endpoint, endpoint_id}}, state}
     end
@@ -84,7 +141,7 @@ defmodule BeamAgent.ModelRegistry do
     case ModelEndpoint.new(spec) do
       {:ok, endpoint} ->
         endpoint = preserve_runtime_state(state.endpoints[endpoint.id], endpoint)
-        {:reply, :ok, put_in(state.endpoints[endpoint.id], endpoint)}
+        {:reply, :ok, configured(put_in(state.endpoints[endpoint.id], endpoint))}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -93,7 +150,7 @@ defmodule BeamAgent.ModelRegistry do
 
   def handle_call({:replace, specs}, _from, state) do
     case normalize_many(specs, state.endpoints) do
-      {:ok, endpoints} -> {:reply, :ok, %{state | endpoints: endpoints}}
+      {:ok, endpoints} -> {:reply, :ok, configured(%{state | endpoints: endpoints})}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -102,7 +159,7 @@ defmodule BeamAgent.ModelRegistry do
     case normalize_many(specs, state.endpoints) do
       {:ok, updated} ->
         endpoints = state.endpoints |> Map.drop(removed_ids) |> Map.merge(updated)
-        {:reply, :ok, %{state | endpoints: endpoints}}
+        {:reply, :ok, configured(%{state | endpoints: endpoints})}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -110,7 +167,7 @@ defmodule BeamAgent.ModelRegistry do
   end
 
   def handle_call({:refresh_health, endpoint_id}, _from, state) do
-    with {:ok, ids} <- refresh_ids(state.endpoints, endpoint_id),
+    with {:ok, ids} <- refresh_ids(all_endpoints(state), endpoint_id),
          {:ok, supervisor} <- Names.pid(:model_health_supervisor, state.project_id) do
       state = Enum.reduce(ids, state, &start_health_check(&2, &1, supervisor))
       {:reply, {:ok, ids}, state}
@@ -121,8 +178,8 @@ defmodule BeamAgent.ModelRegistry do
 
   def handle_call({:record_health_results, results}, _from, state) do
     state =
-      Enum.reduce(results, state, fn %{endpoint_id: endpoint_id, result: result}, state ->
-        put_health(state, endpoint_id, result)
+      Enum.reduce(results, state, fn %{endpoint: endpoint, result: result}, state ->
+        put_checked_health(state, endpoint, result)
       end)
 
     public =
@@ -138,14 +195,39 @@ defmodule BeamAgent.ModelRegistry do
   end
 
   @impl true
+  def handle_info(:refresh_catalog, state), do: {:noreply, start_catalog(state)}
+
+  def handle_info({ref, results}, %{catalog_task: %{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+
+    state =
+      Enum.reduce(results, state, fn {original, result}, acc ->
+        case acc.endpoints[original.id] do
+          nil ->
+            acc
+
+          current ->
+            if same_connection?(original, current),
+              do: record_catalog(acc, current, result),
+              else: acc
+        end
+      end)
+
+    {:noreply, finish_catalog(state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{catalog_task: %{ref: ref}} = state) do
+    {:noreply, finish_catalog(state)}
+  end
+
   def handle_info({reference, result}, state) when is_reference(reference) do
     case Map.pop(state.checks, reference) do
       {nil, _checks} ->
         {:noreply, state}
 
-      {endpoint_id, checks} ->
+      {endpoint, checks} ->
         Process.demonitor(reference, [:flush])
-        {:noreply, state |> Map.put(:checks, checks) |> put_health(endpoint_id, result)}
+        {:noreply, state |> Map.put(:checks, checks) |> put_checked_health(endpoint, result)}
     end
   end
 
@@ -154,14 +236,14 @@ defmodule BeamAgent.ModelRegistry do
       {nil, _checks} ->
         {:noreply, state}
 
-      {endpoint_id, checks} ->
+      {endpoint, checks} ->
         result = {:error, {:healthcheck_exit, health_reason(reason)}}
-        {:noreply, state |> Map.put(:checks, checks) |> put_health(endpoint_id, result)}
+        {:noreply, state |> Map.put(:checks, checks) |> put_checked_health(endpoint, result)}
     end
   end
 
   defp start_health_check(state, endpoint_id, supervisor) do
-    endpoint = Map.fetch!(state.endpoints, endpoint_id)
+    endpoint = Map.fetch!(all_endpoints(state), endpoint_id)
 
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
@@ -169,25 +251,22 @@ defmodule BeamAgent.ModelRegistry do
       end)
 
     state
-    |> put_in([:checks, task.ref], endpoint_id)
-    |> put_in([:endpoints, endpoint_id, Access.key(:health)], %{
-      status: :checking,
-      checked_at: nil
-    })
+    |> put_in([:checks, task.ref], endpoint)
+    |> update_endpoint_health(endpoint_id, %{status: :checking, checked_at: nil})
   end
 
   defp put_health(state, endpoint_id, result) do
-    case Map.fetch(state.endpoints, endpoint_id) do
+    case Map.fetch(all_endpoints(state), endpoint_id) do
       :error ->
         state
 
-      {:ok, endpoint} ->
+      {:ok, _endpoint} ->
         health = %{
           status: health_status(result),
           checked_at: DateTime.utc_now() |> DateTime.to_iso8601()
         }
 
-        put_in(state.endpoints[endpoint_id], %{endpoint | health: health})
+        update_endpoint_health(state, endpoint_id, health)
     end
   end
 
@@ -236,12 +315,12 @@ defmodule BeamAgent.ModelRegistry do
           _other -> {:error, :routing_preflight_failure}
         end
 
-      %{endpoint_id: endpoint.id, result: health_result}
+      %{endpoint_id: endpoint.id, endpoint: endpoint, result: health_result}
     end)
   end
 
   defp preflight_targets(endpoints, :all) do
-    {:ok, Enum.filter(endpoints, &(&1.health.status in [:unknown, :checking]))}
+    {:ok, Enum.filter(endpoints, &(&1.enabled and &1.health.status in [:unknown, :checking]))}
   end
 
   defp preflight_targets(endpoints, endpoint_id) when is_binary(endpoint_id) do
@@ -305,5 +384,155 @@ defmodule BeamAgent.ModelRegistry do
     else
       endpoint
     end
+  end
+
+  defp configured(state) do
+    catalogs =
+      Map.filter(state.catalogs, fn {id, entry} ->
+        current = state.endpoints[id]
+        current && same_connection?(current, entry.connection)
+      end)
+
+    if state.discover_models, do: send(self(), :refresh_catalog)
+    %{state | catalogs: catalogs}
+  end
+
+  defp start_catalog(%{catalog_task: task} = state) when not is_nil(task),
+    do: %{state | catalog_dirty: true}
+
+  defp start_catalog(state) do
+    if state.catalog_timer, do: Process.cancel_timer(state.catalog_timer)
+    {:ok, supervisor} = Names.pid(:model_health_supervisor, state.project_id)
+    connections = state.endpoints |> Map.values() |> Enum.filter(& &1.enabled)
+    discovery = state.discovery
+    options = state.discovery_options
+
+    task =
+      Task.Supervisor.async_nolink(supervisor, fn ->
+        results =
+          Task.Supervisor.async_stream_nolink(
+            supervisor,
+            connections,
+            &discovery.discover(&1, options),
+            max_concurrency: 8,
+            ordered: true,
+            timeout: 15_000,
+            on_timeout: :kill_task
+          )
+          |> Enum.to_list()
+
+        Enum.zip_with(connections, results, fn endpoint, result ->
+          {endpoint,
+           case result do
+             {:ok, value} -> value
+             _ -> {:error, :catalogue_timeout}
+           end}
+        end)
+      end)
+
+    %{state | catalog_task: task, catalog_timer: nil}
+  end
+
+  defp finish_catalog(state) do
+    if state.catalog_dirty, do: send(self(), :refresh_catalog)
+    Enum.each(state.catalog_waiters, &GenServer.reply(&1, :ok))
+    timer = if state.discover_models, do: Process.send_after(self(), :refresh_catalog, 300_000)
+    %{state | catalog_task: nil, catalog_waiters: [], catalog_timer: timer, catalog_dirty: false}
+  end
+
+  defp record_catalog(state, connection, result) do
+    previous = state.catalogs[connection.id] || %{}
+
+    base = %{
+      connection: connection,
+      checked_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      message: nil
+    }
+
+    entry =
+      case result do
+        {:ok, rows} when is_list(rows) ->
+          existing = Map.new(previous[:models] || [], &{&1.id, &1})
+
+          models =
+            BeamAgent.ModelCatalog.endpoints(connection, rows)
+            |> Enum.map(&preserve_catalog_state(existing[&1.id], &1))
+
+          Map.merge(base, %{status: :live, models: models})
+
+        {:manual, _} ->
+          Map.merge(base, %{status: :manual, models: nil})
+
+        _ ->
+          Map.merge(base, %{
+            status: if(previous[:models], do: :stale, else: :unavailable),
+            models: previous[:models],
+            message: "Discovery unavailable; refresh or check connection"
+          })
+      end
+
+    put_in(state.catalogs[connection.id], entry)
+  end
+
+  defp inventory(state) do
+    Enum.flat_map(state.endpoints, fn {id, endpoint} ->
+      case state.catalogs[id] do
+        %{models: models} when is_list(models) ->
+          models
+
+        %{status: :unavailable} ->
+          [%{endpoint | health: %{status: :unavailable, checked_at: nil}}]
+
+        _ ->
+          [endpoint]
+      end
+    end)
+    |> Enum.sort_by(&{&1.connection_id, &1.model || ""})
+  end
+
+  defp all_endpoints(state),
+    do: Map.merge(state.endpoints, Map.new(inventory(state), &{&1.id, &1}))
+
+  defp update_endpoint_health(state, id, health) do
+    case state.endpoints[id] do
+      nil ->
+        catalogs =
+          Map.new(state.catalogs, fn {key, entry} ->
+            models =
+              if is_list(entry[:models]),
+                do:
+                  Enum.map(entry.models, fn e ->
+                    if e.id == id, do: %{e | health: health}, else: e
+                  end)
+
+            {key, Map.put(entry, :models, models)}
+          end)
+
+        %{state | catalogs: catalogs}
+
+      endpoint ->
+        put_in(state.endpoints[id], %{endpoint | health: health})
+    end
+  end
+
+  defp same_connection?(a, b) do
+    fields = [:provider, :provider_module, :transport, :credential, :auth, :enabled]
+    Map.take(a, fields) == Map.take(b, fields)
+  end
+
+  defp preserve_catalog_state(existing, endpoint) do
+    preserved = preserve_runtime_state(existing, endpoint)
+
+    if preserved.health.status == :unavailable,
+      do: %{preserved | health: %{status: :unknown, checked_at: nil}},
+      else: preserved
+  end
+
+  defp put_checked_health(state, original, result) do
+    current = all_endpoints(state)[original.id]
+
+    if current && ModelEndpoint.same_configuration?(current, original),
+      do: put_health(state, original.id, result),
+      else: state
   end
 end

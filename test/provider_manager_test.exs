@@ -325,6 +325,86 @@ defmodule BeamAgent.ProviderManagerTest do
     refute_receive {:beam_agent_tui, {:session_changed, _, _}}
   end
 
+  test "locking is session-scoped, inherited despite child overrides, and reversible", state do
+    before = File.read!(state.config_path)
+
+    assert {:ok, config} =
+             ProviderManager.mutate(
+               state,
+               request(state, %{
+                 "action" => "lock",
+                 "profile" => "other",
+                 "model" => "locked-model"
+               })
+             )
+
+    assert File.read!(state.config_path) == before
+    assert config["model_strategy"] == "manual"
+
+    assert {:ok, child} =
+             BeamAgent.spawn_subagent(state.session_id,
+               provider: :echo,
+               provider_profile: "echo",
+               model_strategy: :auto,
+               provider_options: [model: "escape"],
+               agent_proposal: %{
+                 goal: "Explain a small detail",
+                 model_requirements: %{preferred_endpoint_id: "echo"}
+               }
+             )
+
+    {:ok, context} = Agent.construction_context(child)
+    assert context.model_strategy == :manual
+    assert context.provider_profile == "other"
+    assert context.provider_options[:model] == "locked-model"
+    assert context.agent_spec.model_requirements.preferred_endpoint_id == "other"
+    assert {:ok, _} = BeamAgent.ask(child, "Explain a small detail")
+    :ok = BeamAgent.stop_session(child)
+    state = %{state | config: config}
+
+    assert {:ok, released} =
+             ProviderManager.mutate(state, request(state, %{"action" => "automatic"}))
+
+    assert released["model_strategy"] == "auto"
+    assert File.read!(state.config_path) == before
+  end
+
+  test "adding a provider requires no favorite model and active automatic providers can be disabled",
+       state do
+    fields = %{
+      "provider" => "xai",
+      "base_url" => "https://example.test/v1",
+      "api_key_env" => "LOOM_UNUSED_TEST_KEY",
+      "auth_mode" => "environment"
+    }
+
+    assert {:ok, _} =
+             ProviderManager.mutate(
+               state,
+               request(state, %{"action" => "save", "profile" => "cloud", "fields" => fields})
+             )
+
+    {:ok, stored} = Config.load(state.config_path)
+    assert stored["profiles"]["cloud"]["model"] == nil
+
+    assert {:ok, config} =
+             ProviderManager.mutate(
+               state,
+               request(state, %{"action" => "toggle", "profile" => "echo"})
+             )
+
+    assert {:ok, %{enabled: false}} = ModelRegistry.fetch(state.project_id, "echo")
+    state = %{state | config: config}
+
+    assert {:ok, _} =
+             ProviderManager.mutate(
+               state,
+               request(state, %{"action" => "toggle", "profile" => "echo"})
+             )
+
+    assert {:ok, %{enabled: true}} = ModelRegistry.fetch(state.project_id, "echo")
+  end
+
   defp eventually(fun, remaining \\ 100)
   defp eventually(_, 0), do: false
 

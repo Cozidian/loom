@@ -4,7 +4,15 @@ defmodule BeamAgent.CLI.Config do
   alias BeamAgent.Providers
 
   @version 10
-  @profile_keys ["provider", "model", "base_url", "api_key_env", "credential_ref", "auth"]
+  @profile_keys [
+    "provider",
+    "model",
+    "base_url",
+    "api_key_env",
+    "credential_ref",
+    "auth",
+    "enabled"
+  ]
   @global_keys [
     "approval_policy",
     "model_strategy",
@@ -370,9 +378,12 @@ defmodule BeamAgent.CLI.Config do
 
   defp validate_profiles(_profiles), do: {:error, {:invalid_config_value, "profiles"}}
 
+  defp validate_enabled(value) when value in [nil, true, false], do: :ok
+  defp validate_enabled(_), do: {:error, {:invalid_config_value, "enabled"}}
+
   defp validate_profile(profile) when is_map(profile) do
     with {:ok, provider} <- Providers.fetch(profile["provider"]),
-         :ok <- require_when(provider[:model_required], profile["model"], "model"),
+         :ok <- validate_enabled(profile["enabled"]),
          :ok <- require_when(provider[:default_base_url] != nil, profile["base_url"], "base_url"),
          :ok <- require_credential_when(provider[:default_api_key_env] != nil, profile),
          :ok <- validate_credential_ref(profile["credential_ref"]),
@@ -562,6 +573,7 @@ defmodule BeamAgent.CLI.Config do
 
     %{
       id: name,
+      enabled: Map.get(profile, "enabled", true),
       provider: provider.id,
       provider_module: provider.module,
       model: profile["model"],
