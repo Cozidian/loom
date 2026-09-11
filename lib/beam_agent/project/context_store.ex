@@ -61,6 +61,10 @@ defmodule BeamAgent.Project.ContextStore do
     path = Path.join([data_dir, "projects", project_id, "context_artifacts.jsonl"])
 
     with :ok <- File.mkdir_p(Path.dirname(path)), {:ok, artifacts} <- load(path) do
+      # A prior process may have left a long append-only history behind (every
+      # put ever made, not just the current versions); shrink it back down to
+      # what `artifacts` already represents before it grows further.
+      _ = compact(path, artifacts)
       {:ok, %{project_id: project_id, path: path, artifacts: artifacts}}
     end
   end
@@ -68,9 +72,13 @@ defmodule BeamAgent.Project.ContextStore do
   @impl true
   def handle_call({:put, attributes}, _from, state) do
     with {:ok, artifact} <- normalize(attributes),
-         :ok <- accept_version(state.artifacts[artifact.id], artifact),
-         :ok <- append(state.path, %{"type" => "artifact_put", "artifact" => stringify(artifact)}) do
-      {:reply, {:ok, artifact}, put_in(state, [:artifacts, artifact.id], artifact)}
+         :ok <- accept_version(state.artifacts[artifact.id], artifact) do
+      artifacts = Map.put(state.artifacts, artifact.id, artifact)
+
+      case compact(state.path, artifacts) do
+        :ok -> {:reply, {:ok, artifact}, %{state | artifacts: artifacts}}
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -97,9 +105,7 @@ defmodule BeamAgent.Project.ContextStore do
          artifacts}
       end)
 
-    entry = %{"type" => "artifacts_invalidated", "selector" => stringify(selector)}
-
-    case append(state.path, entry) do
+    case compact(state.path, artifacts) do
       :ok -> {:reply, {:ok, matched}, %{state | artifacts: artifacts}}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -223,9 +229,27 @@ defmodule BeamAgent.Project.ContextStore do
     end
   end
 
-  defp append(path, entry) do
+  # Rewrites the file to hold exactly the current artifacts, one per line, so
+  # it stays proportional to distinct artifacts instead of every put ever
+  # made. A temp-file rename keeps a crash mid-write from truncating history.
+  defp compact(path, artifacts) do
     with :ok <- File.mkdir_p(Path.dirname(path)) do
-      File.write(path, [JSON.encode!(entry), "\n"], [:append, :binary])
+      body =
+        artifacts
+        |> Map.values()
+        |> Enum.map(
+          &[JSON.encode!(%{"type" => "artifact_put", "artifact" => stringify(&1)}), "\n"]
+        )
+
+      temporary = path <> ".#{System.unique_integer([:positive])}.tmp"
+
+      with :ok <- File.write(temporary, body, [:binary]) do
+        File.rename(temporary, path)
+      else
+        error ->
+          File.rm(temporary)
+          error
+      end
     end
   end
 
