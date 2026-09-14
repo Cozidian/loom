@@ -51,6 +51,7 @@ defmodule BeamAgent.CodexAppServer.Conversation do
           {:error, reason} ->
             # Also close a client opened during this call, before it entered state.
             close(conversation)
+            BeamAgent.Diagnostics.progress(%{source: :codex_conversation, phase: :failed})
             {:reply, {:error, reason}, %{state | conversation: nil}}
         end
 

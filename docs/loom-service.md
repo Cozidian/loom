@@ -101,3 +101,66 @@ node scripts/service_smoke.cjs
 The smoke uses its own temporary config, echo provider, service job and discovery
 directory. It exercises launchd, Chrome login renewal, TUI detach and service restart
 without installing a login item or changing personal credentials.
+
+## Runtime incident captures
+
+The service enables a supervised diagnostics recorder at startup. It samples
+independently of session GenServer calls, so a blocked conversation does not
+need to answer a request before it can be observed. The recorder does not
+cancel work; Codex's resource limits retain that responsibility.
+
+```sh
+./loom diagnostics status
+./loom diagnostics capture
+./loom diagnostics stop
+./loom diagnostics start
+```
+
+These commands contact the running service through its authenticated loopback
+API. `capture` prints the saved JSON path and size; it also works while automatic
+recording is paused. `stop` pauses automatic sampling without removing captures.
+Starting the service again enables recording. Commands do not start a service
+or resume sessions implicitly.
+
+Reports go into `diagnostics/` under the service directory (normally
+`~/.local/share/loom/service`, or `LOOM_SERVICE_DIR`). The directory is mode 0700
+and captures are mode 0600. Each capture contains a trigger and recent samples:
+
+- BEAM memory totals, including process, binary and ETS allocation; process heap
+  sizes are in words, with `word_size_bytes` supplied for conversion.
+- Up to 48 processes selected by memory, mailbox length and change in reductions,
+  with session/actor identities where registered and up to 12 stack frames.
+- Up to 64 provider progress records: turn age, received bytes/messages, retained
+  text bytes, prefix mode, fixed channel counters and owned subprocess IDs.
+- OS RSS and `ps` lifetime-average CPU percentages for BEAM and sampled Codex
+  subprocesses. An empty OS list means metrics were unavailable, not zero usage.
+
+Defaults are one sample every five seconds, at most 24 samples and 1.5 MB of
+encoded history in memory, five retained JSON reports and 2 MiB per report.
+Sampling scans at most 4,096 processes per pass, rotating through larger process
+sets and marking incomplete coverage. A supervised sampling task has a two-second
+watchdog; failures appear in `diagnostics status`. Reductions are an execution
+counter, not CPU time; the first observation has no reduction delta.
+
+Automatic capture triggers on a process reaching 256 MiB, a mailbox reaching
+10,000 messages, BEAM allocation growing by 64 MiB between samples, or BEAM
+allocation/observed OS RSS reaching 1 GiB. Automatic writes are limited to once
+per minute. Codex duration/byte/message/line limits additionally save a small
+pre-cleanup process snapshot into one fixed pending slot. Concurrent failures
+coalesce to the latest snapshot; it is written on an eligible sampling pass even
+if the emitting process has already exited.
+
+No process state, dictionaries, mailbox contents, raw messages, prompts,
+credentials or command lines are dumped. Binary totals are VM-wide, not proof
+that a specific actor owns a particular binary. This is a bounded incident
+recorder, not a full heap dump or tracing profiler. Its recent history and pending
+limit snapshot are in memory until a report is written; an abrupt whole-VM exit
+can lose that unsaved evidence. Deeper analysis can follow from the identified
+process and resource category.
+
+For embedded runtimes, `BeamAgent.Diagnostics.configure(directory: path,
+owner: self())` enables the same recorder. It remains dormant without a configured
+owner; owner death stops recording. Programmatic options `:interval_ms`,
+`:memory_threshold`, `:growth_threshold` and `:mailbox_threshold` adjust sampling
+and the corresponding automatic triggers. `BeamAgent.Diagnostics.capture/0`,
+`status/0` and `enable/1` are the reusable runtime API.

@@ -69,6 +69,45 @@ defmodule BeamAgent.ServiceTest do
     assert {:error, :service_unavailable} = Storage.lookup()
   end
 
+  test "diagnostics CLI captures the service and its routes require authentication", ctx do
+    start_supervised!(
+      {BeamAgent.Service, config: ctx.config, config_path: ctx.config_path, desk: false}
+    )
+
+    assert {:ok, record} = Storage.lookup()
+
+    assert {:error, _} =
+             Storage.request(
+               Map.put(record, "token", "wrong-token"),
+               :post,
+               "/api/v1/diagnostics/capture",
+               %{}
+             )
+
+    assert [] == Path.wildcard(Storage.path("diagnostics/incident-*.json"))
+
+    output =
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert 0 = BeamAgent.CLI.run(["diagnostics", "capture"])
+      end)
+
+    assert %{"path" => path, "bytes" => bytes} = JSON.decode!(String.trim(output))
+    assert bytes == File.stat!(path).size
+    assert JSON.decode!(File.read!(path))["samples"] != []
+
+    for {command, enabled} <- [{"stop", false}, {"start", true}] do
+      result =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert 0 = BeamAgent.CLI.run(["diagnostics", command])
+        end)
+        |> String.trim()
+        |> JSON.decode!()
+
+      assert result["enabled"] == enabled
+      assert File.regular?(path)
+    end
+  end
+
   test "disconnecting a TUI leaves work owned by the service and recovery restores the observer paused",
        ctx do
     System.cmd("git", ["init", "-q"], cd: ctx.root)

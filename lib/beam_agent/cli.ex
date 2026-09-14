@@ -34,6 +34,9 @@ defmodule BeamAgent.CLI do
     {config_path, args} = extract_config_path(args)
 
     case args do
+      ["diagnostics" | rest] ->
+        BeamAgent.CLI.Diagnostics.run(rest)
+
       ["service" | rest] ->
         BeamAgent.CLI.Service.run(rest, config_path)
 
@@ -1633,6 +1636,7 @@ defmodule BeamAgent.CLI do
       loom                             connect a TUI to your workspace in the service
       loom tui                         connect a TUI (explicit command)
       loom desk                        open/reconnect Loom Desk; service stays running
+      loom diagnostics --help          capture or control runtime incident recording
       loom service --help              start, stop, inspect or install the backend
       loom attach SESSION_ID           attach a TUI to an existing live runtime
       loom document --help             guarded Word editing and verification
