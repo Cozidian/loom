@@ -8,7 +8,7 @@ defmodule BeamAgent.CodexAppServer do
   invocation is constrained to one model decision.
   """
 
-  alias BeamAgent.CodexAppServer.Client
+  alias BeamAgent.CodexAppServer.{Client, TurnBudget}
 
   @client_info %{"name" => "beam_agent", "title" => "BeamAgent", "version" => "0.1.0"}
   @disabled_features ~w(
@@ -321,7 +321,17 @@ defmodule BeamAgent.CodexAppServer do
       "environments" => []
     }
 
-    client_module.request(client, "turn/start", params)
+    # Custom transports may omit the transport watchdog; await_turn still enforces
+    # the same finite budget before processing any event.
+    with :ok <- begin_turn(client, client_module, options) do
+      client_module.request(client, "turn/start", params)
+    end
+  end
+
+  defp begin_turn(client, client_module, options) do
+    if function_exported?(client_module, :begin_turn, 2),
+      do: client_module.begin_turn(client, options),
+      else: :ok
   end
 
   defp image_inputs(messages) do
@@ -333,10 +343,32 @@ defmodule BeamAgent.CodexAppServer do
   end
 
   defp await_turn(client, client_module, thread, emit, state) do
-    receive do
-      {:codex_app_server, ^client,
-       {:notification,
-        %{"method" => "item/reasoning/summaryTextDelta", "params" => %{"delta" => delta} = params}}}
+    case TurnBudget.remaining(state.budget) do
+      0 ->
+        TurnBudget.timeout(state.budget)
+
+      remaining ->
+        receive do
+          {:codex_app_server, ^client, event} ->
+            # Count everything, including ignored notifications, summaries and
+            # completed items, before emitting or retaining any of their data.
+            with {:ok, budget} <-
+                   TurnBudget.consume(state.budget, :erlang.external_size(event)) do
+              handle_turn_event(event, client, client_module, thread, emit, %{
+                state
+                | budget: budget
+              })
+            end
+        after
+          remaining -> TurnBudget.timeout(state.budget)
+        end
+    end
+  end
+
+  defp handle_turn_event(event, client, client_module, thread, emit, state) do
+    case event do
+      {:notification,
+       %{"method" => "item/reasoning/summaryTextDelta", "params" => %{"delta" => delta} = params}}
       when is_binary(delta) ->
         # Forward only the public summary channel, never raw reasoning text.
         emit.(
@@ -350,51 +382,48 @@ defmodule BeamAgent.CodexAppServer do
 
         await_turn(client, client_module, thread, emit, state)
 
-      {:codex_app_server, ^client,
-       {:notification, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => delta}}}}
+      {:notification, %{"method" => "item/agentMessage/delta", "params" => %{"delta" => delta}}}
       when is_binary(delta) ->
         state = capture_text_delta(state, delta, emit)
         await_turn(client, client_module, thread, emit, state)
 
-      {:codex_app_server, ^client,
-       {:notification, %{"method" => "item/completed", "params" => %{"item" => item}}}} ->
+      {:notification, %{"method" => "item/completed", "params" => %{"item" => item}}} ->
         state = capture_completed_item(state, item)
         await_turn(client, client_module, thread, emit, state)
 
-      {:codex_app_server, ^client,
-       {:request, %{"id" => id, "method" => "item/tool/call", "params" => params}}} ->
+      {:request, %{"id" => id, "method" => "item/tool/call", "params" => params}} ->
         with {:ok, state, call} <- capture_tool_call(state, params, emit),
              {:ok, outcome, state} <- maybe_execute_tool(call, state),
              :ok <- client_module.respond(client, id, tool_response(outcome)) do
           await_turn(client, client_module, thread, emit, state)
         end
 
-      {:codex_app_server, ^client,
-       {:notification, %{"method" => "turn/completed", "params" => %{"turn" => turn}}}} ->
+      {:notification, %{"method" => "turn/completed", "params" => %{"turn" => turn}}} ->
         finish_turn(turn, state, emit)
 
-      {:codex_app_server, ^client, {:notification, %{"method" => "error", "params" => error}}} ->
+      {:notification, %{"method" => "error", "params" => error}} ->
         {:error, {:codex_app_server_error, error}}
 
-      {:codex_app_server, ^client, {:protocol_error, reason, _line}} ->
+      {:protocol_error, reason, _line} ->
         {:error, {:codex_app_server_protocol_error, reason}}
 
-      {:codex_app_server, ^client, {:exit, reason}} ->
+      {:exit, reason} ->
         {:error, reason}
 
-      {:codex_app_server, ^client, _other} ->
+      _other ->
         await_turn(client, client_module, thread, emit, state)
     end
   end
 
   defp empty_invocation(tools, options) do
     %{
+      budget: TurnBudget.new(options),
       allowed_tools: MapSet.new(tools, & &1.name),
       calls: [],
       call_count: 0,
       content: nil,
       deltas: [],
-      pending_text: "",
+      text_prefix: "",
       text_emitted?: false,
       text_mode: :pending,
       tool_executor: options[:dynamic_tool_executor]
@@ -414,28 +443,40 @@ defmodule BeamAgent.CodexAppServer do
   end
 
   defp capture_text_delta(%{text_mode: :envelope} = state, delta, _emit),
-    do: %{state | deltas: [delta | state.deltas], pending_text: state.pending_text <> delta}
+    do: %{state | deltas: [delta | state.deltas]}
 
   defp capture_text_delta(%{text_mode: :pending} = state, delta, emit) do
-    pending = state.pending_text <> delta
+    pending = state.text_prefix <> delta
 
     case envelope_prefix_state(pending) do
       :pending ->
-        %{state | deltas: [delta | state.deltas], pending_text: pending}
+        %{state | deltas: [delta | state.deltas], text_prefix: compact_pending_prefix(pending)}
 
       :envelope ->
-        %{state | deltas: [delta | state.deltas], pending_text: pending, text_mode: :envelope}
+        %{state | deltas: [delta | state.deltas], text_prefix: "", text_mode: :envelope}
 
       :text ->
-        emit.({:text_delta, pending})
+        emit.({:text_delta, [delta | state.deltas] |> Enum.reverse() |> IO.iodata_to_binary()})
 
         %{
           state
           | deltas: [delta | state.deltas],
-            pending_text: "",
+            text_prefix: "",
             text_emitted?: true,
             text_mode: :streaming
         }
+    end
+  end
+
+  # Retain only the classification probe. Original bytes live once in deltas;
+  # arbitrary leading/inter-marker whitespace must not grow or rescan the probe.
+  defp compact_pending_prefix(content) do
+    trimmed = String.trim_leading(content)
+
+    if String.starts_with?(trimmed, "ASSISTANT") do
+      if String.contains?(trimmed, "\n"), do: "ASSISTANT\n", else: "ASSISTANT"
+    else
+      trimmed
     end
   end
 

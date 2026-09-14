@@ -10,6 +10,17 @@ defmodule BeamAgent.CLI.ErrorFormatter do
 
   def format({:codex_app_server_error, error}), do: codex_error(error)
   def format({:codex_turn_failed, _status, error}), do: codex_error(error)
+
+  def format({:codex_turn_limit, kind, limit}) do
+    "Codex turn stopped after reaching its #{kind} safety limit (#{limit}). " <>
+      "The provider subprocess was closed; the next invocation starts a fresh conversation."
+  end
+
+  def format({:codex_transport_limit, :line_bytes, limit}) do
+    "Codex stopped because a stdout line exceeded #{limit} bytes. " <>
+      "The provider subprocess was closed; the next invocation starts a fresh conversation."
+  end
+
   def format(%BeamAgent.ModelError{cause: cause}), do: format(cause)
   def format(reason), do: inspect(reason, pretty: true, limit: 8)
 
