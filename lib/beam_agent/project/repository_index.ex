@@ -1,10 +1,17 @@
 defmodule BeamAgent.Project.RepositoryIndex do
   @moduledoc "Project-level reactive repository snapshot with generation-safe incremental analysis."
   use GenServer
+  require Logger
 
   alias BeamAgent.Names
   alias BeamAgent.Project.ContextStore
   alias BeamAgent.Session.EventLog
+
+  # A workspace outside version control has no `git ls-files` to bound the
+  # scan, and a symlink cycle would otherwise recurse forever; cap the count
+  # so a mistakenly huge or cyclic workspace degrades instead of growing
+  # without bound.
+  @max_files 20_000
 
   @ignored MapSet.new([
              ".git",
@@ -41,6 +48,7 @@ defmodule BeamAgent.Project.RepositoryIndex do
       last_refreshed_at: nil,
       scan_interval_ms: Keyword.get(opts, :repository_scan_interval_ms, 5_000),
       refresh_debounce_ms: Keyword.get(opts, :repository_refresh_debounce_ms, 100),
+      max_files: Keyword.get(opts, :repository_max_files, @max_files),
       refresh_timer: nil,
       scan: nil
     }
@@ -112,7 +120,7 @@ defmodule BeamAgent.Project.RepositoryIndex do
   defp do_refresh(state) do
     generation = state.generation + 1
 
-    result = scan(state.workspace_root, generation, state.files)
+    result = scan(state.workspace_root, generation, state.files, state.max_files)
     state = apply_scan_result(state, generation, result)
 
     reply =
@@ -170,7 +178,7 @@ defmodule BeamAgent.Project.RepositoryIndex do
                send(
                  owner,
                  {:repository_scan_result, ref, generation,
-                  scan(state.workspace_root, generation, state.files)}
+                  scan(state.workspace_root, generation, state.files, state.max_files)}
                )
              end) do
           {:ok, pid} ->
@@ -195,10 +203,10 @@ defmodule BeamAgent.Project.RepositoryIndex do
 
   defp start_background_refresh(state), do: state
 
-  defp scan(root, generation, previous) do
+  defp scan(root, generation, previous, max_files) do
     files =
       root
-      |> repository_paths()
+      |> repository_paths(max_files)
       |> Enum.sort()
       |> Map.new(fn relative ->
         absolute = Path.join(root, relative)
@@ -257,11 +265,15 @@ defmodule BeamAgent.Project.RepositoryIndex do
       {:ok, entries} ->
         Enum.flat_map(entries, fn entry ->
           child = if relative == "", do: entry, else: Path.join(relative, entry)
+          path = Path.join(root, child)
 
           cond do
             MapSet.member?(@ignored, entry) -> []
-            File.dir?(Path.join(root, child)) -> walk(root, child)
-            File.regular?(Path.join(root, child)) -> [child]
+            # A symlinked directory can point at an ancestor and recurse
+            # forever; only regular directories/files are ever descended into.
+            symlink?(path) -> []
+            File.dir?(path) -> walk(root, child)
+            File.regular?(path) -> [child]
             true -> []
           end
         end)
@@ -271,25 +283,44 @@ defmodule BeamAgent.Project.RepositoryIndex do
     end
   end
 
-  defp repository_paths(root) do
-    if File.exists?(Path.join(root, ".git")) do
-      case System.cmd(
-             "git",
-             ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-             cd: root,
-             stderr_to_stdout: true
-           ) do
-        {output, 0} ->
-          output
-          |> String.split(<<0>>, trim: true)
-          |> Enum.reject(&ignored_path?/1)
-          |> Enum.filter(&File.regular?(Path.join(root, &1)))
+  defp symlink?(path), do: match?({:ok, %{type: :symlink}}, File.lstat(path))
 
-        _failed ->
-          walk(root, "")
+  defp repository_paths(root, max_files) do
+    paths =
+      if File.exists?(Path.join(root, ".git")) do
+        case System.cmd(
+               "git",
+               ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+               cd: root,
+               stderr_to_stdout: true
+             ) do
+          {output, 0} ->
+            output
+            |> String.split(<<0>>, trim: true)
+            |> Enum.reject(&ignored_path?/1)
+            |> Enum.filter(&File.regular?(Path.join(root, &1)))
+
+          _failed ->
+            walk(root, "")
+        end
+      else
+        walk(root, "")
       end
+
+    bound_paths(root, paths, max_files)
+  end
+
+  defp bound_paths(root, paths, max_files) do
+    count = length(paths)
+
+    if count > max_files do
+      Logger.warning(
+        "#{root}: repository scan found #{count} files, over the #{max_files} limit; indexing only a bounded subset"
+      )
+
+      paths |> Enum.sort() |> Enum.take(max_files)
     else
-      walk(root, "")
+      paths
     end
   end
 
