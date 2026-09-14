@@ -27,4 +27,18 @@ defmodule BeamAgent.CLI.ErrorFormatterTest do
 
     assert ErrorFormatter.format(:other_error) == ":other_error"
   end
+
+  test "Codex resource failures reach the frontend with the limit and recovery behavior" do
+    for reason <- [
+          {:codex_turn_limit, :duration_ms, 1_800_000},
+          {:codex_turn_limit, :bytes, 16_777_216},
+          {:codex_turn_limit, :messages, 100_000},
+          {:codex_transport_limit, :line_bytes, 4_194_304}
+        ] do
+      payload = TUI.notification_payload({:turn_finished, {:error, reason}})
+      assert payload.error =~ "subprocess was closed"
+      assert payload.error =~ "fresh conversation"
+      assert payload.error =~ to_string(elem(reason, 2))
+    end
+  end
 end

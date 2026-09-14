@@ -547,6 +547,27 @@ turn:
 ./beam_agent
 ```
 
+Codex native turns have finite safety limits: 30 minutes of elapsed time,
+16 MiB of received data and 100,000 messages. The byte and message budgets
+include protocol overhead, reasoning summaries, ignored notifications and
+completed items, not just assistant text. The transport checks raw stdout and
+the conversation checks encoded event size independently. A stdout line is
+limited to 4 MiB, including an incomplete line before JSON decoding.
+
+A limit closes the owned subprocess and returns a structured
+`{:codex_turn_limit, kind, limit}` or `{:codex_transport_limit, :line_bytes, limit}`
+error. The session can open a fresh native conversation on its next invocation.
+The duration is absolute, includes host-tool/approval waits and is not renewed
+by incoming traffic. The transport watchdog closes the subprocess even while
+a host tool is running; that tool's own runtime lifecycle still controls when
+the waiting invocation returns.
+
+Runtime callers can set positive integer provider options
+`:codex_turn_timeout_ms`, `:codex_max_turn_bytes` and
+`:codex_max_turn_messages`; the line limit is `:max_line_bytes` inside
+`:codex_client_options`. Invalid values (including `:infinity`) use the finite
+defaults. These limits apply per native turn, not to the lifetime of a goal.
+
 The login command opens OpenAI in the browser and waits for completion; use
 `--no-browser` to print the URL instead. In the TUI, `/connect` opens the
 configured-provider picker. Selecting an unconnected OpenAI profile links an

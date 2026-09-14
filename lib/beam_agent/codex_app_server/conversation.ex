@@ -40,6 +40,8 @@ defmodule BeamAgent.CodexAppServer.Conversation do
 
   @impl true
   def handle_call({:invoke, messages, tools, options, emit}, _from, state) do
+    options = Keyword.merge(state.options, options)
+
     case ensure_open(state.conversation, state.options, options) do
       {:ok, conversation} ->
         case CodexAppServer.invoke_conversation(conversation, messages, tools, options, emit) do
@@ -105,9 +107,10 @@ defmodule BeamAgent.CodexAppServer.Conversation do
 
   def handle_info(
         {:codex_app_server, client, {:exit, reason}},
-        %{conversation: %{client: client}} = state
+        %{conversation: %{client: client} = conversation} = state
       ) do
     Logger.warning("Codex App Server exited while the conversation was idle: #{inspect(reason)}")
+    close(conversation)
     {:noreply, %{state | conversation: nil}}
   end
 
