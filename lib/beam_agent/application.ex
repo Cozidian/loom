@@ -12,6 +12,8 @@ defmodule BeamAgent.Application do
       {DynamicSupervisor, strategy: :one_for_one, name: BeamAgent.LocalEndpointSupervisor},
       {Task.Supervisor, name: BeamAgent.LocalStartupTasks},
       BeamAgent.LocalSessionStarts,
+      {Task.Supervisor, name: BeamAgent.DiagnosticsTasks},
+      BeamAgent.Diagnostics,
       BeamAgent.ProjectRootSupervisor
     ]
 

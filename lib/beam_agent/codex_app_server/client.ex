@@ -58,6 +58,17 @@ defmodule BeamAgent.CodexAppServer.Client do
          budget: nil,
          timer: nil,
          failure: nil,
+         diagnostic: %{
+           phase: :idle,
+           started_at: nil,
+           elapsed_ms: 0,
+           received_bytes: 0,
+           messages: 0,
+           text: 0,
+           summary: 0,
+           tool: 0,
+           other: 0
+         },
          next_id: 1,
          waiters: %{}
        }}
@@ -76,7 +87,26 @@ defmodule BeamAgent.CodexAppServer.Client do
     budget = TurnBudget.new(options)
     tag = make_ref()
     timer = Process.send_after(self(), {:turn_timeout, tag}, budget.timeout_ms)
-    {:reply, :ok, %{state | budget: budget, timer: {timer, tag}}}
+
+    state = %{
+      state
+      | budget: budget,
+        timer: {timer, tag},
+        diagnostic: %{
+          phase: :active,
+          started_at: System.monotonic_time(:millisecond),
+          elapsed_ms: 0,
+          received_bytes: 0,
+          messages: 0,
+          text: 0,
+          summary: 0,
+          tool: 0,
+          other: 0
+        }
+    }
+
+    publish_diagnostics(state)
+    {:reply, :ok, state}
   end
 
   def handle_call({:request, method, params}, from, state) do
@@ -102,10 +132,16 @@ defmodule BeamAgent.CodexAppServer.Client do
 
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = state) do
-    case consume_bytes(state, byte_size(data)) do
-      {:ok, state} -> {:noreply, decode_lines(data, state)}
-      {:error, reason} -> {:noreply, fail(state, reason)}
-    end
+    state = update_in(state.diagnostic.received_bytes, &(&1 + byte_size(data)))
+
+    state =
+      case consume_bytes(state, byte_size(data)) do
+        {:ok, state} -> decode_lines(data, state)
+        {:error, reason} -> fail(state, reason)
+      end
+
+    publish_diagnostics(state)
+    {:noreply, state}
   end
 
   def handle_info({:turn_timeout, tag}, %{timer: {_timer, tag}, budget: budget} = state) do
@@ -132,6 +168,8 @@ defmodule BeamAgent.CodexAppServer.Client do
   end
 
   defp fail(state, reason) do
+    publish_diagnostics(state)
+    BeamAgent.Diagnostics.incident(reason)
     close_port(state.port)
     cancel_timer(state.timer)
     reply_waiters(state.waiters, {:error, reason})
@@ -139,7 +177,7 @@ defmodule BeamAgent.CodexAppServer.Client do
 
     # Keep a small tombstone until the owner closes us. A host tool may still be
     # running; its subsequent respond call must return the limit, not exit :noproc.
-    %{
+    state = %{
       state
       | port: nil,
         buffer: [],
@@ -149,7 +187,36 @@ defmodule BeamAgent.CodexAppServer.Client do
         timer: nil,
         failure: reason
     }
+
+    publish_diagnostics(state)
+    state
   end
+
+  defp publish_diagnostics(state) do
+    os_pid =
+      if is_port(state.port) do
+        case Port.info(state.port, :os_pid) do
+          {:os_pid, pid} -> pid
+          _ -> nil
+        end
+      end
+
+    state.diagnostic
+    |> Map.drop([:started_at])
+    |> Map.merge(%{
+      source: :codex_client,
+      owner_pid: state.owner,
+      os_pid: os_pid,
+      phase: if(state.failure, do: :failed, else: state.diagnostic.phase),
+      elapsed_ms: elapsed(state.diagnostic)
+    })
+    |> BeamAgent.Diagnostics.progress()
+  end
+
+  defp elapsed(%{phase: :active, started_at: started}),
+    do: System.monotonic_time(:millisecond) - started
+
+  defp elapsed(diagnostic), do: diagnostic.elapsed_ms
 
   defp close_port(port) when is_port(port) do
     # Port.close alone only closes pipes on Unix; an uncooperative child can live
@@ -188,7 +255,8 @@ defmodule BeamAgent.CodexAppServer.Client do
   defp dispatch(%{"method" => "turn/completed"} = notification, state) do
     send(state.owner, {:codex_app_server, self(), {:notification, notification}})
     cancel_timer(state.timer)
-    %{state | budget: nil, timer: nil}
+    diagnostic = %{state.diagnostic | phase: :completed, elapsed_ms: elapsed(state.diagnostic)}
+    %{state | budget: nil, timer: nil, diagnostic: diagnostic}
   end
 
   defp dispatch(%{"method" => _method} = notification, state) do
@@ -257,9 +325,24 @@ defmodule BeamAgent.CodexAppServer.Client do
 
   defp decode_line(line, state) do
     case JSON.decode(line) do
-      {:ok, message} when is_map(message) -> dispatch(message, state)
-      {:error, reason} -> fail(state, {:codex_app_server_protocol_error, reason})
-      {:ok, _other} -> fail(state, {:codex_app_server_protocol_error, :non_object_message})
+      {:ok, message} when is_map(message) ->
+        channel =
+          case message["method"] do
+            "item/agentMessage/delta" -> :text
+            "item/reasoning/summaryTextDelta" -> :summary
+            "item/tool/call" -> :tool
+            _ -> :other
+          end
+
+        state = update_in(state.diagnostic[channel], &(&1 + 1))
+        state = update_in(state.diagnostic.messages, &(&1 + 1))
+        dispatch(message, state)
+
+      {:error, reason} ->
+        fail(state, {:codex_app_server_protocol_error, reason})
+
+      {:ok, _other} ->
+        fail(state, {:codex_app_server_protocol_error, :non_object_message})
     end
   end
 

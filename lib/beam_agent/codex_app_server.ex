@@ -343,9 +343,20 @@ defmodule BeamAgent.CodexAppServer do
   end
 
   defp await_turn(client, client_module, thread, emit, state) do
+    BeamAgent.Diagnostics.progress(%{
+      source: :codex_conversation,
+      phase: :active,
+      elapsed_ms: state.budget.timeout_ms - TurnBudget.remaining(state.budget),
+      received_bytes: state.budget.bytes,
+      messages: state.budget.messages,
+      retained_text_bytes: state.text_bytes,
+      prefix_bytes: byte_size(state.text_prefix),
+      text_mode: state.text_mode
+    })
+
     case TurnBudget.remaining(state.budget) do
       0 ->
-        TurnBudget.timeout(state.budget)
+        turn_timeout(state.budget)
 
       remaining ->
         receive do
@@ -358,11 +369,21 @@ defmodule BeamAgent.CodexAppServer do
                 state
                 | budget: budget
               })
+            else
+              {:error, reason} = error ->
+                BeamAgent.Diagnostics.incident(reason)
+                error
             end
         after
-          remaining -> TurnBudget.timeout(state.budget)
+          remaining -> turn_timeout(state.budget)
         end
     end
+  end
+
+  defp turn_timeout(budget) do
+    {:error, reason} = error = TurnBudget.timeout(budget)
+    BeamAgent.Diagnostics.incident(reason)
+    error
   end
 
   defp handle_turn_event(event, client, client_module, thread, emit, state) do
@@ -399,6 +420,7 @@ defmodule BeamAgent.CodexAppServer do
         end
 
       {:notification, %{"method" => "turn/completed", "params" => %{"turn" => turn}}} ->
+        BeamAgent.Diagnostics.progress(%{source: :codex_conversation, phase: :completed})
         finish_turn(turn, state, emit)
 
       {:notification, %{"method" => "error", "params" => error}} ->
@@ -423,6 +445,7 @@ defmodule BeamAgent.CodexAppServer do
       call_count: 0,
       content: nil,
       deltas: [],
+      text_bytes: 0,
       text_prefix: "",
       text_emitted?: false,
       text_mode: :pending,
@@ -434,18 +457,22 @@ defmodule BeamAgent.CodexAppServer do
   # request instead of issuing item/tool/call. Hold only the ambiguous prefix so
   # that malformed envelopes never flash as assistant text in the TUI. Ordinary
   # responses continue streaming once they diverge from that prefix.
-  defp capture_text_delta(%{calls: [_ | _]} = state, delta, _emit),
+  defp capture_text_delta(state, delta, emit) do
+    do_capture_text_delta(%{state | text_bytes: state.text_bytes + byte_size(delta)}, delta, emit)
+  end
+
+  defp do_capture_text_delta(%{calls: [_ | _]} = state, delta, _emit),
     do: %{state | deltas: [delta | state.deltas]}
 
-  defp capture_text_delta(%{text_mode: :streaming} = state, delta, emit) do
+  defp do_capture_text_delta(%{text_mode: :streaming} = state, delta, emit) do
     emit.({:text_delta, delta})
     %{state | deltas: [delta | state.deltas], text_emitted?: true}
   end
 
-  defp capture_text_delta(%{text_mode: :envelope} = state, delta, _emit),
+  defp do_capture_text_delta(%{text_mode: :envelope} = state, delta, _emit),
     do: %{state | deltas: [delta | state.deltas]}
 
-  defp capture_text_delta(%{text_mode: :pending} = state, delta, emit) do
+  defp do_capture_text_delta(%{text_mode: :pending} = state, delta, emit) do
     pending = state.text_prefix <> delta
 
     case envelope_prefix_state(pending) do

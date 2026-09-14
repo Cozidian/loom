@@ -1,6 +1,7 @@
 defmodule BeamAgent.Service do
   @moduledoc "Long-lived local owner. Desk is a restartable child; clients never own its sessions."
   use GenServer
+  require Logger
   alias BeamAgent.Service.Storage
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -42,6 +43,12 @@ defmodule BeamAgent.Service do
       }
 
       :ok = Storage.write("runtime.json", record)
+
+      case BeamAgent.Diagnostics.configure(directory: Storage.path("diagnostics"), owner: self()) do
+        :ok -> :ok
+        {:error, reason} -> Logger.warning("Diagnostics recorder unavailable: #{reason}")
+      end
+
       if Keyword.get(opts, :desk, true), do: send(self(), :start_desk)
       send(self(), :recover)
 

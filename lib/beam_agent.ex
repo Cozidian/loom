@@ -542,6 +542,7 @@ defmodule BeamAgent do
       :outcome_retention,
       :resource_limits,
       :repository_scan_interval_ms,
+      :repository_max_files,
       :routing_evidence_mode,
       :routing_exploration_percent,
       :routing_excluded_endpoints,

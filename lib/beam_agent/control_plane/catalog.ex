@@ -5,6 +5,30 @@ defmodule BeamAgent.ControlPlane.Catalog do
     if opts[:service], do: BeamAgent.Service.status(), else: {:error, :not_a_service}
   end
 
+  def route(%{method: "GET", path: "/api/v1/diagnostics"}, opts) do
+    if opts[:service], do: BeamAgent.Diagnostics.status(), else: {:error, :not_a_service}
+  end
+
+  def route(%{method: "POST", path: "/api/v1/diagnostics/" <> action}, opts) do
+    if opts[:service] do
+      case action do
+        "capture" ->
+          BeamAgent.Diagnostics.capture()
+
+        "start" ->
+          with :ok <- BeamAgent.Diagnostics.enable(true), do: BeamAgent.Diagnostics.status()
+
+        "stop" ->
+          with :ok <- BeamAgent.Diagnostics.enable(false), do: BeamAgent.Diagnostics.status()
+
+        _ ->
+          {:error, :invalid_diagnostics_action}
+      end
+    else
+      {:error, :not_a_service}
+    end
+  end
+
   def route(%{method: "POST", path: "/api/v1/service/launch", body: body}, opts) do
     with true <- opts[:service] == true,
          {:ok, args} when is_map(args) <- JSON.decode(body),
