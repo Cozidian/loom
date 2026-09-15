@@ -1612,19 +1612,25 @@ defmodule BeamAgent.Strategies.ToolLoop do
   defp validate_call(other), do: {:error, {:invalid_tool_call, other}}
 
   defp execute_tool(call, context, causation_id) do
-    case CapabilityCatalog.tool(call.name) do
+    name = normalize_tool_name(call.name)
+
+    case CapabilityCatalog.tool(name) do
       {:ok, module} ->
         ToolRunner.execute(module, call.arguments, tool_context(context, causation_id))
 
       {:error, _reason} ->
         Registry.execute(
           context.goal_id,
-          call.name,
+          name,
           call.arguments,
           tool_context(context, causation_id)
         )
     end
   end
+
+  defp normalize_tool_name("functions/" <> name), do: normalize_tool_name(name)
+  defp normalize_tool_name("functions." <> name), do: normalize_tool_name(name)
+  defp normalize_tool_name(name), do: name
 
   defp tool_context(context, causation_id) do
     context

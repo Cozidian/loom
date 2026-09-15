@@ -45,6 +45,14 @@ defmodule BeamAgent.Tools.ApplyPatch do
   def access, do: :write
 
   @impl true
+  def execute(%{"path" => _path, "patch" => patch} = arguments, context)
+      when is_binary(patch) and not is_map_key(arguments, "hunks") do
+    case hunks_from_patch(patch) do
+      {:ok, hunks} -> execute(Map.put(arguments, "hunks", hunks), context)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def execute(%{"path" => path, "hunks" => hunks} = arguments, context)
       when is_list(hunks) and length(hunks) in 1..64 do
     with {:ok, resolved} <- FileSupport.resolve(context, path),
@@ -68,6 +76,61 @@ defmodule BeamAgent.Tools.ApplyPatch do
   end
 
   def execute(_arguments, _context), do: {:error, :expected_versioned_patch_hunks}
+
+  defp hunks_from_patch(patch) do
+    hunks =
+      patch
+      |> String.replace("\r\n", "\n")
+      |> String.split("\n")
+      |> Enum.reject(&patch_header?/1)
+      |> collect_hunks([], [], [])
+      |> Enum.reverse()
+
+    if hunks == [], do: {:error, :expected_versioned_patch_hunks}, else: {:ok, hunks}
+  end
+
+  defp patch_header?(line) do
+    String.starts_with?(line, "***") or String.starts_with?(line, "@@")
+  end
+
+  defp collect_hunks([], old, new, hunks), do: flush_hunk(old, new, hunks)
+
+  defp collect_hunks(["-" <> rest | lines], old, new, hunks) when new != [] do
+    collect_hunks(lines, [patch_line(rest)], [], flush_hunk(old, new, hunks))
+  end
+
+  defp collect_hunks(["-" <> rest | lines], old, new, hunks) do
+    collect_hunks(lines, old ++ [patch_line(rest)], new, hunks)
+  end
+
+  defp collect_hunks(["+" <> rest | lines], old, new, hunks) do
+    collect_hunks(lines, old, new ++ [patch_line(rest)], hunks)
+  end
+
+  defp collect_hunks([" " <> rest | lines], old, new, hunks) do
+    line = patch_line(rest)
+    collect_hunks(lines, old ++ [line], new ++ [line], hunks)
+  end
+
+  defp collect_hunks([_other | lines], old, new, hunks),
+    do: collect_hunks(lines, old, new, hunks)
+
+  defp flush_hunk([], [], hunks), do: hunks
+
+  defp flush_hunk(old, new, hunks) do
+    old_text = Enum.join(old, "\n")
+    new_text = Enum.join(new, "\n")
+
+    if old_text == "" do
+      hunks
+    else
+      [%{"old_text" => old_text, "new_text" => new_text} | hunks]
+    end
+  end
+
+  defp patch_line(text) do
+    String.replace(text, ~r/\A\d+:\s/, "")
+  end
 
   defp expected_version(_context, _path, %{"expected_sha256" => expected})
        when is_binary(expected),

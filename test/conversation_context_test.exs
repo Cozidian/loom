@@ -26,6 +26,43 @@ defmodule BeamAgent.ConversationContextTest do
     def complete(_messages, [], _options), do: {:error, :summary_unavailable}
   end
 
+  defmodule CountingFailingSummaryProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :counting_summary_failure_test
+
+    @impl true
+    def complete(_messages, [], options) do
+      send(options[:test_pid], :summary_attempted)
+      {:error, :summary_unavailable}
+    end
+  end
+
+  defmodule ToolCallingSummaryProvider do
+    @behaviour BeamAgent.LLMProvider
+
+    @impl true
+    def id, do: :tool_calling_summary_test
+
+    @impl true
+    def complete(messages, [], options) do
+      send(options[:test_pid], {:summary_attempt, length(messages)})
+
+      if length(messages) == 1 do
+        {:ok,
+         %{
+           content: "",
+           tool_calls: [
+             %{id: "call-1", name: "apply_patch", arguments: %{"patch" => "nope"}}
+           ]
+         }}
+      else
+        {:ok, %{content: "Summary after refusing tools.", tool_calls: []}}
+      end
+    end
+  end
+
   defmodule AutomaticProvider do
     @behaviour BeamAgent.LLMProvider
 
@@ -198,6 +235,100 @@ defmodule BeamAgent.ConversationContextTest do
     assert {:ok, events} = EventLog.events(context.session_id)
     assert Enum.any?(events, &(&1["type"] == "context_compaction_failed"))
     refute Enum.any?(events, &(&1["type"] == "context_compaction_completed"))
+  end
+
+  test "a failed compaction is not retried for the same boundary", context do
+    append_turn(context.session_id, 1, "must remain visible", 2_000)
+    append_turn(context.session_id, 2, "second turn", 200)
+    append_turn(context.session_id, 3, "third turn", 200)
+
+    assert {:ok, _messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               CountingFailingSummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    assert stats.compaction_failed?
+    assert_receive :summary_attempted
+
+    assert {:ok, _messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               CountingFailingSummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    assert stats.compaction_failed?
+    refute_receive :summary_attempted
+  end
+
+  test "compaction retries once when the model calls a tool instead of summarizing", context do
+    append_turn(context.session_id, 1, "oldest objective", 2_000)
+    append_turn(context.session_id, 2, "recent decision", 200)
+    append_turn(context.session_id, 3, "current direction", 200)
+
+    assert {:ok, messages, stats} =
+             ConversationContext.messages(
+               context.session_id,
+               ToolCallingSummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    assert_receive {:summary_attempt, 1}
+    assert_receive {:summary_attempt, 2}
+    assert stats.compacted?
+    projected = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+    assert projected =~ "Summary after refusing tools"
+  end
+
+  test "rejected non-terminal dumps are omitted from the next model projection", context do
+    {:ok, _} = EventLog.append(context.session_id, :turn_started, %{"turn" => 1})
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :user_message, %{
+        "content" => "build a simple tetris game"
+      })
+
+    dump = "Sure! Create index.html:\n```html\n" <> String.duplicate("<div></div>\n", 40) <> "```"
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :assistant_message, %{
+        "content" => dump,
+        "tool_calls" => []
+      })
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :model_completion_deferred, %{
+        "turn" => 1,
+        "completion_reason" => "action_not_started"
+      })
+
+    {:ok, _} =
+      EventLog.append(context.session_id, :completion_feedback, %{
+        "content" => "Your next response must invoke create_file."
+      })
+
+    assert {:ok, messages, _stats} =
+             ConversationContext.messages(
+               context.session_id,
+               SummaryProvider,
+               [test_pid: self()],
+               "project instructions",
+               []
+             )
+
+    projected = Enum.map_join(messages, "\n", &(&1[:content] || ""))
+    refute projected =~ "Create index.html"
+    assert projected =~ "omitted non-terminal response"
+    assert projected =~ "must invoke create_file"
+    assert List.last(messages).role == :user
   end
 
   test "the normal tool loop automatically calls the provider with the compacted projection",

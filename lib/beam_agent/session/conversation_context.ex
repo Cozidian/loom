@@ -223,8 +223,16 @@ defmodule BeamAgent.Session.ConversationContext do
 
         if force? or stats.estimated_tokens >= stats.threshold_tokens do
           case compaction_plan(events, projection, stats, force?) do
-            nil -> {:ready, projection}
-            plan -> {:compact, plan}
+            nil ->
+              {:ready, projection}
+
+            plan ->
+              if not force? and compaction_failed_for?(events, plan.through_seq) do
+                stats = Map.put(stats, :compaction_failed?, true)
+                {:ready, %{projection | stats: stats}}
+              else
+                {:compact, plan}
+              end
           end
         else
           {:ready, projection}
@@ -243,6 +251,7 @@ defmodule BeamAgent.Session.ConversationContext do
     messages =
       events
       |> Enum.filter(&(&1["seq"] > through_seq))
+      |> omit_rejected_assistant_dumps()
       |> EventLog.messages_from_events()
       |> prepend_summary(summary, through_seq)
 
@@ -260,6 +269,69 @@ defmodule BeamAgent.Session.ConversationContext do
     events
     |> Enum.reverse()
     |> Enum.find(fn event -> event["type"] == "context_compaction_completed" end)
+  end
+
+  @omitted_dump "[omitted non-terminal response that did not invoke tools]"
+
+  defp omit_rejected_assistant_dumps(events) do
+    rejected = rejected_assistant_seqs(events)
+
+    Enum.map(events, fn
+      %{"type" => "assistant_message", "seq" => seq} = event ->
+        if MapSet.member?(rejected, seq) do
+          put_in(event, ["data", "content"], @omitted_dump)
+        else
+          event
+        end
+
+      event ->
+        event
+    end)
+  end
+
+  defp rejected_assistant_seqs(events) do
+    events
+    |> Enum.with_index()
+    |> Enum.reduce(MapSet.new(), fn {event, index}, acc ->
+      if assistant_without_tools?(event) and
+           completion_feedback_before_next_turn?(events, index) do
+        MapSet.put(acc, event["seq"])
+      else
+        acc
+      end
+    end)
+  end
+
+  defp assistant_without_tools?(%{"type" => "assistant_message", "data" => data}),
+    do: (data["tool_calls"] || []) == []
+
+  defp assistant_without_tools?(_event), do: false
+
+  defp completion_feedback_before_next_turn?(events, index) do
+    events
+    |> Enum.drop(index + 1)
+    |> Enum.find_value(fn event ->
+      cond do
+        event["type"] == "completion_feedback" -> true
+        event["type"] in ["assistant_message", "tool_called", "user_message"] -> false
+        true -> nil
+      end
+    end) == true
+  end
+
+  defp compaction_failed_for?(events, through_seq) do
+    events
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"type" => "context_compaction_completed", "data" => data} ->
+        if data["through_seq"] == through_seq, do: false, else: nil
+
+      %{"type" => "context_compaction_failed", "data" => data} ->
+        if data["through_seq"] == through_seq, do: true, else: nil
+
+      _event ->
+        nil
+    end) == true
   end
 
   defp prepend_summary(messages, nil, _through_seq), do: messages
@@ -418,24 +490,54 @@ defmodule BeamAgent.Session.ConversationContext do
       |> Keyword.put(:max_tokens, plan.summary_max_tokens)
 
     prompt = render_summary_source(plan.source_messages)
+    messages = [%{role: :user, content: prompt}]
 
+    case invoke_summary(plan, provider_module, options, messages) do
+      {:ok, summary} ->
+        {:ok, summary}
+
+      {:error, {:compaction_called_tools, _response}} ->
+        retry_messages =
+          messages ++
+            [
+              %{
+                role: :user,
+                content: "Do not call tools. Return only the concise summary text."
+              }
+            ]
+
+        case invoke_summary(plan, provider_module, options, retry_messages) do
+          {:ok, summary} -> {:ok, summary}
+          {:error, _reason} = error -> error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp invoke_summary(plan, provider_module, options, messages) do
     with {:ok, request} <-
            ModelRequest.new(
              endpoint_id: options[:profile],
              provider: provider_module.id(),
              provider_module: provider_module,
              model: options[:model],
-             messages: [%{role: :user, content: prompt}],
+             messages: messages,
              tools: [],
              stream: false,
-             timeout: Keyword.get(provider_options, :invocation_timeout_ms, :infinity),
+             timeout: Keyword.get(options, :invocation_timeout_ms, :infinity),
              options: options,
              metadata: %{task: :context_compaction}
            ) do
+      max_chars = plan.summary_max_tokens * 4
+
       case ModelInvocation.invoke(request) do
         {:ok, %{content: content, tool_calls: []}} when is_binary(content) and content != "" ->
-          max_chars = plan.summary_max_tokens * 4
           {:ok, String.slice(content, 0, max_chars)}
+
+        {:ok, %{tool_calls: calls} = response} when is_list(calls) and calls != [] ->
+          {:error, {:compaction_called_tools, response}}
 
         {:ok, response} ->
           {:error, {:invalid_compaction_response, response}}
