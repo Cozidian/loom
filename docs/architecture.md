@@ -124,7 +124,7 @@ queueing, blocking, confirmed no-progress loops, and suspected silence. A later
 meaningful event records recovery rather than leaving an interface timer to
 guess. It also identifies the critical worker and concrete blocker.
 `RuntimeWorkBlocks` is a pure replayable projection of those facts for all
-clients; the Go TUI throttles projection refreshes, renders a compact live-work
+clients; the TUI throttles projection refreshes, renders a compact live-work
 card, expands the Tree representation, and submits worker actions without
 becoming authoritative.
 
@@ -180,7 +180,7 @@ remain shadow-only by default. A project may explicitly enable confidence-gated
 selection with bounded deterministic exploration. Durable
 `model_route_selected` events carry safe decision inputs, candidates, selection,
 reason, and aggregate evidence. `/models` exposes inventory, health, verified
-pass rate, sample count, and observed latency; the Go TUI remains
+pass rate, sample count, and observed latency; the TUI remains
 presentation-only.
 
 Each goal supervises a `ProviderBidCoordinator` and a bidder `Task.Supervisor`.
@@ -253,8 +253,9 @@ waits for their runner processes to terminate, and emits `race_settled` only
 after cleanup. Errors, empty results, and candidates that fail the configured
 verification or admissibility gate cannot win. Shared-workspace lanes receive
 only read/trusted built-in tools; write/execute tools require worktree
-isolation. Verified coding races require worktree isolation. The Go TUI projects both modes into one interactive arena;
-it never infers a winner or owns cancellation. Historical `race_*` events
+isolation. Verified coding races require worktree isolation. The TUI projects
+both modes into one interactive arena; it never infers a winner or owns
+cancellation. Historical `race_*` events
 without `selection_policy: first_admissible` replay as legacy tournaments.
 
 All provider execution enters through a versioned `ModelRequest`, including
@@ -519,16 +520,17 @@ API and persisted event stream without making any interface a second
 orchestration core.
 
 Terminal presentation is isolated from the runtime across a process boundary.
-On a real TTY, the Go `beam_agent_tui` client owns Bubble Tea screen state,
-keyboard input, the textarea, viewport, command palette, and Lip Gloss
-rendering. `BeamAgent.CLI.TUI` exchanges length-framed JSON packets with that
-client while `BeamAgent.Runtime.Client` owns subscriptions, the active interface
-turn task, cancellation, approvals, and session rebinding. The thin
-`BeamAgent.CLI.TUI.Controller` maps runtime notifications and CLI-only commands
-to terminal payloads. Go retains stdin and
+On a real TTY, the Rust/Ratatui `beam_agent_ion` client owns screen state,
+keyboard input, the textarea, viewport, command palette, and styled rendering
+(including a `pulldown-cmark`-based Markdown renderer for headings, emphasis,
+code, tables, and lists). `BeamAgent.CLI.TUI` exchanges length-framed JSON
+packets with that client while `BeamAgent.Runtime.Client` owns subscriptions,
+the active interface turn task, cancellation, approvals, and session
+rebinding. The thin `BeamAgent.CLI.TUI.Controller` maps runtime notifications
+and CLI-only commands to terminal payloads. The client retains stdin and
 stdout for terminal presentation while Erlang's port driver reserves file
-descriptors 3 and 4 for the private protocol; the view explicitly leaves mouse
-reporting limited to cell motion so wheel events scroll only the transcript.
+descriptors 3 and 4 for the private protocol; the view leaves mouse reporting
+limited to scroll-wheel events, which page the transcript.
 
 The bridge subscribes to the goal-wide runtime event projection used by future
 views; it does not interpret provider protocols or own conversation state. It

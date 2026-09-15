@@ -520,8 +520,8 @@ defmodule BeamAgent.CLI do
   end
 
   defp validate_frontend(nil), do: :ok
-  defp validate_frontend(frontend) when frontend in ["rust", "go"], do: :ok
-  defp validate_frontend(_), do: {:error, "--frontend must be rust or go"}
+  defp validate_frontend("rust"), do: :ok
+  defp validate_frontend(_), do: {:error, "--frontend must be rust"}
 
   defp validate_desk_tui(opts) do
     if opts[:tui] == true and not TUI.available?(true, opts[:frontend]),
@@ -1687,7 +1687,7 @@ defmodule BeamAgent.CLI do
       --context-window TOKENS                estimated model context capacity
       --compact-at PERCENT                   automatic compaction threshold
       --no-tui                               use the line-oriented interactive UI
-      --frontend rust|go                     choose a TUI (default: ION, Go fallback)
+      --frontend rust                        select the TUI frontend (default: rust/ION)
 
     Running `loom init` opens a guided setup. For automated setup, add
     --non-interactive and provide provider/model flags explicitly.

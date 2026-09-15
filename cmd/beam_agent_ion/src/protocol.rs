@@ -1,4 +1,4 @@
-//! Exactly the Go frontend's protocol: BE u32 byte length, JSON, fds 3/4.
+//! The `BeamAgent.CLI.TUI` bridge protocol: BE u32 byte length, JSON, fds 3/4.
 use serde_json::Value;
 use std::io::{self, Read, Write};
 
@@ -44,7 +44,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
-    fn go_compatible_frame_and_consecutive_packets() {
+    fn length_prefixed_frame_and_consecutive_packets() {
         let packet = json!({"type":"submit","prompt":"Hei 🌍"});
         let mut wire = vec![];
         write_packet(&mut wire, &packet).unwrap();

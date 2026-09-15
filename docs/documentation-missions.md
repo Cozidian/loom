@@ -53,7 +53,7 @@ The observer panel shows its scope, assessment allowance, status and latest repo
 Press `s` to start, `p` to pause, `r` to resume, `d` to dismiss the report,
 `x` to stop, `X` to delete a stopped observer, or `f`
 to refresh. Only currently available actions are enabled; Esc closes the panel.
-Both ION and the **Go TUI** also accept `/mission start`, `/mission pause`,
+ION also accepts `/mission start`, `/mission pause`,
 `/mission resume`, `/mission dismiss`, `/mission stop`, `/mission delete` and `/mission status`.
 
 In **Desk**, open the desired live session and find **Documentation observer**.

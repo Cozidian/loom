@@ -1,20 +1,19 @@
 defmodule Mix.Tasks.BeamAgent.Build do
   use Mix.Task
 
-  @shortdoc "One-time build for CLI and clients (--frontend rust|go|web|all)"
+  @shortdoc "One-time build for CLI and clients (--frontend rust|web|all)"
 
   @impl Mix.Task
   def run(args) do
     {opts, rest, invalid} = OptionParser.parse(args, strict: [frontend: :string])
     frontend = opts[:frontend] || "standard"
 
-    if rest != [] or invalid != [] or frontend not in ["standard", "go", "rust", "web", "all"] do
-      Mix.raise("Usage: mix beam_agent.build [--frontend rust|go|web|all]")
+    if rest != [] or invalid != [] or frontend not in ["standard", "rust", "web", "all"] do
+      Mix.raise("Usage: mix beam_agent.build [--frontend rust|web|all]")
     end
 
     root = File.cwd!()
 
-    if frontend in ["go", "all"], do: build_go(root)
     if frontend in ["standard", "rust", "all"], do: build_rust(root)
     if frontend in ["standard", "web", "all"], do: build_web(root)
 
@@ -40,22 +39,6 @@ defmodule Mix.Tasks.BeamAgent.Build do
         {_, 0} -> :ok
         {_, status} -> Mix.raise("Desk build failed with status #{status}")
       end
-    end
-  end
-
-  defp build_go(root) do
-    go = System.find_executable("go") || Mix.raise("Go is required to build the Charm TUI")
-
-    Mix.shell().info("Building Charm TUI")
-
-    case System.cmd(
-           go,
-           ["build", "-buildvcs=false", "-o", "beam_agent_tui", "./cmd/beam_agent_tui"],
-           cd: root,
-           into: IO.stream(:stdio, :line)
-         ) do
-      {_output, 0} -> :ok
-      {_output, status} -> Mix.raise("Go TUI build failed with status #{status}")
     end
   end
 

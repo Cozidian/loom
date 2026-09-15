@@ -1,6 +1,7 @@
 use crate::{
     app::{App, View, s},
     editor::clean,
+    markdown,
 };
 use ratatui::{
     Frame,
@@ -21,6 +22,15 @@ const ACID: Color = Color::Rgb(218, 255, 95);
 const CYAN: Color = Color::Rgb(83, 214, 220);
 const RED: Color = Color::Rgb(255, 118, 127);
 const VIOLET: Color = Color::Rgb(185, 161, 255);
+
+const MARKDOWN_PALETTE: markdown::Palette = markdown::Palette {
+    text: WHITE,
+    muted: MUTED,
+    heading: ACID,
+    code: CYAN,
+    link: CYAN,
+    rule: MUTED,
+};
 
 fn style(color: Color) -> Style {
     Style::default().fg(color)
@@ -402,25 +412,11 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
             } else {
                 e.text.clone()
             };
-            let mut code = false;
-            for row in content.lines() {
-                if row.starts_with("```") {
-                    code = !code;
-                    lines.push(line(if code { "  ┌─ code" } else { "  └─" }, MUTED));
-                    continue;
-                }
-                lines.extend(wrapped(
-                    row,
-                    inner.width.saturating_sub(2),
-                    if code {
-                        CYAN
-                    } else if row.starts_with('#') {
-                        ACID
-                    } else {
-                        WHITE
-                    },
-                ));
-            }
+            lines.extend(markdown::render(
+                &content,
+                inner.width.saturating_sub(2),
+                &MARKDOWN_PALETTE,
+            ));
             lines.push(line("", WHITE));
         }
         let max = lines
