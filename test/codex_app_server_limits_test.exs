@@ -300,6 +300,7 @@ defmodule BeamAgent.CodexAppServerLimitsTest do
       end)
 
     assert_receive {:owned_client, client, os_pid}, 1_000
+    kill_on_exit(os_pid)
     monitor = Process.monitor(client)
     Process.exit(owner, :kill)
     assert_receive {:DOWN, ^monitor, :process, ^client, _}, 1_000
@@ -339,7 +340,18 @@ defmodule BeamAgent.CodexAppServerLimitsTest do
 
     %{port: port} = :sys.get_state(client)
     {:os_pid, os_pid} = Port.info(port, :os_pid)
+    kill_on_exit(os_pid)
     {client, os_pid}
+  end
+
+  # These scripts are deliberately runaway processes; the assertions in this
+  # module verify that the production watchdog kills them, but a failed
+  # assertion or an interrupted run must not leave one orphaned and spinning
+  # a CPU core forever. `kill -9` on an already-dead pid is a harmless no-op.
+  defp kill_on_exit(os_pid) do
+    on_exit(fn ->
+      System.cmd("kill", ["-9", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end)
   end
 
   defp assert_dead(os_pid, attempts \\ 100) do
