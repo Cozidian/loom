@@ -397,6 +397,9 @@ impl App {
                         self.editor.set(&self.last_submission);
                     }
                 }
+                if self.settings_pending && s(&p, "tone") == "error" {
+                    self.settings_pending = false;
+                }
             }
             "attachment_imported" => {
                 self.attachments.push(p["attachment"].clone());

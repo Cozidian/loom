@@ -744,6 +744,50 @@ defmodule BeamAgent.CLITUITest do
     assert TUI.executable() == nil
   end
 
+  test "bridge accepts combined model-picker settings actions" do
+    for action <- ~w(list catalog select save delete lock automatic refresh_catalog toggle) do
+      assert TUI.provider_settings_action?(action), action
+    end
+
+    refute TUI.provider_settings_action?("not-an-action")
+  end
+
+  test "controller locks a catalogue model without replacing the session", context do
+    {:ok, controller} =
+      Controller.start_link(
+        client: self(),
+        session_id: context.session_id,
+        config: context.config,
+        config_path: context.config_path
+      )
+
+    on_exit(fn -> if Process.alive?(controller), do: GenServer.stop(controller) end)
+
+    assert_receive {:beam_agent_tui, {:controller_ready, ^controller}}
+    assert_receive {:beam_agent_tui, {:approval_mode, :ask}}
+    assert_receive {:beam_agent_tui, {:context_stats, _stats}}
+
+    Controller.settings(controller, %{"action" => "list"})
+    assert_receive {:beam_agent_tui, {:provider_settings, snapshot}}, 2_000
+
+    Controller.settings(controller, %{
+      "action" => "lock",
+      "profile" => "echo",
+      "model" => snapshot.model || "built-in",
+      "revision" => snapshot.revision
+    })
+
+    assert_receive {:beam_agent_tui, {:settings_applied, applied}}, 2_000
+    assert applied["model"] == "built-in"
+    assert applied["model_strategy"] == "manual"
+    assert applied["profile"] == "echo"
+
+    assert_receive {:beam_agent_tui, {:model_catalog, catalog}}, 2_000
+    assert catalog.combined == true
+    assert :sys.get_state(controller).session_id == context.session_id
+    refute_receive {:beam_agent_tui, {:session_changed, _, _}}
+  end
+
   defp collect_until_turn_finished(messages) do
     receive do
       {:beam_agent_tui, {:turn_finished, _result} = message} -> Enum.reverse([message | messages])
