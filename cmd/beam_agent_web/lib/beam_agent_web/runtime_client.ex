@@ -33,6 +33,9 @@ defmodule BeamAgentWeb.RuntimeClient do
     end
   end
 
+  def observatory(session_id),
+    do: request(:get, session_prefix(session_id) <> "/observatory", nil)
+
   def command(name, arguments, session_id \\ nil) do
     request(:post, session_prefix(session_id) <> "/command", %{
       version: 1,
@@ -73,10 +76,12 @@ defmodule BeamAgentWeb.RuntimeClient do
           do: {url, headers},
           else: {url, headers, ~c"application/json", Jason.encode!(body)}
 
+      timeout = if String.ends_with?(path, "/observatory"), do: 45_000, else: 8_000
+
       case :httpc.request(
              method,
              request,
-             [timeout: 8_000, connect_timeout: 2_000, autoredirect: false],
+             [timeout: timeout, connect_timeout: 2_000, autoredirect: false],
              body_format: :binary
            ) do
         {:ok, {{_, 200, _}, _, encoded}} -> decode(encoded)

@@ -78,6 +78,7 @@ defmodule BeamAgent.ControlPlane.Catalog do
            {method, operation} in [
              {"GET", "snapshot"},
              {"GET", "conversation"},
+             {"GET", "observatory"},
              {"POST", "command"}
            ],
          {:ok, record} <-

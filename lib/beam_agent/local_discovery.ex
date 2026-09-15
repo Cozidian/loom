@@ -97,7 +97,12 @@ defmodule BeamAgent.LocalDiscovery do
   end
 
   def request(record, method, path, body \\ nil) do
-    timeout = if path == "/api/v1/identity", do: 700, else: 8_000
+    timeout =
+      cond do
+        path == "/api/v1/identity" -> 700
+        path == "/api/v1/observatory" -> 45_000
+        true -> 8_000
+      end
 
     base = [
       method: method,

@@ -255,6 +255,42 @@ defmodule BeamAgentWeb.DeskController do
     end
   end
 
+  def observatory(conn, params) do
+    if authenticated?(conn) do
+      id = params["session_id"]
+
+      case RuntimeClient.observatory(id) do
+        {:ok, report} ->
+          html(conn, Page.observatory(report, csrf(), id))
+
+        {:error, reason} ->
+          conn
+          |> put_status(422)
+          |> html(
+            Page.desk(
+              RuntimeClient.snapshot(id),
+              csrf(),
+              "Observatory unavailable: #{inspect(reason)}. It needs a readable Git workspace.",
+              id
+            )
+          )
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
+  def observatory_data(conn, params) do
+    if authenticated?(conn) do
+      case RuntimeClient.observatory(params["session_id"]) do
+        {:ok, report} -> json(conn, report)
+        {:error, _reason} -> conn |> put_status(503) |> json(%{error: "observatory_unavailable"})
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
   def observer_paths(conn, params) do
     if authenticated?(conn) do
       case RuntimeClient.command(
