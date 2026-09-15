@@ -440,7 +440,8 @@ defmodule BeamAgentWeb.Page do
 
     """
     <article class="message #{if role == "You", do: "user", else: "assistant"}" data-message="#{escape(message["id"])}">
-      <div class="message-heading"><strong>#{role}</strong><time>#{escape(message["at"])}</time></div>
+      <div class="message-heading"><strong>#{role}</strong><span class="message-meta"><time>#{escape(message["at"])}</time>
+        <button type="button" class="copy-button" aria-label="Copy message">Copy</button></span></div>
       <pre class="message-content">#{escape(message["content"])}</pre>
       #{if message["truncated"], do: "<p class=muted>Long message shortened for this view. Full content remains in session history.</p>", else: ""}
     </article>

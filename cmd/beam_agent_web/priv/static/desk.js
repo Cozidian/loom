@@ -201,6 +201,22 @@
   if (!panels) return;
   const connection = document.querySelector("#connection");
   const prompt = document.querySelector("#prompt");
+  // Delegated: #panels' innerHTML is replaced wholesale on every refresh, so a
+  // listener bound to an individual button would be gone within 2 seconds.
+  panels.addEventListener("click", async (event) => {
+    const button = event.target.closest(".copy-button");
+    if (!button) return;
+    const content = button.closest("article")?.querySelector(".message-content")?.textContent;
+    if (content == null) return;
+    const original = button.textContent;
+    try {
+      await navigator.clipboard.writeText(content);
+      button.textContent = "Copied!";
+    } catch (_) {
+      button.textContent = "Copy failed";
+    }
+    setTimeout(() => { button.textContent = original; }, 1500);
+  });
   // Memory is confined to this browser tab and removed after an accepted submit.
   const key = "beam-agent-desk-draft:" + panels.dataset.sessionId;
   try {
