@@ -97,29 +97,29 @@ defmodule BeamAgent.LocalDiscovery do
   end
 
   def request(record, method, path, body \\ nil) do
-    :inets.start()
-    url = String.to_charlist("http://127.0.0.1:#{record["http_port"]}#{path}")
-    headers = [{~c"authorization", String.to_charlist("Bearer " <> record["token"])}]
-
-    req =
-      if method == :get,
-        do: {url, headers},
-        else: {url, headers, ~c"application/json", JSON.encode!(body)}
-
     timeout = if path == "/api/v1/identity", do: 700, else: 8_000
 
-    case :httpc.request(
-           method,
-           req,
-           [timeout: timeout, connect_timeout: 500, autoredirect: false],
-           body_format: :binary
-         ) do
-      {:ok, {{_, 200, _}, _, bytes}} ->
-        case JSON.decode(bytes) do
-          {:ok, %{"ok" => true, "result" => result}} -> {:ok, result}
-          {:ok, %{"ok" => false, "error" => error}} -> {:error, error}
-          _ -> {:error, :invalid_runtime_response}
-        end
+    base = [
+      method: method,
+      url: "http://127.0.0.1:#{record["http_port"]}#{path}",
+      auth: {:bearer, record["token"]},
+      connect_options: [timeout: 500],
+      receive_timeout: timeout,
+      redirect: false,
+      retry: false
+    ]
+
+    options = if method == :get, do: base, else: Keyword.put(base, :json, body || %{})
+
+    case Req.request(options) do
+      {:ok, %Req.Response{status: 200, body: %{"ok" => true, "result" => result}}} ->
+        {:ok, result}
+
+      {:ok, %Req.Response{status: 200, body: %{"ok" => false, "error" => error}}} ->
+        {:error, error}
+
+      {:ok, %Req.Response{status: 200}} ->
+        {:error, :invalid_runtime_response}
 
       _ ->
         {:error, :runtime_unavailable}

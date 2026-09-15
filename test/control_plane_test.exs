@@ -77,6 +77,33 @@ defmodule BeamAgent.ControlPlaneTest do
     assert {:ok, _agent} = BeamAgent.agent_pid(session_id)
   end
 
+  test "an oversized request body is rejected instead of read without bound", context do
+    assert {:ok, session_id} =
+             BeamAgent.start_session(
+               data_dir: context.data_dir,
+               workspace_root: context.workspace,
+               provider: :echo
+             )
+
+    token = "control-plane-oversized-test-token"
+    assert {:ok, server} = BeamAgent.start_web_control_plane(session_id, token: token)
+    assert {:ok, url} = BeamAgent.ControlPlane.HTTPServer.url(server)
+    port = URI.parse(url).port
+
+    oversized = String.duplicate("x", 1_048_577)
+
+    request =
+      "POST /api/v1/command HTTP/1.1\r\nhost: localhost\r\n" <>
+        "authorization: Bearer #{token}\r\ncontent-length: #{byte_size(oversized)}\r\n\r\n" <>
+        oversized
+
+    assert {:ok, response} = http_request(port, request)
+    assert response =~ "413"
+
+    Process.unlink(server)
+    GenServer.stop(server)
+  end
+
   test "owner conversation is opt-in, bearer-only, replayable and separate from public metadata",
        context do
     {:ok, id} =
@@ -158,19 +185,47 @@ defmodule BeamAgent.ControlPlaneTest do
     assert Enum.all?(result.messages, &(&1.truncated and String.valid?(&1.content)))
   end
 
+  # Reads by Content-Length rather than until the peer closes the socket:
+  # the server may keep connections alive (HTTP/1.1 default), so relying on
+  # EOF would just time out.
   defp http_request(port, request) do
     with {:ok, socket} <-
            :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 2_000),
          :ok <- :gen_tcp.send(socket, request),
-         {:ok, response} <- receive_all(socket, "") do
+         {:ok, response} <- receive_response(socket, "") do
+      :gen_tcp.close(socket)
       {:ok, response}
     end
   end
 
-  defp receive_all(socket, acc) do
+  defp receive_response(socket, buffer) do
+    case :binary.match(buffer, "\r\n\r\n") do
+      {index, 4} ->
+        header_block = binary_part(buffer, 0, index + 4)
+        body_so_far = binary_part(buffer, index + 4, byte_size(buffer) - index - 4)
+        read_body(socket, header_block, body_so_far, content_length(header_block))
+
+      :nomatch ->
+        case :gen_tcp.recv(socket, 0, 2_000) do
+          {:ok, bytes} -> receive_response(socket, buffer <> bytes)
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp content_length(header_block) do
+    case Regex.run(~r/content-length:\s*(\d+)/i, header_block) do
+      [_, value] -> String.to_integer(value)
+      nil -> 0
+    end
+  end
+
+  defp read_body(_socket, header_block, body, length) when byte_size(body) >= length,
+    do: {:ok, header_block <> body}
+
+  defp read_body(socket, header_block, body, length) do
     case :gen_tcp.recv(socket, 0, 2_000) do
-      {:ok, bytes} -> receive_all(socket, acc <> bytes)
-      {:error, :closed} -> {:ok, acc}
+      {:ok, bytes} -> read_body(socket, header_block, body <> bytes, length)
       {:error, reason} -> {:error, reason}
     end
   end

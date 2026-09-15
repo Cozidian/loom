@@ -1,6 +1,6 @@
 defmodule BeamAgent.ControlPlane.HTTPServer do
   @moduledoc """
-  Dependency-free loopback web shell for `BeamAgent.ControlPlane`.
+  Authenticated loopback web shell for `BeamAgent.ControlPlane`, on Bandit/Plug.
 
   It exposes a live polling view plus the versioned runtime command protocol.
   The web process is only a client: stopping it never stops the observed goal.
@@ -10,8 +10,6 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
 
   alias BeamAgent.ControlPlane
   alias BeamAgent.Runtime.JSONProtocol
-
-  @maximum_request_bytes 1_048_576
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
   def url(server), do: GenServer.call(server, :url)
@@ -24,24 +22,18 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
 
     with true <- is_binary(token) and byte_size(token) >= 16,
          {:ok, control_plane} <- start_control_plane(session_id, opts),
-         {:ok, listener} <-
-           :gen_tcp.listen(port,
-             mode: :binary,
-             packet: :raw,
-             active: false,
-             reuseaddr: true,
-             ip: {127, 0, 0, 1}
+         {:ok, bandit} <-
+           Bandit.start_link(
+             plug: {__MODULE__.Router, control_plane: control_plane, token: token},
+             scheme: :http,
+             ip: {127, 0, 0, 1},
+             port: port,
+             startup_log: false
            ),
-         {:ok, {_ip, actual_port}} <- :inet.sockname(listener) do
-      owner = self()
-
-      acceptor =
-        spawn_link(fn -> accept_loop(listener, owner, control_plane, token) end)
-
+         {:ok, {_address, actual_port}} <- ThousandIsland.listener_info(bandit) do
       {:ok,
        %{
-         listener: listener,
-         acceptor: acceptor,
+         bandit: bandit,
          control_plane: control_plane,
          token: token,
          url: "http://127.0.0.1:#{actual_port}/?token=#{URI.encode_www_form(token)}"
@@ -56,14 +48,8 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
   def handle_call(:url, _from, state), do: {:reply, {:ok, state.url}, state}
 
   @impl true
-  def handle_info({:acceptor_failed, reason}, state),
-    do: {:stop, {:control_plane_acceptor_failed, reason}, state}
-
-  def handle_info(_message, state), do: {:noreply, state}
-
-  @impl true
   def terminate(_reason, state) do
-    :gen_tcp.close(state.listener)
+    if is_pid(state.bandit) and Process.alive?(state.bandit), do: Supervisor.stop(state.bandit)
 
     if is_pid(state.control_plane) and Process.alive?(state.control_plane),
       do: GenServer.stop(state.control_plane)
@@ -71,52 +57,13 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     :ok
   end
 
-  defp accept_loop(listener, owner, control_plane, token) do
-    case :gen_tcp.accept(listener) do
-      {:ok, socket} ->
-        handler = spawn(fn -> await_socket(control_plane, token) end)
-
-        case :gen_tcp.controlling_process(socket, handler) do
-          :ok -> send(handler, {:socket, socket})
-          {:error, _reason} -> :gen_tcp.close(socket)
-        end
-
-        accept_loop(listener, owner, control_plane, token)
-
-      {:error, :closed} ->
-        :ok
-
-      {:error, reason} ->
-        send(owner, {:acceptor_failed, reason})
+  @doc false
+  def serve_request(request, control_plane, token) do
+    if authorized?(token, request) do
+      route(request, control_plane, token)
+    else
+      response(401, "application/json", JSON.encode!(%{error: "unauthorized"}))
     end
-  end
-
-  defp await_socket(control_plane, token) do
-    receive do
-      {:socket, socket} -> serve(socket, control_plane, token)
-    after
-      5_000 -> :ok
-    end
-  end
-
-  defp serve(socket, control_plane, token) do
-    response =
-      with {:ok, request} <- read_request(socket),
-           true <- authorized?(token, request) do
-        route(request, control_plane, token)
-      else
-        false ->
-          response(401, "application/json", JSON.encode!(%{error: "unauthorized"}))
-
-        {:error, :request_too_large} ->
-          response(413, "text/plain", "request too large")
-
-        {:error, _reason} ->
-          response(400, "application/json", JSON.encode!(%{error: "bad_request"}))
-      end
-
-    :gen_tcp.send(socket, response)
-    :gen_tcp.close(socket)
   end
 
   defp start_control_plane(nil, opts), do: {:ok, {:catalog, Keyword.fetch!(opts, :catalog)}}
@@ -190,76 +137,6 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
   defp catalog_error({reason, _}) when is_atom(reason), do: to_string(reason)
   defp catalog_error(_), do: "catalog_request_failed"
 
-  defp read_request(socket), do: read_headers(socket, "")
-
-  defp read_headers(_socket, buffer) when byte_size(buffer) > @maximum_request_bytes,
-    do: {:error, :request_too_large}
-
-  defp read_headers(socket, buffer) do
-    case :binary.match(buffer, "\r\n\r\n") do
-      {index, 4} ->
-        header_bytes = binary_part(buffer, 0, index)
-        rest = binary_part(buffer, index + 4, byte_size(buffer) - index - 4)
-        parse_request(socket, header_bytes, rest)
-
-      :nomatch ->
-        case :gen_tcp.recv(socket, 0, 5_000) do
-          {:ok, bytes} -> read_headers(socket, buffer <> bytes)
-          {:error, reason} -> {:error, reason}
-        end
-    end
-  end
-
-  defp parse_request(socket, header_bytes, rest) do
-    [request_line | header_lines] = String.split(header_bytes, "\r\n")
-
-    with [method, target, _version] <- String.split(request_line, " ", parts: 3),
-         headers <- parse_headers(header_lines),
-         {:ok, content_length} <- content_length(headers),
-         true <- content_length <= @maximum_request_bytes,
-         {:ok, body} <- read_body(socket, rest, content_length) do
-      uri = URI.parse(target)
-
-      {:ok,
-       %{
-         method: method,
-         path: uri.path || "/",
-         query: URI.decode_query(uri.query || ""),
-         headers: headers,
-         body: body
-       }}
-    else
-      false -> {:error, :request_too_large}
-      _other -> {:error, :invalid_request}
-    end
-  rescue
-    _error -> {:error, :invalid_request}
-  end
-
-  defp parse_headers(lines) do
-    Map.new(lines, fn line ->
-      [name, value] = String.split(line, ":", parts: 2)
-      {String.downcase(String.trim(name)), String.trim(value)}
-    end)
-  end
-
-  defp content_length(headers) do
-    case Integer.parse(Map.get(headers, "content-length", "0")) do
-      {length, ""} when length >= 0 -> {:ok, length}
-      _other -> {:error, :invalid_content_length}
-    end
-  end
-
-  defp read_body(_socket, rest, length) when byte_size(rest) >= length,
-    do: {:ok, binary_part(rest, 0, length)}
-
-  defp read_body(socket, rest, length) do
-    case :gen_tcp.recv(socket, length - byte_size(rest), 5_000) do
-      {:ok, bytes} -> read_body(socket, rest <> bytes, length)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp authorized?(token, request) do
     supplied =
       request.query["token"] || bearer(request.headers["authorization"])
@@ -274,24 +151,7 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
   defp json(status, value),
     do: response(status, "application/json", JSONProtocol.encode_response(value))
 
-  defp response(status, content_type, body) do
-    [
-      "HTTP/1.1 #{status} #{reason(status)}\r\n",
-      "content-type: #{content_type}\r\n",
-      "content-length: #{byte_size(body)}\r\n",
-      "cache-control: no-store\r\n",
-      "connection: close\r\n\r\n",
-      body
-    ]
-  end
-
-  defp reason(200), do: "OK"
-  defp reason(400), do: "Bad Request"
-  defp reason(401), do: "Unauthorized"
-  defp reason(403), do: "Forbidden"
-  defp reason(404), do: "Not Found"
-  defp reason(413), do: "Payload Too Large"
-  defp reason(_status), do: "Internal Server Error"
+  defp response(status, content_type, body), do: {status, content_type, body}
 
   defp page(token) do
     safe_token = token |> String.replace("&", "&amp;") |> String.replace("\"", "&quot;")
