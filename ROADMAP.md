@@ -194,6 +194,17 @@ establish unattended reliability. See [commands, limits and trial evidence](docs
 - [ ] Test interruption, cancellation and reconnect around the actual coding and
   document workflows, including partially completed artifacts.
 
+### Runtime feel: live updates and sandboxed execution
+
+- [ ] Move Desk (and the Observatory) off full-page POST/reload and one-second
+  snapshot polling onto Phoenix LiveView, so turn progress, tool calls and
+  token streaming render live instead of waiting for a refresh or a poll tick.
+- [ ] Add an optional sandboxed code-execution tool with swappable backends
+  (Docker, macOS Seatbelt, Linux Bubblewrap), selected per host, so agents can
+  run and verify code without assuming one container runtime is available
+  everywhere. Surface which backend ran a given execution.
+
+Neither item has evidence yet; both are candidates to try, not commitments.
 ### Sandboxed command execution
 
 - [x] Host-selected command sandbox backends, with macOS Seatbelt as the first

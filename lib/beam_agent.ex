@@ -202,6 +202,9 @@ defmodule BeamAgent do
   def observatory(project_id, opts \\ []),
     do: BeamAgent.Project.Observatory.snapshot(project_id, opts)
 
+  def observatory_file(project_id, path),
+    do: BeamAgent.Project.Observatory.read_file(project_id, path)
+
   def project_context(project_id, request \\ %{}),
     do: BeamAgent.Project.ContextStore.assemble(project_id, request)
 
