@@ -259,6 +259,31 @@ defmodule BeamAgentWeb.DeskTest do
     assert html =~ "&lt;script&gt;"
   end
 
+  test "each conversation message gets a copy button next to a plain-text pre block" do
+    html =
+      BeamAgentWeb.Page.panels(
+        %{
+          "conversation" => %{
+            "status" => "idle",
+            "messages" => [
+              %{"role" => "user", "content" => "tell me a joke", "at" => "2026-01-01T00:00:00Z"},
+              %{
+                "role" => "assistant",
+                "content" => "Why don't scientists trust atoms?",
+                "at" => "2026-01-01T00:00:01Z"
+              }
+            ]
+          }
+        },
+        "csrf"
+      )
+
+    assert Enum.count(String.split(html, "copy-button")) - 1 == 2
+    assert html =~ ~s(aria-label="Copy message")
+    assert html =~ "tell me a joke"
+    assert html =~ "Why don&#39;t scientists trust atoms?"
+  end
+
   test "rendering escapes untrusted activity and session text" do
     html =
       BeamAgentWeb.Page.panels(
