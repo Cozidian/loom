@@ -138,6 +138,24 @@ defmodule BeamAgent.RuntimeEventViewTest do
     refute JSON.encode!(public) =~ "SECRET_ASSISTANT_TEXT"
   end
 
+  test "public completion feedback redacts recovery content" do
+    event = %{
+      payload: %{
+        type: "completion_feedback",
+        data: %{
+          "completion_reason" => "action_not_started",
+          "content" => "SECRET_RECOVERY_TEXT"
+        }
+      }
+    }
+
+    public = RuntimeEventView.project(event, :public)
+
+    assert public.payload.data["completion_reason"] == "action_not_started"
+    assert public.payload.data["content"]["redacted"]
+    refute JSON.encode!(public) =~ "SECRET_RECOVERY_TEXT"
+  end
+
   test "public work-run events expose decisions while redacting plans, results, and errors" do
     event = %{
       payload: %{

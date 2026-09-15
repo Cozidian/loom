@@ -52,7 +52,7 @@ defmodule BeamAgent.TaskClassifier do
 
     requested_construction? =
       Regex.match?(
-        ~r/(?:\A|\b(?:please|lets|let's|should|must|need\s+to|want\s+to|can\s+you|could\s+you|go\s+ahead\s+and)\s+)(?:build|create|add|integrate|scaffold|wire|update|upgrade|remove|rename|replace)\b/u,
+        ~r/(?:\A|\b(?:please|lets|let's|should|must|need\s+to|want\s+to|can\s+you|could\s+you|go\s+ahead\s+and)\s+)(?:build|create|add|integrate|scaffold|wire|update|upgrade|remove|rename|replace|make)\b/u,
         text
       )
 

@@ -1136,7 +1136,8 @@ defmodule BeamAgent.CLI.TUI do
               "assistant_message",
               "tool_called",
               "tool_result",
-              "model_response_checkpoint"
+              "model_response_checkpoint",
+              "completion_feedback"
             ],
        do: nil
 

@@ -1237,6 +1237,55 @@ defmodule BeamAgent.ProvidersTest do
     assert body["stream"] == true
   end
 
+  test "Ollama parses Qwen XML tool calls when native tool_calls are absent" do
+    response = %{
+      "done" => true,
+      "message" => %{
+        "role" => "assistant",
+        "content" =>
+          "<tool_call>\n{\"name\": \"add\", \"arguments\": {\"a\": 4, \"b\": 5}}\n</tool_call>",
+        "tool_calls" => []
+      }
+    }
+
+    assert {:ok, %{content: nil, tool_calls: [call]}} =
+             Ollama.complete([%{role: :user, content: "add"}], @tools,
+               model: "qwen3:8b",
+               base_url: "http://ollama.example",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: response
+             )
+
+    assert call.name == "add"
+    assert call.arguments == %{"a" => 4, "b" => 5}
+  end
+
+  test "Ollama streams Qwen XML tool calls out of content when native tool_calls are absent" do
+    chunks = [
+      ~s({"message":{"content":"<tool_call>\\n{\\"name\\": \\"add\\", \\"arguments\\": {\\"a\\": 8, \\"b\\": 1}}\\n</tool_call>"},"done":true}\n)
+    ]
+
+    emit = fn event -> send(self(), {:delta, event}) end
+
+    assert {:ok, %{content: nil, tool_calls: [call]}} =
+             Ollama.stream(
+               [%{role: :user, content: "add"}],
+               @tools,
+               [
+                 model: "qwen3:8b",
+                 base_url: "http://ollama.example",
+                 http_client: HTTPStub,
+                 test_pid: self(),
+                 stream_chunks: chunks
+               ],
+               emit
+             )
+
+    assert call.name == "add"
+    assert call.arguments == %{"a" => 8, "b" => 1}
+  end
+
   test "Ollama streams fragmented NDJSON and preserves final tool calls" do
     chunks = [
       ~s({"message":{"content":"local "},"done":false}\n{"message":{"cont),

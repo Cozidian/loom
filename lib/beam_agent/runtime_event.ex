@@ -203,6 +203,7 @@ defmodule BeamAgent.RuntimeEvent do
               "model_response_failed",
               "model_completion_deferred",
               "model_completion_rejected",
+              "completion_feedback",
               "assistant_message",
               "text_delta",
               "tool_call_delta",

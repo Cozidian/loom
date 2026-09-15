@@ -839,13 +839,29 @@ defmodule BeamAgent.Strategies.ToolLoop do
     attempt = completion_deferral_count(context.session_id, turn) + 1
 
     if attempt <= @non_final_response_limit do
+      tool_schemas = available_tool_schemas(context)
+      reason_text = to_string(reason)
+
+      feedback =
+        completion_recovery_prompt(context, reason_text, tool_schemas) ||
+          @completion_recovery_prompt
+          |> String.replace("%{reason}", completion_reason_text(reason_text))
+          |> String.trim()
+
       with {:ok, _} <-
              EventLog.append(context.session_id, :model_completion_deferred, %{
                "turn" => turn,
                "step" => step,
-               "completion_reason" => to_string(reason),
+               "completion_reason" => reason_text,
                "attempt" => attempt,
                "maximum_attempts" => @non_final_response_limit
+             }),
+           {:ok, _} <-
+             EventLog.append(context.session_id, :completion_feedback, %{
+               "turn" => turn,
+               "step" => step,
+               "completion_reason" => reason_text,
+               "content" => feedback
              }),
            {:ok, _} <-
              EventLog.append(context.session_id, :step_finished, %{

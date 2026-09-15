@@ -190,25 +190,89 @@ defmodule BeamAgent.Providers.Ollama do
   end
 
   defp parse_response(%{"message" => message}) do
-    calls =
-      Enum.map(message["tool_calls"] || [], fn call ->
-        function = call["function"] || %{}
+    native = normalize_tool_calls(message["tool_calls"] || [])
+    content = normalize_content(message["content"])
 
-        %{
-          id: call["id"] || Support.call_id(),
-          name: function["name"],
-          arguments: function["arguments"] || %{}
-        }
-      end)
+    {content, calls} =
+      if native != [] and valid_tool_calls?(native) do
+        {content, native}
+      else
+        case embedded_tool_calls(content) do
+          {rest, [_ | _] = embedded} -> {rest, embedded}
+          _other -> {content, native}
+        end
+      end
 
-    if Enum.all?(calls, &(is_binary(&1.name) and is_map(&1.arguments))) do
-      {:ok, %{content: normalize_content(message["content"]), tool_calls: calls}}
+    if valid_tool_calls?(calls) do
+      {:ok, %{content: content, tool_calls: calls}}
     else
       {:error, {:invalid_provider_response, message}}
     end
   end
 
   defp parse_response(response), do: {:error, {:invalid_provider_response, response}}
+
+  defp normalize_tool_calls(calls) when is_list(calls) do
+    Enum.map(calls, fn call ->
+      function = call["function"] || %{}
+
+      %{
+        id: call["id"] || Support.call_id(),
+        name: function["name"],
+        arguments: decode_arguments(function["arguments"] || %{})
+      }
+    end)
+  end
+
+  defp normalize_tool_calls(_other), do: []
+
+  defp valid_tool_calls?(calls) when is_list(calls),
+    do: Enum.all?(calls, &(is_binary(&1.name) and is_map(&1.arguments)))
+
+  defp valid_tool_calls?(_other), do: false
+
+  defp embedded_tool_calls(content) when is_binary(content) do
+    matches =
+      Regex.scan(~r/<tool_call>\s*(.*?)\s*<\/tool_call>/s, content, capture: :all_but_first)
+
+    calls =
+      Enum.flat_map(matches, fn [payload] ->
+        case JSON.decode(payload) do
+          {:ok, %{"name" => name} = decoded} when is_binary(name) ->
+            arguments = decode_arguments(decoded["arguments"] || decoded["parameters"] || %{})
+
+            if is_map(arguments) do
+              [%{id: Support.call_id(), name: name, arguments: arguments}]
+            else
+              []
+            end
+
+          _other ->
+            []
+        end
+      end)
+
+    rest =
+      content
+      |> String.replace(~r/<tool_call>\s*.*?\s*<\/tool_call>/s, "")
+      |> String.trim()
+
+    rest = if rest == "", do: nil, else: rest
+    {rest, calls}
+  end
+
+  defp embedded_tool_calls(_content), do: {nil, []}
+
+  defp decode_arguments(arguments) when is_map(arguments), do: arguments
+
+  defp decode_arguments(arguments) when is_binary(arguments) do
+    case JSON.decode(arguments) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _other -> arguments
+    end
+  end
+
+  defp decode_arguments(other), do: other
 
   defp ensure_model_present(model, %{"models" => models}) when is_list(models) do
     names = Enum.map(models, & &1["name"])

@@ -144,10 +144,11 @@ defmodule BeamAgentTest do
     def id, do: :claims_work_without_tools_test
 
     @impl true
-    def complete(_messages, tools, options) do
+    def complete(messages, tools, options) do
       if pid = options[:test_pid] || Process.whereis(:beam_agent_claims_tool_surface_test) do
         send(pid, {:claims_system_prompt, options[:system_prompt]})
         send(pid, {:claims_tools, Enum.map(tools, & &1.name)})
+        send(pid, {:claims_messages, messages})
       end
 
       {:ok, %{content: "Implemented the requested change.", tool_calls: []}}
@@ -462,12 +463,25 @@ defmodule BeamAgentTest do
                event["data"]["completion_reason"] == "action_not_started"
            end) == 2
 
+    assert Enum.count(events, fn event ->
+             event["type"] == "completion_feedback" and
+               is_binary(event["data"]["content"]) and
+               event["data"]["content"] =~ "native tool protocol"
+           end) == 2
+
     assert_receive {:claims_system_prompt, _initial_prompt}
+    assert_receive {:claims_messages, initial_messages}
+    assert List.last(initial_messages).role == :user
+
     assert_receive {:claims_system_prompt, recovery_prompt}
+    assert_receive {:claims_messages, recovery_messages}
     assert recovery_prompt =~ "Read-only investigation has already been recorded"
     assert recovery_prompt =~ "Your next response must invoke one of these tools"
     assert recovery_prompt =~ "create_file"
     assert recovery_prompt =~ "Do not perform another read-only round"
+    assert List.last(recovery_messages).role == :user
+    assert List.last(recovery_messages).content =~ "native tool protocol"
+    assert Enum.any?(recovery_messages, &(&1.role == :assistant))
 
     refute Enum.any?(events, fn event ->
              event["type"] == "turn_finished" and event["data"]["reason"] == "completed"
