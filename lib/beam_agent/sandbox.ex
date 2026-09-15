@@ -1,5 +1,37 @@
 defmodule BeamAgent.Sandbox do
-  @moduledoc "Platform command confinement resolved for one immutable workspace."
+  @moduledoc """
+  Host-selected command confinement for one immutable workspace.
+
+  The runtime picks an enforcing backend for the current OS. macOS uses
+  Seatbelt when `sandbox-exec` is present. Other platforms fail closed until
+  an enforcing backend exists. Nested shells inherit the installed policy
+  and cannot widen it. Models and clients do not choose the backend.
+  """
+
+  alias BeamAgent.Sandbox.Seatbelt
+
+  @confinement "workspace-write"
+  @backends [Seatbelt]
+  @networks ["loopback-only", "external"]
+
+  def backends, do: @backends
+
+  def selected do
+    case Enum.find(@backends, & &1.available?()) do
+      nil -> {:error, {:sandbox_unavailable, :os.type()}}
+      module -> {:ok, module}
+    end
+  end
+
+  def info do
+    case selected() do
+      {:ok, module} ->
+        {:ok, %{backend: module.id(), confinement: @confinement, available: true}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   @doc false
   def temporary_root(workspace_root) do
@@ -12,74 +44,49 @@ defmodule BeamAgent.Sandbox do
   end
 
   def command(workspace_root, command, opts \\ []) do
-    shell = System.find_executable("zsh") || System.find_executable("sh")
-    temporary = temporary_root(workspace_root)
+    with {:ok, invocation} <- wrap(workspace_root, command, opts) do
+      {:ok, invocation.executable, invocation.argv}
+    end
+  end
+
+  def wrap(workspace_root, command, opts \\ []) do
     network = Keyword.get(opts, :network, "loopback-only")
+    temporary = temporary_root(workspace_root)
 
     with :ok <- validate_network(network),
+         {:ok, backend} <- selected(),
          :ok <- File.mkdir_p(temporary) do
-      command =
-        "export TMPDIR=#{shell_quote(temporary)} BEAM_AGENT_SANDBOX=1 " <>
-          "BEAM_AGENT_SANDBOX_NETWORK=#{shell_quote(network)} " <>
-          "HEX_HOME=#{shell_quote(Path.join(temporary, "hex"))} " <>
-          "GOCACHE=#{shell_quote(Path.join(temporary, "go-build"))} " <>
-          "npm_config_cache=#{shell_quote(Path.join(temporary, "npm"))}; #{command}"
+      command = env_prefix(temporary, network) <> command
 
-      case {System.get_env("BEAM_AGENT_SANDBOX"), :os.type(), shell} do
-        {"1", {:unix, :darwin}, shell} when is_binary(shell) ->
-          inherited_network = System.get_env("BEAM_AGENT_SANDBOX_NETWORK") || "loopback-only"
+      case backend.wrap(workspace_root, command,
+             network: network,
+             temporary_root: temporary
+           ) do
+        {:ok, wrapped} ->
+          {:ok,
+           %{
+             backend: backend.id(),
+             confinement: @confinement,
+             network: network,
+             executable: wrapped.executable,
+             argv: wrapped.argv
+           }}
 
-          # A nested shell inherits its parent's Seatbelt policy. It cannot
-          # widen it or promise a narrower policy that was never installed.
-          if network != inherited_network,
-            do: {:error, :nested_sandbox_network_denied},
-            else: {:ok, shell, ["-o", "pipefail", "-lc", command]}
-
-        {_nested, {:unix, :darwin}, shell} when is_binary(shell) ->
-          {:ok, "/usr/bin/sandbox-exec",
-           [
-             "-p",
-             macos_profile(workspace_root, temporary, network),
-             shell,
-             "-o",
-             "pipefail",
-             "-lc",
-             command
-           ]}
-
-        {_nested, os, _shell} ->
-          {:error, {:sandbox_unavailable, os}}
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
 
-  defp validate_network(network) when network in ["loopback-only", "external"], do: :ok
+  defp validate_network(network) when network in @networks, do: :ok
   defp validate_network(_network), do: {:error, :invalid_command_network}
 
-  defp macos_profile(workspace_root, temporary_root, network) do
-    workspace = escape_profile(workspace_root)
-    temporary = escape_profile(temporary_root)
-
-    """
-    (version 1)
-    (deny default)
-    (allow process*)
-    (allow file-read*)
-    (allow file-write*
-      (subpath "#{workspace}")
-      (subpath "#{temporary}")
-      (literal "/dev/null"))
-    (allow sysctl-read)
-    (allow mach-lookup)
-    (allow network-bind (local ip "localhost:*"))
-    (allow network-inbound (local ip "localhost:*"))
-    (allow network-outbound (remote ip "localhost:*"))
-    #{if network == "external", do: "(allow network-outbound)", else: ""}
-    """
-  end
-
-  defp escape_profile(path) do
-    path |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
+  defp env_prefix(temporary, network) do
+    "export TMPDIR=#{shell_quote(temporary)} BEAM_AGENT_SANDBOX=1 " <>
+      "BEAM_AGENT_SANDBOX_NETWORK=#{shell_quote(network)} " <>
+      "HEX_HOME=#{shell_quote(Path.join(temporary, "hex"))} " <>
+      "GOCACHE=#{shell_quote(Path.join(temporary, "go-build"))} " <>
+      "npm_config_cache=#{shell_quote(Path.join(temporary, "npm"))}; "
   end
 
   defp canonical_temp_root do

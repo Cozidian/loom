@@ -1011,6 +1011,7 @@ defmodule BeamAgent.CLI do
 
       output("ok  data      #{config["data_dir"]}")
       output("ok  runtime   Elixir #{System.version()} / OTP #{System.otp_release()}")
+      output(sandbox_doctor_line())
     else
       {:ok, _opts, positional} ->
         usage_error("unexpected arguments: #{Enum.join(positional, " ")}")
@@ -1019,6 +1020,19 @@ defmodule BeamAgent.CLI do
         error(reason)
     end
   end
+
+  defp sandbox_doctor_line do
+    case BeamAgent.Sandbox.info() do
+      {:ok, info} ->
+        "ok  sandbox   #{info.backend} (#{info.confinement})"
+
+      {:error, {:sandbox_unavailable, os}} ->
+        "warn sandbox   unavailable (#{format_os(os)}); commands fail closed"
+    end
+  end
+
+  defp format_os({family, name}), do: "#{family}/#{name}"
+  defp format_os(other), do: inspect(other)
 
   defp provider_command(_config_path, [flag]) when flag in ["--help", "-h"],
     do: provider_help()

@@ -12,7 +12,7 @@ defmodule BeamAgent.Tools.RunCommand do
   @impl true
   def description,
     do:
-      "Run a shell command with bounded output/time inside a workspace-write sandbox. Network defaults to loopback-only; request network=external for dependency downloads, subject to host capability and approval policy. Hex, Go and npm caches are writable under TMPDIR. A non-zero exit status is a failed tool call with diagnostic output."
+      "Run a shell command with bounded output/time inside a workspace-write sandbox. The runtime selects the host backend (macos-seatbelt on macOS) and returns it as sandbox_backend. Network defaults to loopback-only; request network=external for dependency downloads, subject to host capability and approval policy. Hex, Go and npm caches are writable under TMPDIR. A non-zero exit status is a failed tool call with diagnostic output."
 
   @impl true
   def input_schema do
@@ -48,10 +48,10 @@ defmodule BeamAgent.Tools.RunCommand do
     with true <- is_integer(timeout) and timeout in 100..120_000,
          {:ok, cwd} <- FileSupport.resolve(context, cwd),
          {:ok, %File.Stat{type: :directory}} <- File.stat(cwd),
-         {:ok, executable, argv} <-
-           Sandbox.command(context.workspace_root, command, network: network),
+         {:ok, invocation} <-
+           Sandbox.wrap(context.workspace_root, command, network: network),
          {:ok, result} <-
-           Subprocess.run(executable, argv,
+           Subprocess.run(invocation.executable, invocation.argv,
              cwd: cwd,
              timeout_ms: timeout,
              max_output_bytes: 32_000,
@@ -66,8 +66,9 @@ defmodule BeamAgent.Tools.RunCommand do
         status: result.status,
         output: result.output,
         truncated: result.truncated,
-        sandbox: "workspace-write",
-        network: network,
+        sandbox: invocation.confinement,
+        sandbox_backend: invocation.backend,
+        network: invocation.network,
         changed_files: Enum.take(workspace_delta.changed_files, 200),
         changed_file_count: changed_file_count,
         changed_files_truncated: changed_file_count > 200,

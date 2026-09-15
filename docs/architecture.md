@@ -456,9 +456,13 @@ match once and creates remain exclusive. Before a write, the project-owned
 structured conflict, while actor death or Goal completion releases its leases.
 This protection spans sibling goals sharing a canonical workspace; isolated
 worktrees remain separate lease namespaces. Commands use explicit cwd, timeout,
-output limits, and an enforcing platform sandbox. Non-zero exits are tool errors
-with `ok: false`, exit status, and output so failing checks become repair evidence.
-A missing sandbox backend remains an error. Commands default to loopback-only
+output limits, and an enforcing platform sandbox. The runtime selects a host
+backend; macOS uses Seatbelt (`macos-seatbelt`) via `sandbox-exec`. Command
+results include `sandbox_backend` alongside the `workspace-write` confinement.
+Non-zero exits are tool errors with `ok: false`, exit status, and output so
+failing checks become repair evidence.
+A missing sandbox backend remains an error. Models cannot choose or disable the
+backend. Commands default to loopback-only
 networking. An explicit external-network request is authorized as `hosts: "*"`
 before approval; a finite host allowlist cannot grant an arbitrary networked shell.
 The approval resource distinguishes offline and external commands. External

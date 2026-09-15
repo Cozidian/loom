@@ -553,6 +553,8 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
 
       {:ok, command_data} = JSON.decode(command_result)
       assert command_data["status"] == 0
+      assert command_data["sandbox"] == "workspace-write"
+      assert command_data["sandbox_backend"] == "macos-seatbelt"
       assert File.read!(Path.join(context.workspace, "command.txt")) == "inside"
 
       if System.get_env("BEAM_AGENT_SANDBOX") != "1" do
