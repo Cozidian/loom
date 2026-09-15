@@ -3,7 +3,7 @@ defmodule BeamAgent.CLI.Config do
 
   alias BeamAgent.Providers
 
-  @version 10
+  @version 11
   @profile_keys [
     "provider",
     "model",
@@ -21,7 +21,10 @@ defmodule BeamAgent.CLI.Config do
     "model_concurrency",
     "data_dir",
     "context_window_tokens",
-    "compaction_threshold_percent"
+    "compaction_threshold_percent",
+    "memory_enabled",
+    "memory_max_entries",
+    "memory_max_bytes"
   ]
 
   def path do
@@ -50,7 +53,10 @@ defmodule BeamAgent.CLI.Config do
       "model_concurrency" => 4,
       "data_dir" => Path.join([data_home(), "beam_agent", "sessions"]),
       "context_window_tokens" => 32_000,
-      "compaction_threshold_percent" => 75
+      "compaction_threshold_percent" => 75,
+      "memory_enabled" => true,
+      "memory_max_entries" => 200,
+      "memory_max_bytes" => 500_000
     }
   end
 
@@ -356,7 +362,18 @@ defmodule BeamAgent.CLI.Config do
   defp migrate(%{"version" => 9} = config) do
     # Preserve legacy spending/parallelism until the user explicitly opts in.
     mode = if config["model_strategy"] == "auto", do: "auto", else: "solo"
-    {:ok, config |> Map.put("version", @version) |> Map.put_new("team_mode", mode)}
+    config |> Map.put("version", 10) |> Map.put_new("team_mode", mode) |> migrate()
+  end
+
+  defp migrate(%{"version" => 10} = config) do
+    defaults = defaults()
+
+    config
+    |> Map.put("version", @version)
+    |> Map.put_new("memory_enabled", defaults["memory_enabled"])
+    |> Map.put_new("memory_max_entries", defaults["memory_max_entries"])
+    |> Map.put_new("memory_max_bytes", defaults["memory_max_bytes"])
+    |> migrate()
   end
 
   defp migrate(config), do: {:ok, config}
@@ -415,7 +432,11 @@ defmodule BeamAgent.CLI.Config do
          :ok <- validate_model_strategy(config["model_strategy"]),
          :ok <- validate_team_mode(config["team_mode"]),
          :ok <- validate_capacity(config["max_workers"], "max_workers"),
-         :ok <- validate_capacity(config["model_concurrency"], "model_concurrency") do
+         :ok <- validate_capacity(config["model_concurrency"], "model_concurrency"),
+         :ok <- validate_enabled(config["memory_enabled"]),
+         :ok <- require_integer(config["memory_max_entries"], "memory_max_entries", 1, 5_000),
+         :ok <-
+           require_integer(config["memory_max_bytes"], "memory_max_bytes", 10_000, 10_000_000) do
       :ok
     end
   end

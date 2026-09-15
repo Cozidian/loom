@@ -17,6 +17,7 @@ defmodule BeamAgent.ControlPlane do
   def snapshot(control_plane), do: GenServer.call(control_plane, :snapshot, 30_000)
   def conversation(control_plane), do: GenServer.call(control_plane, :conversation)
   def identity(control_plane), do: GenServer.call(control_plane, :identity)
+  def activity(control_plane), do: GenServer.call(control_plane, :activity)
   def submit(control_plane, prompt), do: GenServer.call(control_plane, {:submit, prompt})
   def cancel(control_plane), do: GenServer.call(control_plane, :cancel)
 
@@ -68,6 +69,8 @@ defmodule BeamAgent.ControlPlane do
 
   def handle_call(:identity, _from, state),
     do: {:reply, {:ok, %{session_id: state.session_id}}, state}
+
+  def handle_call(:activity, _from, state), do: {:reply, Runtime.activity(state.runtime), state}
 
   def handle_call(:conversation, _from, %{owner_view?: true} = state),
     do: {:reply, {:ok, Map.put(state.conversation, :session_id, state.session_id)}, state}

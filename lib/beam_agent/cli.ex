@@ -291,7 +291,10 @@ defmodule BeamAgent.CLI do
       "model_concurrency" => opts[:model_concurrency] || defaults["model_concurrency"],
       "data_dir" => Path.expand(data_dir),
       "context_window_tokens" => parse_integer(context_window),
-      "compaction_threshold_percent" => parse_integer(compact_at)
+      "compaction_threshold_percent" => parse_integer(compact_at),
+      "memory_enabled" => defaults["memory_enabled"],
+      "memory_max_entries" => defaults["memory_max_entries"],
+      "memory_max_bytes" => defaults["memory_max_bytes"]
     }
 
     {:ok, globals}
@@ -580,6 +583,9 @@ defmodule BeamAgent.CLI do
           data_dir: config["data_dir"],
           context_window_tokens: config["context_window_tokens"],
           compaction_threshold_percent: config["compaction_threshold_percent"],
+          memory_enabled: config["memory_enabled"],
+          memory_max_entries: config["memory_max_entries"],
+          memory_max_bytes: config["memory_max_bytes"],
           workspace_root: config["workspace_root"],
           approval_policy: Config.approval_policy_atom(config["approval_policy"]),
           model_strategy: Config.model_strategy_atom(config["model_strategy"]),
@@ -608,6 +614,9 @@ defmodule BeamAgent.CLI do
               data_dir: config["data_dir"],
               context_window_tokens: config["context_window_tokens"],
               compaction_threshold_percent: config["compaction_threshold_percent"],
+              memory_enabled: config["memory_enabled"],
+              memory_max_entries: config["memory_max_entries"],
+              memory_max_bytes: config["memory_max_bytes"],
               workspace_root: config["workspace_root"],
               approval_policy: Config.approval_policy_atom(config["approval_policy"]),
               model_strategy: Config.model_strategy_atom(config["model_strategy"]),

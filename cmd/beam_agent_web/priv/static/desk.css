@@ -59,7 +59,15 @@ h2 { font-size: 21px; line-height: 1.35; font-weight: 550; margin: 12px 0; lette
 .card-chrome { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); margin: 0 -24px 22px; padding: 10px 16px; background: #ffffff02; font: 10px/1.4 var(--mono); color: var(--muted); }
 .card-chrome > span:first-child { color: #887391; font-size: 8px; letter-spacing: 4px; }
 .session-card .eyebrow { color: var(--accent); font-size: 10px; letter-spacing: 1px; }
-.session-card h2 { overflow-wrap: anywhere; }
+.session-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.session-top p { margin: 0; }
+.status-pill { display: inline-flex; align-items: center; gap: 5px; flex: none; font: 10px/1.5 var(--mono); letter-spacing: .5px; border-radius: 5px; padding: 4px 9px; white-space: nowrap; }
+.status-idle { color: var(--muted); border: 1px solid var(--line); background: #ffffff05; }
+.status-running { color: var(--accent); border: 1px solid #a4e3c22e; background: #a4e3c209; }
+.status-cancelling { color: #e3c48a; border: 1px solid #e3c48a2e; background: #e3c48a09; }
+.status-unknown { color: var(--muted); border: 1px dashed var(--line); background: transparent; }
+.session-card h2 { overflow-wrap: anywhere; margin-top: 14px; }
+.session-meta { color: var(--muted); font-size: 11px; margin: 8px 0 14px; }
 .session-card code, .session-id { font: 11px/1.7 var(--mono); overflow-wrap: anywhere; }
 .session-id { color: var(--muted); }
 .session-open { display: inline-block; color: var(--accent); border: 1px solid #a4e3c247; background: #a4e3c20a; padding: 8px 14px; border-radius: 5px; text-decoration: none; font: 12px/1.6 var(--mono); }

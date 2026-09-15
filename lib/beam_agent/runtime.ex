@@ -67,6 +67,7 @@ defmodule BeamAgent.Runtime do
     do: Client.reconnect(client, session_id, opts)
 
   def status(client), do: Client.status(client)
+  def activity(client), do: Client.activity(client)
 
   def documentation_mission(client, action, options \\ %{}) do
     with {:ok, goal_id} <- Client.goal_id(client),
