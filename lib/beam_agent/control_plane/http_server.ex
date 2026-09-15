@@ -98,6 +98,13 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     end
   end
 
+  defp route(%{method: "GET", path: "/api/v1/observatory"}, control_plane, _token) do
+    case ControlPlane.observatory(control_plane) do
+      {:ok, report} -> json(200, %{ok: true, result: report})
+      {:error, reason} -> json(200, %{ok: false, error: catalog_error(reason)})
+    end
+  end
+
   defp route(%{method: "GET", path: "/"}, _control_plane, token),
     do: response(200, "text/html; charset=utf-8", page(token))
 

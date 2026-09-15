@@ -85,6 +85,8 @@ aside .eyebrow { margin: 0 12px 12px; font-size: 9px; }
 .nav { padding: 11px 12px; text-decoration: none; color: var(--muted); border-radius: 5px; margin-bottom: 6px; font: 12px/1.65 var(--mono); border: 1px solid transparent; }
 .nav.active { background: #a4e3c20c; color: var(--accent); border-color: #a4e3c226; }
 .nav:hover { background: #ffffff06; }
+.nav-feature { margin-top: 10px; background: #a4e3c216; color: var(--accent); border-color: #a4e3c23d; font-weight: 600; }
+.nav-feature:hover { background: #a4e3c22a; }
 .aside-bottom { margin-top: auto; padding-top: 32px; font: 10px/1.8 var(--mono); color: var(--muted); }
 .aside-bottom .night-scene { border-radius: 6px; border: 1px solid var(--line); }
 .aside-bottom .night-scene img { height: 118px; }

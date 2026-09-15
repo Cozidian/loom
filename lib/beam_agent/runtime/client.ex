@@ -50,6 +50,7 @@ defmodule BeamAgent.Runtime.Client do
   def progress(client), do: GenServer.call(client, :progress)
   def budget(client), do: GenServer.call(client, :budget)
   def repository(client), do: GenServer.call(client, :repository)
+  def observatory(client), do: GenServer.call(client, :observatory, 45_000)
   def project_context(client, request), do: GenServer.call(client, {:project_context, request})
   def resource_pools(client), do: GenServer.call(client, :resource_pools)
   def path_leases(client), do: GenServer.call(client, :path_leases)
@@ -348,6 +349,9 @@ defmodule BeamAgent.Runtime.Client do
 
   def handle_call(:repository, _from, state),
     do: {:reply, BeamAgent.repository(state.project_id), state}
+
+  def handle_call(:observatory, _from, state),
+    do: {:reply, BeamAgent.observatory(state.project_id), state}
 
   def handle_call({:project_context, request}, _from, state),
     do: {:reply, BeamAgent.project_context(state.project_id, request), state}

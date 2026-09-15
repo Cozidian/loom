@@ -26,6 +26,8 @@ defmodule BeamAgentWeb.Router do
     get("/observer", DeskController, :observer)
     get("/observer/paths", DeskController, :observer_paths)
     get("/observer/followup", DeskController, :observer_followup)
+    get("/observatory", DeskController, :observatory)
+    get("/observatory/data", DeskController, :observatory_data)
     get("/sessions-panel", DeskController, :sessions_panel)
     post("/sessions", DeskController, :create_session)
     get("/sessions", DeskController, :index)
@@ -38,6 +40,8 @@ defmodule BeamAgentWeb.Router do
     get("/sessions/:session_id/observer", DeskController, :observer)
     get("/sessions/:session_id/observer/paths", DeskController, :observer_paths)
     get("/sessions/:session_id/observer/followup", DeskController, :observer_followup)
+    get("/sessions/:session_id/observatory", DeskController, :observatory)
+    get("/sessions/:session_id/observatory/data", DeskController, :observatory_data)
     post("/sessions/:session_id/commands/:command", DeskController, :command)
     post("/commands/:command", DeskController, :command)
   end
