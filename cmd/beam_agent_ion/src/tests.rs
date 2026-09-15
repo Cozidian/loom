@@ -702,6 +702,27 @@ fn combined_picker_defaults_to_loom_filters_and_locks_without_submitting() {
 }
 
 #[test]
+fn combined_picker_releases_settings_lock_after_runtime_error_notice() {
+    let mut a = ready();
+    a.apply(
+        json!({"type":"models","combined":true,"model_strategy":"auto","revision":"rev1","models":[
+            {"profile":"ollama","model":"gpt-oss:20b","enabled":true,"health":"available"}
+        ]}),
+    );
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.outgoing.pop().unwrap()["action"], "lock");
+    assert!(a.settings_pending);
+    a.apply(json!({"type":"notice","tone":"error","message":"Action rejected by runtime"}));
+    assert!(!a.settings_pending);
+    key(&mut a, KeyCode::Enter);
+    let retry = a.outgoing.pop().unwrap();
+    assert_eq!(retry["action"], "lock");
+    assert_eq!(retry["model"], "gpt-oss:20b");
+    assert!(!render(&mut a, 110, 35).contains("Wait for the runtime/settings request"));
+}
+
+#[test]
 fn combined_picker_handles_no_matches_disabled_models_and_refresh_without_stack_growth() {
     let mut a = ready();
     let catalog = json!({"type":"model_catalog","combined":true,"model_strategy":"auto","revision":"rev1","models":[{"profile":"cloud","model":"strong","enabled":false}]});

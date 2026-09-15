@@ -5,6 +5,7 @@ defmodule BeamAgent.CLI.TUI do
   alias BeamAgent.CLI.TUI.Controller
 
   @commands ~w(connect providers auto status new sessions models tournament race skills reload compact verify steer events tree budget repository resources organizations worktrees files resume mission)a
+  @provider_settings_actions ~w(list catalog select save delete lock automatic refresh_catalog toggle)
   @competition_event_types ~w(tournament_started tournament_candidate_started tournament_candidate_completed tournament_judgment_requested tournament_winner_selected tournament_collapsed tournament_inconclusive tournament_judgment_unresolved race_started race_candidate_started race_candidate_completed race_candidate_rejected race_candidate_cancelled race_winner_selected race_settled race_inconclusive)
   @competition_activity_types ~w(model_response_started model_response_failed tool_called tool_result verification_started verification_finished)
 
@@ -37,6 +38,10 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   def executable(_frontend), do: nil
+
+  @doc false
+  def provider_settings_action?(action) when is_binary(action),
+    do: action in @provider_settings_actions
 
   def run(session_id, config, config_path \\ Config.path()) do
     with executable when is_binary(executable) <- executable(config["frontend"]),
@@ -478,7 +483,7 @@ defmodule BeamAgent.CLI.TUI do
   end
 
   defp dispatch_action(%{"type" => "provider_settings", "action" => action} = request, controller)
-       when action in ["list", "catalog", "select", "save", "delete"] do
+       when action in @provider_settings_actions do
     Controller.settings(controller, Map.delete(request, "type"))
     :ok
   end
