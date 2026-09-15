@@ -6,13 +6,13 @@ inspecting its owners, and examining what actually happened.
 
 ION does not create a second agent runtime. Elixir still owns provider routing,
 supervision, delegation, races/tournaments, tools, policy, persistence and recovery.
-ION is the default. The original Go frontend remains available with `--frontend go`.
+ION is the only terminal frontend.
 
 ## Run
 
-Requires Elixir/OTP and Rust 1.88 or newer, on a Unix terminal. Go is unnecessary
-when building only ION. Use a UTF-8 terminal with true-color support for the full
-palette; the UI also adapts to narrow terminals without requiring a Nerd Font.
+Requires Elixir/OTP and Rust 1.88 or newer, on a Unix terminal. Use a UTF-8
+terminal with true-color support for the full palette; the UI also adapts to
+narrow terminals without requiring a Nerd Font.
 
 ```sh
 mix loom.build
@@ -21,8 +21,8 @@ mix loom.build
 
 The existing CLI configuration, setup wizard, flags, workspace and provider
 profiles apply unchanged. To launch from another directory, use an absolute path
-to `loom` and keep `beam_agent_ion` beside it. The default
-`mix loom.build` prepares ION and Desk; `--frontend all` also builds Go.
+to `loom` and keep `beam_agent_ion` beside it. The default `mix loom.build`
+prepares both ION and Desk; `--frontend rust` or `--frontend web` builds just one.
 For a terminal-only build (`--frontend rust`), use `loom run` instead of the
 service-backed entry point; the service normally hosts Desk as well.
 
@@ -202,12 +202,11 @@ activity timer. This removes UI-side waiting
 for initialization, but does **not** remove Elixir VM/session startup before the
 CLI launches its frontend. First-frame timing is not end-to-end launch timing.
 
-The transport is identical to `cmd/beam_agent_tui/main.go` and
-`BeamAgent.CLI.TUI`: fd 3 receives and fd 4 sends four-byte big-endian length
-prefixed UTF-8 JSON packets, with a 16 MiB maximum frame. stdin/stdout belong only
-to the terminal. Provider management adds `provider_settings` actions and
-`provider_settings`, `model_catalog`, `settings_applied`, and `settings_failed`
-notifications to the same bridge. Existing Go-client messages are unchanged.
+The transport is defined by `BeamAgent.CLI.TUI`: fd 3 receives and fd 4 sends
+four-byte big-endian length prefixed UTF-8 JSON packets, with a 16 MiB maximum
+frame. stdin/stdout belong only to the terminal. Provider management adds
+`provider_settings` actions and `provider_settings`, `model_catalog`,
+`settings_applied`, and `settings_failed` notifications to the same bridge.
 Discovery is read-only and runs off the controller; no model inference is used
 to populate a catalogue. Settings saves are acknowledged by the runtime.
 
@@ -253,7 +252,7 @@ model against the installed Codex App Server's paginated `model/list` catalogue.
 This follows [OpenAI's model discovery guidance](https://learn.chatgpt.com/docs/app-server#list-models-modellist).
 Existing threads are reused without repeating the check on every tool response.
 Unavailable-model errors list the catalogue and explain `--model MODEL`; nested
-provider JSON errors are unwrapped into readable messages in both TUIs.
+provider JSON errors are unwrapped into readable messages in the TUI.
 
 If a saved model is rejected, select an available model explicitly using
 `./loom --model MODEL`, or update
@@ -262,10 +261,11 @@ configuration is silently changed.
 
 ## Current boundaries
 
-This is a new alternative, not a claim of complete Go-client feature parity.
 It supports file-based image attachment, not OS clipboard image capture. Text
-rendering recognizes headings and fenced code but is not a full Markdown engine.
-Some operational views intentionally expose the runtime's JSON in a dossier.
-The live transcript keeps up to 600 entries; the live ledger keeps 1,200 events.
-There is no mouse interaction or direct remote-node connection: networking and
-distributed agents remain runtime responsibilities behind the same bridge.
+rendering (`src/markdown.rs`) covers headings, emphasis, inline/fenced code,
+tables, lists (including task lists), block quotes, links and rules, wrapped and
+styled for the pane width — not a full CommonMark/HTML engine. Some operational
+views intentionally expose the runtime's JSON in a dossier. The live transcript
+keeps up to 600 entries; the live ledger keeps 1,200 events. There is no mouse
+interaction or direct remote-node connection: networking and distributed agents
+remain runtime responsibilities behind the same bridge.

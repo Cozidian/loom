@@ -7,8 +7,7 @@ against current code; the roadmap is a direction to discuss, not a specification
 ## Set up
 
 Use Elixir 1.19 with compatible Erlang/OTP (tested with OTP 28), Rust 1.88+ and
-Git and ripgrep (`brew install ripgrep` on macOS). Go 1.26+ is needed only for the
-original Go frontend. Node.js/npm and Google
+Git and ripgrep (`brew install ripgrep` on macOS). Node.js/npm and Google
 Chrome are needed for browser tests. The guarded document rendering adapter
 additionally requires macOS, Microsoft Word and Poppler; see the
 [document guide](docs/document-workflow.md).
@@ -38,7 +37,6 @@ mix compile --warnings-as-errors
 mix test
 cargo test --locked --manifest-path cmd/beam_agent_ion/Cargo.toml
 cargo clippy --locked --manifest-path cmd/beam_agent_ion/Cargo.toml --all-targets -- -D warnings
-go test ./cmd/beam_agent_tui
 git diff --check
 ```
 

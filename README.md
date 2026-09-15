@@ -97,8 +97,7 @@ leaving publication to you is not yet a separate enforced permission category.
 Sandboxed command execution currently has a macOS backend; other platforms
 fail closed until an enforcing backend is available.
 
-The original Go TUI remains available with `mix loom.build --frontend go`
-and `./loom tui --frontend go`. A terminal-only build can use `--frontend rust`
+A terminal-only build can use `--frontend rust`
 with the legacy terminal-owned `./loom run` entry point; the service build includes Desk.
 See the [operations guide](docs/operations.md) for provider
 authentication, saved profiles, line mode, sessions and embedding.

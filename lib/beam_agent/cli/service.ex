@@ -70,7 +70,7 @@ defmodule BeamAgent.CLI.Service do
       )
 
     result =
-      with true <- rest == [] and invalid == [] and opts[:frontend] in [nil, "rust", "go"],
+      with true <- rest == [] and invalid == [] and opts[:frontend] in [nil, "rust"],
            true <- opts[:tui] != true or TUI.available?(true, opts[:frontend]),
            :ok <- ensure(config_path),
            {:ok, record} <- Storage.lookup(),
@@ -102,7 +102,7 @@ defmodule BeamAgent.CLI.Service do
       OptionParser.parse(args, strict: [workspace: :string, session: :string, frontend: :string])
 
     result =
-      with true <- rest == [] and invalid == [] and opts[:frontend] in [nil, "rust", "go"],
+      with true <- rest == [] and invalid == [] and opts[:frontend] in [nil, "rust"],
            true <- TUI.available?(true, opts[:frontend]),
            :ok <- ensure(config_path),
            {:ok, record} <- Storage.lookup(),

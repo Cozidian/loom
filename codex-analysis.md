@@ -220,7 +220,7 @@ OTP should not be pushed aside. Keep:
 
 The image-paste implementation is a good example of the architecture working at the feature level:
 
-- OS clipboard conversion exists in `cmd/beam_agent_tui/clipboard_image.go`
+- OS clipboard conversion existed in the now-removed Go TUI (`clipboard_image.go`); the current Rust/ION frontend supports file-based image attachment only
 - Durable/private storage exists in `lib/beam_agent/session/attachment_store.ex`
 - Provider paths receive native images
 

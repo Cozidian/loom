@@ -4,8 +4,8 @@
 
 Detailed CLI, configuration, provider and embedding reference, relocated from
 the README on 2026-09-10. Commands assume the repository root unless otherwise
-noted. The original Go terminal controls are described below; for Rust/ION use
-the [ION field manual](ion-tui.md). This reference describes implementation,
+noted. Terminal controls are described below; for the full Rust/ION reference
+see the [ION field manual](ion-tui.md). This reference describes implementation,
 not a fixed product specification; verify behavior against the current code.
 
 Runtime building blocks include:
@@ -40,10 +40,8 @@ Runtime building blocks include:
 - `:rest_for_one` recovery from durable-state dependency loss.
 
 The runtime uses Elixir's built-in `JSON` module and OTP's `:httpc` client for
-provider calls. Terminal clients share the same runtime bridge: the original Go
-client uses Charm's Bubble Tea, Bubbles, and Lip Gloss; the alternative
-[ION frontend](ion-tui.md) uses Rust and Ratatui, with mission, actor, and
-evidence workspaces.
+provider calls. The terminal client, [ION](ion-tui.md), uses Rust and Ratatui,
+with mission, actor, and evidence workspaces over the same runtime bridge.
 
 ## Build and configure the CLI
 
@@ -53,11 +51,11 @@ mix beam_agent.build
 ```
 
 The default one-time build requires Elixir/OTP and Rust 1.88+, and prepares ION,
-Phoenix Desk and the CLI. ION is the default terminal client, with Go as a fallback
-if only that binary exists. Keep `beam_agent` and `beam_agent_ion` together when
-moving them. Desk currently also needs `cmd/beam_agent_web` and its built Mix
-dependencies beside the CLI; this is a checkout workflow, not a standalone release.
-No environment exports are needed for ordinary startup.
+Phoenix Desk and the CLI. ION is the only terminal client. Keep `beam_agent` and
+`beam_agent_ion` together when moving them. Desk currently also needs
+`cmd/beam_agent_web` and its built Mix dependencies beside the CLI; this is a
+checkout workflow, not a standalone release. No environment exports are needed
+for ordinary startup.
 
 For only the terminal client:
 
@@ -67,9 +65,9 @@ mix beam_agent.build --frontend rust
 ```
 
 Preview the design without a provider or configuration using
-`./beam_agent_ion --demo`. `mix beam_agent.build --frontend all` also builds the
-Go client (requires Go); select it with `./beam_agent --frontend go`.
-`--frontend web` prepares Desk alone, and `mix escript.build` builds only the CLI.
+`./beam_agent_ion --demo`. `mix beam_agent.build --frontend rust` builds only
+the terminal client, `--frontend web` prepares Desk alone, and `mix escript.build`
+builds only the CLI.
 Explicit `BEAM_AGENT_TUI_BIN` overrides remain available for custom packaging.
 See the [ION field manual](ion-tui.md)
 for controls, protocol details, and verification commands.
@@ -151,9 +149,9 @@ The CLI also exposes durable-session and capability discovery:
 ```
 
 Interactive chat opens a full-screen TUI when a capable terminal is attached.
-Go owns the terminal and disables mouse reporting; Elixir continues to own the
-session, provider stream, tools, cancellation, and approvals through a framed
-local bridge.
+ION owns the terminal and limits mouse reporting to scroll-wheel paging;
+Elixir continues to own the session, provider stream, tools, cancellation, and
+approvals through a framed local bridge.
 It keeps the workspace, active profile/model, durable session, turn state,
 streaming response, tool activity, and approval requests visible without
 scrolling the shell. Press `Ctrl+P` for the command palette, `Ctrl+O` to add a
@@ -194,7 +192,7 @@ The event inspector accepts composable filters, for example:
 Available filters cover category, event type, root/child worker, session prefix,
 correlation and causation prefixes, cursor range, redaction state, ordering, and
 a bounded result limit. Filtering and counting run in the Elixir goal runtime;
-the Go terminal only submits the query and renders the safe public results.
+the terminal only submits the query and renders the safe public results.
 The local interfaces, loopback web control plane, VS Code/Emacs adapters, and
 streaming JSON-lines API use the same `BeamAgent.Runtime` contract. A connection atomically receives
 replay and subscribes to later goal events, exposes its durable cursor, and can
@@ -208,7 +206,6 @@ connection/model; Enter on Loom picks releases the lock. `/` searches, `r`
 refreshes, and `p` opens provider management. Add connections without choosing a
 favorite model; Space enables/disables a connection. See [ION](ion-tui.md#providers-and-models)
 for discovery adapters, cache behavior, and the legacy default-selection form.
-The Go client retains its model inventory, health and Provider Market views.
 `/models refresh` refreshes discovery and health; `/models ENDPOINT_ID` checks
 one endpoint. Runtime callers can use `BeamAgent.Runtime.model_catalog/1` and
 `refresh_model_catalog/1`; programmatic projects opt into background discovery

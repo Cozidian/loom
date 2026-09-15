@@ -21,9 +21,8 @@ defmodule BeamAgent.CLI.TUI do
   @doc false
   def executable(frontend \\ nil)
 
-  def executable(frontend) when frontend in ["rust", "go"] do
-    binaries(if(frontend == "rust", do: "beam_agent_ion", else: "beam_agent_tui"))
-    |> Enum.find_value(&System.find_executable/1)
+  def executable("rust") do
+    binaries("beam_agent_ion") |> Enum.find_value(&System.find_executable/1)
   end
 
   def executable(nil) do
@@ -33,10 +32,11 @@ defmodule BeamAgent.CLI.TUI do
         System.find_executable(path)
 
       _ ->
-        (binaries("beam_agent_ion") ++ binaries("beam_agent_tui"))
-        |> Enum.find_value(&System.find_executable/1)
+        binaries("beam_agent_ion") |> Enum.find_value(&System.find_executable/1)
     end
   end
+
+  def executable(_frontend), do: nil
 
   def run(session_id, config, config_path \\ Config.path()) do
     with executable when is_binary(executable) <- executable(config["frontend"]),
@@ -454,7 +454,7 @@ defmodule BeamAgent.CLI.TUI do
         :ok
 
       {^port, {:exit_status, status}} ->
-        {:error, {:go_tui_exit, status}}
+        {:error, {:tui_exit, status}}
 
       {^port, :eof} ->
         bridge_loop(port, controller, monitor)
@@ -675,17 +675,17 @@ defmodule BeamAgent.CLI.TUI do
 
     {:ok, port}
   rescue
-    error -> {:error, {:go_tui_start_failed, Exception.message(error)}}
+    error -> {:error, {:tui_start_failed, Exception.message(error)}}
   end
 
   defp send_packet(port, payload) do
     if Port.command(port, JSON.encode!(payload)) do
       :ok
     else
-      {:error, :go_tui_closed}
+      {:error, :tui_closed}
     end
   rescue
-    error -> {:error, {:go_tui_write_failed, Exception.message(error)}}
+    error -> {:error, {:tui_write_failed, Exception.message(error)}}
   end
 
   defp history(events) do

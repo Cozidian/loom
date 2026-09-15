@@ -7,7 +7,6 @@
 /.beam_agent/tmp/
 /beam_agent
 /loom
-/beam_agent_tui
 /beam_agent_ion
 /cmd/beam_agent_ion/target/
 /cmd/beam_agent_web/_build/

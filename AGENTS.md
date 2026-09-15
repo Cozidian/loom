@@ -74,7 +74,6 @@ mix test
 mix format --check-formatted
 cargo test --locked --manifest-path cmd/beam_agent_ion/Cargo.toml
 cargo clippy --locked --manifest-path cmd/beam_agent_ion/Cargo.toml --all-targets -- -D warnings
-go test ./cmd/beam_agent_tui
 git diff --check
 ```
 
