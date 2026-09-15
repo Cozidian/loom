@@ -163,7 +163,7 @@ pub fn draw(f: &mut Frame, a: &mut App) {
                 if a.connected { MUTED } else { RED },
             ),
             line(
-                "  ^P commands  ^R prompts  ^Y copy  ^J newline  PgUp trail  ^C cancel  ^Q exit",
+                "  ^P commands  ^R prompts  ^Y copy  mouse-select  ^J newline  PgUp trail  ^C cancel  ^Q exit",
                 MUTED,
             ),
         ],

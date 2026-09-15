@@ -533,8 +533,9 @@ the active interface turn task, cancellation, approvals, and session
 rebinding. The thin `BeamAgent.CLI.TUI.Controller` maps runtime notifications
 and CLI-only commands to terminal payloads. The client retains stdin and
 stdout for terminal presentation while Erlang's port driver reserves file
-descriptors 3 and 4 for the private protocol; the view leaves mouse reporting
-limited to scroll-wheel events, which page the transcript.
+descriptors 3 and 4 for the private protocol; the view does not enable mouse
+capture, so native terminal selection and copy remain available. PageUp and
+PageDown page the transcript.
 
 The bridge subscribes to the goal-wide runtime event projection used by future
 views; it does not interpret provider protocols or own conversation state. It
