@@ -345,6 +345,15 @@ defmodule BeamAgent.Session.EventLog do
     [%{role: :user, content: data["content"] || "Review failed; continue the task."}]
   end
 
+  defp to_message(%{"type" => "completion_feedback", "data" => data}) do
+    [
+      %{
+        role: :user,
+        content: data["content"] || "The previous response was not accepted; continue the task."
+      }
+    ]
+  end
+
   defp to_message(_event), do: []
 
   defp atomize_tool_calls(calls) do

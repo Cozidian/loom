@@ -22,7 +22,9 @@ defmodule BeamAgent.WorkContractTest do
           "we have a tui client, lets build a phoenix web version too",
           "yes, you should integrate it with the harness code",
           "Build a Phoenix web view that can do the same as the TUI",
-          "Can you add regression tests for clipboard paste?"
+          "Can you add regression tests for clipboard paste?",
+          "make a simple tetris game for me that i can open in a web page",
+          "Make me a small webpage I can open locally"
         ] do
       assert {:ok, contract} = WorkContract.new(objective, File.cwd!())
       assert contract.kind == :implementation, objective
