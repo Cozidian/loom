@@ -36,5 +36,18 @@ defmodule BeamAgent.LLMProvider do
   @callback healthcheck(keyword()) :: :ok | {:ok, String.t()} | {:error, term()}
   @callback routing_preflight(keyword()) :: :ok | {:ok, String.t()} | {:error, term()}
 
-  @optional_callbacks configuration: 0, healthcheck: 1, routing_preflight: 1, stream: 4
+  @doc """
+  An optional, doctor-only diagnostic distinct from `healthcheck/1`: a non-nil
+  string names a real limitation of the configured model/endpoint (for
+  example, a local model whose chat template does not support native tool
+  calling) worth surfacing before a session starts. It is not part of the
+  routing preflight and must not be invoked on a per-request hot path.
+  """
+  @callback tool_support_notice(keyword()) :: String.t() | nil
+
+  @optional_callbacks configuration: 0,
+                      healthcheck: 1,
+                      routing_preflight: 1,
+                      stream: 4,
+                      tool_support_notice: 1
 end

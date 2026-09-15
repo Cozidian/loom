@@ -1004,6 +1004,11 @@ defmodule BeamAgent.CLI do
       output("ok  config    #{config_path}")
       output("ok  profile   #{config["profile"]}")
       output("ok  provider  #{config["provider"]}: #{detail}")
+
+      if notice = provider_tool_support_notice(module, Config.provider_options(config)) do
+        output("warn tools     #{notice}")
+      end
+
       output("ok  data      #{config["data_dir"]}")
       output("ok  runtime   Elixir #{System.version()} / OTP #{System.otp_release()}")
     else
@@ -1579,6 +1584,16 @@ defmodule BeamAgent.CLI do
     else
       {:ok, "no provider-specific check"}
     end
+  end
+
+  defp provider_tool_support_notice(module, options) do
+    if function_exported?(module, :tool_support_notice, 1),
+      do: module.tool_support_notice(options),
+      else: nil
+  rescue
+    _error -> nil
+  catch
+    _kind, _reason -> nil
   end
 
   defp choose_provider(false, default), do: default
