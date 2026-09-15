@@ -296,6 +296,53 @@ defmodule BeamAgent.HarnessCapabilitiesTest do
     assert File.read!(path) == "one\nbeta\nthree\n"
   end
 
+  test "apply_patch accepts a Begin Patch string from local models", context do
+    path = Path.join(context.workspace, "script.js")
+
+    File.write!(path, """
+    function placePiece(piece) {
+        piece.forEach((row, rowIndex) => {
+            const cellElement = board.children[(currentPiece.offset.y + rowIndex) * boardWidth + (offset.x + colIndex)];
+        });
+    }
+    """)
+
+    content = File.read!(path)
+
+    patch = """
+    *** Begin Patch
+    *** Update File: script.js
+    @@
+    -function placePiece(piece) {
+    -    piece.forEach((row, rowIndex) => {
+    -        const cellElement = board.children[(currentPiece.offset.y + rowIndex) * boardWidth + (offset.x + colIndex)];
+    -    });
+    -}
+    +function placePiece() {
+    +    const offset = currentPiece.offset;
+    +    currentPiece.piece.forEach((row, rowIndex) => {
+    +        const cellElement = board.children[(offset.y + rowIndex) * boardWidth + (offset.x + colIndex)];
+    +    });
+    +}
+    *** End Patch
+    """
+
+    assert {:ok, encoded} =
+             ApplyPatch.execute(
+               %{
+                 "path" => "script.js",
+                 "expected_sha256" => BeamAgent.Tools.FileSupport.sha256(content),
+                 "patch" => patch
+               },
+               %{workspace_root: context.workspace}
+             )
+
+    assert JSON.decode!(encoded)["hunks_applied"] == 1
+    assert File.read!(path) =~ "function placePiece() {"
+    assert File.read!(path) =~ "const offset = currentPiece.offset"
+    refute File.read!(path) =~ "function placePiece(piece)"
+  end
+
   test "a risky tool waits for a session-owned approval before executing", context do
     {:ok, session_id} =
       BeamAgent.start_session(

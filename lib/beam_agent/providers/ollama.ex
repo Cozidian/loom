@@ -218,13 +218,17 @@ defmodule BeamAgent.Providers.Ollama do
 
       %{
         id: call["id"] || Support.call_id(),
-        name: function["name"],
+        name: normalize_tool_name(function["name"]),
         arguments: decode_arguments(function["arguments"] || %{})
       }
     end)
   end
 
   defp normalize_tool_calls(_other), do: []
+
+  defp normalize_tool_name("functions/" <> name), do: normalize_tool_name(name)
+  defp normalize_tool_name("functions." <> name), do: normalize_tool_name(name)
+  defp normalize_tool_name(name), do: name
 
   defp valid_tool_calls?(calls) when is_list(calls),
     do: Enum.all?(calls, &(is_binary(&1.name) and is_map(&1.arguments)))
@@ -242,7 +246,7 @@ defmodule BeamAgent.Providers.Ollama do
             arguments = decode_arguments(decoded["arguments"] || decoded["parameters"] || %{})
 
             if is_map(arguments) do
-              [%{id: Support.call_id(), name: name, arguments: arguments}]
+              [%{id: Support.call_id(), name: normalize_tool_name(name), arguments: arguments}]
             else
               []
             end

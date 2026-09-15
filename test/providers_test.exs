@@ -1075,6 +1075,36 @@ defmodule BeamAgent.ProvidersTest do
     assert body["stream"] == false
   end
 
+  test "Ollama strips a Harmony functions/ prefix from tool names" do
+    response = %{
+      "done" => true,
+      "message" => %{
+        "role" => "assistant",
+        "content" => "",
+        "tool_calls" => [
+          %{
+            "function" => %{
+              "name" => "functions/create_file",
+              "arguments" => %{"path" => "a.txt"}
+            }
+          }
+        ]
+      }
+    }
+
+    assert {:ok, %{tool_calls: [call]}} =
+             Ollama.complete([%{role: :user, content: "write"}], @tools,
+               model: "gpt-oss:20b",
+               base_url: "http://ollama.example",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: response
+             )
+
+    assert call.name == "create_file"
+    assert call.arguments == %{"path" => "a.txt"}
+  end
+
   test "Ollama warns when the configured model does not report tool-calling support" do
     assert "phi3 does not report tool-calling support" <> _ =
              Ollama.tool_support_notice(
