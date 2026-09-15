@@ -629,6 +629,15 @@ the server and confirm that the configured model is installed. Cloud diagnostics
 validate the required model and credential; the first request validates remote
 connectivity.
 
+Not every local model's chat template supports native tool calling, and Ollama
+reports each model's own advertised capabilities through `/api/show`. When the
+configured model does not report tool support, `doctor` prints a `warn tools`
+line naming the model and suggesting a tool-capable alternative (for example
+`qwen3:8b`). Sending tools to a model that cannot use them is what produces the
+frustrating "I don't have the capability to do that, but here's how you would"
+replies instead of an actual tool call; `doctor` surfaces the mismatch before a
+session starts rather than leaving it to be discovered mid-conversation.
+
 Use `--base-url URL` for a compatible endpoint or proxy, and
 `--api-key-env VARIABLE` to select a different credential variable. The same
 options can temporarily override saved settings on `run`. Provider adapters are

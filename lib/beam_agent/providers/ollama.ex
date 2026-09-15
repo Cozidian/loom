@@ -108,6 +108,32 @@ defmodule BeamAgent.Providers.Ollama do
   @impl true
   def routing_preflight(options), do: healthcheck(options)
 
+  @impl true
+  def tool_support_notice(options) do
+    options =
+      options
+      |> Keyword.put_new(:model, configuration().default_model)
+      |> Keyword.put_new(:base_url, configuration().default_base_url)
+
+    with {:ok, model} <- Support.require_option(options, :model),
+         {:ok, base_url} <- Support.require_option(options, :base_url),
+         client <- Support.http_client(options),
+         {:ok, 200, %{"capabilities" => capabilities}} <-
+           client.post_json(
+             Support.endpoint(base_url, "/api/show"),
+             [{"content-type", "application/json"}],
+             %{"model" => model},
+             options
+           ),
+         true <- is_list(capabilities) and "tools" not in capabilities do
+      "#{model} does not report tool-calling support in Ollama; requests that need " <>
+        "file/search/command tools may go unanswered or get described instead of run. " <>
+        "Pick a tool-capable model (for example qwen3:8b) or use it for plain chat only."
+    else
+      _ -> nil
+    end
+  end
+
   defp message(%{role: :user, content: content} = message) do
     images = Enum.map(Map.get(message, :attachments, []), & &1.data)
 

@@ -1075,6 +1075,48 @@ defmodule BeamAgent.ProvidersTest do
     assert body["stream"] == false
   end
 
+  test "Ollama warns when the configured model does not report tool-calling support" do
+    assert "phi3 does not report tool-calling support" <> _ =
+             Ollama.tool_support_notice(
+               model: "phi3",
+               base_url: "http://ollama.example",
+               http_client: HTTPStub,
+               test_pid: self(),
+               stub_response: %{"capabilities" => ["completion"]}
+             )
+
+    assert_receive {:http_post, "http://ollama.example/api/show", _headers, %{"model" => "phi3"}}
+  end
+
+  test "Ollama stays silent when the configured model reports tool-calling support" do
+    assert Ollama.tool_support_notice(
+             model: "qwen3:8b",
+             base_url: "http://ollama.example",
+             http_client: HTTPStub,
+             test_pid: self(),
+             stub_response: %{"capabilities" => ["completion", "tools"]}
+           ) == nil
+  end
+
+  test "Ollama stays silent about tool support when it cannot be determined" do
+    assert Ollama.tool_support_notice(
+             model: "custom",
+             base_url: "http://ollama.example",
+             http_client: HTTPStub,
+             test_pid: self(),
+             stub_response: %{"no_capabilities_field" => true}
+           ) == nil
+
+    assert Ollama.tool_support_notice(
+             model: "custom",
+             base_url: "http://ollama.example",
+             http_client: HTTPStub,
+             test_pid: self(),
+             stub_status: 500,
+             stub_response: %{"error" => "unavailable"}
+           ) == nil
+  end
+
   test "provider HTTP errors retain status without exposing request credentials" do
     response = %{"error" => %{"message" => "bad request"}}
 
