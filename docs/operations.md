@@ -149,9 +149,10 @@ The CLI also exposes durable-session and capability discovery:
 ```
 
 Interactive chat opens a full-screen TUI when a capable terminal is attached.
-ION owns the terminal and leaves mouse selection to the emulator, so click-drag
-copy works. PageUp/PageDown page the transcript; Ctrl+Y copies a record through
-ION. Elixir continues to own the session, provider stream, tools, cancellation, and
+ION owns the terminal. Clicks activate tabs, lists, the command deck, model
+rows and approval choices. Hold Shift and drag for native copy; PageUp/PageDown
+page the transcript; Ctrl+Y copies a record through ION. Elixir continues to own
+the session, provider stream, tools, cancellation, and
 approvals through a framed local bridge.
 It keeps the workspace, active profile/model, durable session, turn state,
 streaming response, tool activity, and approval requests visible without

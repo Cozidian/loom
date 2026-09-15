@@ -1,8 +1,8 @@
 use crate::{
-    app::{App, View},
+    app::{App, Hit, View},
     ui,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use serde_json::json;
 
 fn key(a: &mut App, code: KeyCode) {
@@ -26,6 +26,28 @@ fn render(a: &mut App, w: u16, h: u16) -> String {
         .join("\n")
 }
 
+fn layout(a: &mut App, w: u16, h: u16) {
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| ui::draw(f, a)).unwrap();
+}
+fn click(a: &mut App, x: u16, y: u16) {
+    a.mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+fn click_hit(a: &mut App, wanted: &Hit) {
+    let rect = a
+        .hits
+        .iter()
+        .rev()
+        .find(|(_, hit)| hit == wanted)
+        .unwrap_or_else(|| panic!("missing hit {wanted:?} in {:?}", a.hits))
+        .0;
+    click(a, rect.x, rect.y);
+}
 fn settings(a: &mut App) {
     a.apply(json!({"type":"provider_settings","revision":"rev1","model_strategy":"auto",
         "providers":[{"profile":"cloud","provider":"openai","model":"old-model","api_key_env":"OPENAI_API_KEY","auth_mode":"environment"}],
@@ -699,6 +721,52 @@ fn combined_picker_defaults_to_loom_filters_and_locks_without_submitting() {
     key(&mut a, KeyCode::Home);
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.outgoing.pop().unwrap()["action"], "automatic");
+}
+
+#[test]
+fn mouse_clicks_tabs_models_and_palette() {
+    let mut a = ready();
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::View(View::Swarm));
+    assert_eq!(a.view, View::Swarm);
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::View(View::Ledger));
+    assert_eq!(a.view, View::Ledger);
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::View(View::Mission));
+    assert_eq!(a.view, View::Mission);
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::Palette);
+    assert!(a.palette);
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::PaletteRow(0));
+    assert!(!a.palette);
+}
+
+#[test]
+fn mouse_click_locks_a_catalogue_model_and_outside_click_closes() {
+    let mut a = ready();
+    a.apply(
+        json!({"type":"models","combined":true,"model_strategy":"auto","revision":"rev1","models":[
+            {"profile":"ollama","model":"gpt-oss:20b","enabled":true,"health":"available"}
+        ]}),
+    );
+    layout(&mut a, 110, 35);
+    click_hit(
+        &mut a,
+        &Hit::DrawerRow {
+            index: 1,
+            activate: true,
+        },
+    );
+    let request = a.outgoing.pop().unwrap();
+    assert_eq!(request["action"], "lock");
+    assert_eq!(request["model"], "gpt-oss:20b");
+    a.outgoing.clear();
+    a.settings_pending = false;
+    layout(&mut a, 110, 35);
+    click_hit(&mut a, &Hit::Dismiss);
+    assert!(a.drawer.is_none());
 }
 
 #[test]

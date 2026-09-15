@@ -111,6 +111,8 @@ record returns to its previous list and selection.
 | Bracketed paste | Insert multiline draft without submitting it |
 | `@query`, Up/Down, Tab/Enter | Select repository reference; paths with spaces are quoted; selection does not submit |
 | Home/End, Ctrl+A/Ctrl+E | Move within the current draft line |
+| Click | Activate tabs, lists, palette rows, model rows, approvals and dialogs |
+| Shift-drag | Native terminal text selection while mouse tracking is on |
 | PageUp/PageDown | Scroll transcript or dossier |
 | Esc | Close overlay, leave actor/ledger view, or resume following live output |
 | Ctrl+C | Request active-turn cancellation, or clear an idle draft |
@@ -266,8 +268,8 @@ rendering (`src/markdown.rs`) covers headings, emphasis, inline/fenced code,
 tables, lists (including task lists), block quotes, links and rules, wrapped and
 styled for the pane width — not a full CommonMark/HTML engine. Some operational
 views intentionally expose the runtime's JSON in a dossier. The live transcript
-keeps up to 600 entries; the live ledger keeps 1,200 events. The terminal keeps
-native mouse selection and copy; ION does not capture the mouse. PageUp/PageDown
-page the transcript. Ctrl+Y copies through ION when you want a full record.
+keeps up to 600 entries; the live ledger keeps 1,200 events. Click tabs, lists, palette rows, model rows, approvals and dialogs. Wheel and
+PageUp/PageDown page the transcript. Hold Shift and drag to select text for the
+terminal clipboard; Ctrl+Y copies a full record through ION.
 There is no direct remote-node connection: networking and distributed agents
 remain runtime responsibilities behind the same bridge.
