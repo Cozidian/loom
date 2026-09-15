@@ -266,6 +266,8 @@ rendering (`src/markdown.rs`) covers headings, emphasis, inline/fenced code,
 tables, lists (including task lists), block quotes, links and rules, wrapped and
 styled for the pane width — not a full CommonMark/HTML engine. Some operational
 views intentionally expose the runtime's JSON in a dossier. The live transcript
-keeps up to 600 entries; the live ledger keeps 1,200 events. There is no mouse
-interaction or direct remote-node connection: networking and distributed agents
+keeps up to 600 entries; the live ledger keeps 1,200 events. The terminal keeps
+native mouse selection and copy; ION does not capture the mouse. PageUp/PageDown
+page the transcript. Ctrl+Y copies through ION when you want a full record.
+There is no direct remote-node connection: networking and distributed agents
 remain runtime responsibilities behind the same bridge.

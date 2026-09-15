@@ -474,6 +474,33 @@ defmodule BeamAgentTest do
            end)
   end
 
+  test "a prior string-encoded model error does not crash implementation completion" do
+    :ok = register_provider_once(ClaimsWorkWithoutToolsProvider)
+
+    {:ok, id} =
+      BeamAgent.start_session(
+        data_dir: data_dir(),
+        provider: :claims_work_without_tools_test,
+        provider_options: [test_pid: self()]
+      )
+
+    error =
+      inspect(%BeamAgent.ModelError{
+        request_id: "model-request-prior-failure",
+        endpoint_id: "openai-codex",
+        provider: :openai,
+        code: :codex_app_server_error,
+        retryable: false,
+        cause: {:codex_app_server_error, %{"error" => %{"message" => "out of credits"}}}
+      })
+
+    assert {:ok, _} =
+             BeamAgent.Session.EventLog.append(id, :model_response_failed, %{"error" => error})
+
+    assert {:error, {:non_final_model_response, :action_not_started, 2}} =
+             BeamAgent.ask(id, "implement the requested feature")
+  end
+
   test "explicit multi-provider implementation cannot silently fall back to one direct worker" do
     :ok = register_provider_once(ClaimsWorkWithoutToolsProvider)
     Process.register(self(), :beam_agent_claims_tool_surface_test)

@@ -1015,13 +1015,15 @@ defmodule BeamAgent.Strategies.ToolLoop do
 
     Enum.any?(events, fn event ->
       data = event["data"] || %{}
-      code = get_in(data, ["error", "code"])
 
       event["type"] == "tool_result" and data["turn"] == turn and
-        data["is_error"] == true and runtime_blocker?(code) and
+        data["is_error"] == true and runtime_blocker?(tool_error_code(data)) and
         action_capable_tool?(calls[data["tool_call_id"]], context)
     end)
   end
+
+  defp tool_error_code(%{"error" => %{"code" => code}}) when is_binary(code), do: code
+  defp tool_error_code(_data), do: nil
 
   defp runtime_blocker?(code),
     do:

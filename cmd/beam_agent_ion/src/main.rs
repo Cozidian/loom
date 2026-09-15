@@ -8,8 +8,8 @@ mod ui;
 use app::App;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseEventKind,
     },
     execute,
 };
@@ -100,11 +100,16 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
         previous_hook(info);
     }));
     let result = (|| -> io::Result<()> {
-        execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
+        // Do not enable mouse capture. Crossterm's EnableMouseCapture also
+        // turns on any-event tracking (1003h), which blocks native terminal
+        // selection/copy in Ghostty and other emulators. Wheel paging stays
+        // on PageUp/PageDown; some terminals still deliver wheel as mouse
+        // events without capture, and those still page the transcript.
+        execute!(io::stdout(), EnableBracketedPaste)?;
         let mut exit_started = None;
         let mut dirty = true;
         let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
@@ -235,7 +240,7 @@ fn main() -> io::Result<()> {
             }
         }
     })();
-    let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
 }
