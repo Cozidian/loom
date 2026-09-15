@@ -73,7 +73,9 @@ defmodule BeamAgentWeb.ObservatoryTest do
     assert body =~ "route.ts"
     assert body =~ "messages/en.json"
     assert body =~ "Checks"
-    assert body =~ "Change constellation"
+    assert body =~ "SYSTEM ATLAS"
+    assert body =~ "Rehearse a change"
+    refute body =~ "Rewrite candidates"
     assert body =~ "obs-data"
   end
 

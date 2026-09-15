@@ -22,6 +22,7 @@ defmodule BeamAgent.CapabilityCatalog do
     BeamAgent.Tools.ReloadContext,
     BeamAgent.Tools.RequestCapability,
     BeamAgent.Tools.RequestProjectContext,
+    BeamAgent.Tools.RepositoryIntelligence,
     BeamAgent.Tools.Remember,
     BeamAgent.Tools.Recall,
     BeamAgent.Tools.Forget,

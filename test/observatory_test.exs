@@ -69,6 +69,11 @@ defmodule BeamAgent.Project.ObservatoryTest do
     assert {:ok, snapshot} = Observatory.snapshot(project_id)
 
     assert snapshot.commits_sampled == 7
+    assert length(snapshot.model.timeline) == 7
+    assert hd(snapshot.model.timeline).subject == "update route #1"
+    assert List.last(snapshot.model.timeline).subject == "add helper"
+    assert hd(snapshot.model.timeline).author == "Observatory Test"
+    assert hd(snapshot.model.timeline).date =~ "T"
     assert snapshot.file_count == 4
 
     paths = Enum.map(snapshot.constellation.nodes, & &1.path)

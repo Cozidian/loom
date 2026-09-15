@@ -335,167 +335,11 @@ defmodule BeamAgentWeb.Page do
   end
 
   def observatory(report, _csrf, session_id) do
-    prefix = session_prefix(session_id)
-    nodes = report["constellation"]["nodes"] || []
-    edges = report["constellation"]["edges"] || []
-    libraries = report["libraries"] || []
-    risk = report["risk"] || []
-    ci = report["ci"] || []
-
     layout(
-      """
-      <main class="control-center observatory">
-        <a class="wordmark" href="/"><span class="brand-mark">╬</span> LOOM<span> / REPOSITORY OBSERVATORY</span></a>
-        <p><a href="#{if prefix == "", do: "/", else: prefix}">← Back to session</a></p>
-        <div class="observatory-hero">
-          <div>
-            <p class="eyebrow">Architectural telemetry · local evidence only</p>
-            <h1>Your code has<br>a pulse.</h1>
-            <p class="lede">Commit churn, coupling, dependency weight and CI, read straight from this
-            workspace's own history. No model calls, nothing sent anywhere.</p>
-          </div>
-          <dl class="observatory-stats">
-            #{observatory_stat("Indexed files", report["file_count"])}
-            #{observatory_stat("Commits sampled", report["commits_sampled"])}
-            #{observatory_stat("Worktree changes", report["worktree_changes"])}
-            #{observatory_stat("Library entries", length(libraries))}
-          </dl>
-        </div>
-
-        <nav class="observatory-tabs" role="tablist">
-          <button type="button" class="observatory-tab active" data-tab="constellation">01 / Constellation</button>
-          <button type="button" class="observatory-tab" data-tab="exploded">02 / Exploded view</button>
-          <button type="button" class="observatory-tab" data-tab="risk">03 / Risk &amp; rewrites</button>
-          <button type="button" class="observatory-tab" data-tab="libraries">04 / Libraries &amp; CI</button>
-          <span class="observatory-status">#{if report["dirty"], do: "dirty worktree", else: "clean"} · HEAD #{escape(short_hash(report["head"]))}</span>
-        </nav>
-
-        <section class="observatory-panel" data-tab-panel="constellation">
-          <div class="observatory-split">
-            <div class="observatory-graph-wrap">
-              <div class="observatory-panel-heading"><span>Change constellation</span><span>#{length(nodes)} files / #{length(edges)} links</span></div>
-              <div id="obs-graph" class="observatory-graph" data-nodes="#{nodes |> length()}"></div>
-            </div>
-            <div id="obs-inspector" class="observatory-inspector"><p class="muted">Select a node to inspect it.</p></div>
-          </div>
-          <div class="observatory-hotspots">
-            <div class="observatory-panel-heading"><span>Change hotspots</span><span>commits / file</span></div>
-            #{observatory_hotspot_bars(nodes)}
-          </div>
-        </section>
-
-        <section class="observatory-panel" data-tab-panel="exploded" hidden>
-          <div class="observatory-panel-heading"><span>Exploded assembly</span><span>drag to rotate · scroll to zoom</span></div>
-          <div id="obs-exploded" class="observatory-exploded"></div>
-        </section>
-
-        <section class="observatory-panel" data-tab-panel="risk" hidden>
-          <div class="observatory-panel-heading"><span>Rewrite candidates</span><span>churn × size × missing tests</span></div>
-          #{observatory_risk_list(risk)}
-        </section>
-
-        <section class="observatory-panel" data-tab-panel="libraries" hidden>
-          <div class="observatory-split">
-            <div>
-              <div class="observatory-panel-heading"><span>Library inventory</span><span>#{length(libraries)} entries</span></div>
-              #{observatory_library_table(libraries)}
-            </div>
-            <div>
-              <div class="observatory-panel-heading"><span>CI / CD</span><span>#{length(ci)} workflows</span></div>
-              #{observatory_ci_list(ci)}
-            </div>
-          </div>
-        </section>
-      </main>
-      <script type="application/json" id="obs-data">#{observatory_json(report)}</script>
-      """,
+      BeamAgentWeb.ObservatoryPage.body(report, session_id) <>
+        "<script type=\"application/json\" id=\"obs-data\">#{observatory_json(report)}</script>",
       "<link rel=\"stylesheet\" href=\"/assets/observatory.css\"><script defer src=\"/assets/observatory.js\"></script>"
     )
-  end
-
-  defp observatory_stat(label, value) do
-    "<div><dt>#{escape(label)}</dt><dd>#{escape(value)}</dd></div>"
-  end
-
-  defp observatory_hotspot_bars(nodes) do
-    max_commits = nodes |> Enum.map(& &1["commits"]) |> Enum.max(fn -> 1 end) |> max(1)
-
-    nodes
-    |> Enum.sort_by(&(-&1["commits"]))
-    |> Enum.take(12)
-    |> Enum.with_index(1)
-    |> Enum.map_join(fn {node, index} ->
-      width = Float.round(node["commits"] / max_commits * 100, 1)
-
-      """
-      <div class="observatory-hotspot" data-select-path="#{escape(node["path"])}">
-        <span class="observatory-hotspot-rank">#{index}</span>
-        <span class="observatory-hotspot-name">#{escape(Path.basename(node["path"]))}<small>#{escape(Path.dirname(node["path"]))}</small></span>
-        <span class="observatory-hotspot-bar">#{observatory_bar_svg(width)}</span>
-        <span class="observatory-hotspot-count">#{node["commits"]}</span>
-      </div>
-      """
-    end)
-  end
-
-  # An SVG rect's width is a plain XML attribute, not a CSS style declaration,
-  # so a strict `style-src` CSP (which some browsers enforce even against
-  # HTML `style=""` attributes written by the server) never touches it.
-  defp observatory_bar_svg(width_percent) do
-    """
-    <svg class="observatory-bar-svg" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">
-      <rect class="observatory-bar-track" width="100" height="8" rx="4"></rect>
-      <rect class="observatory-bar-fill" width="#{width_percent}" height="8" rx="4"></rect>
-    </svg>
-    """
-  end
-
-  defp observatory_risk_list([]),
-    do: "<p class=\"muted\">No repeatedly-changed files sampled yet.</p>"
-
-  defp observatory_risk_list(risk) do
-    Enum.map_join(risk, fn item ->
-      """
-      <article class="observatory-risk-card" data-select-path="#{escape(item["path"])}">
-        <header><code>#{escape(item["path"])}</code><span class="observatory-risk-score">#{format_score(item["score"])}</span></header>
-        <p>#{Enum.map_join(item["reasons"] || [], " · ", &escape/1)}</p>
-      </article>
-      """
-    end)
-  end
-
-  defp format_score(score) when is_number(score),
-    do: :erlang.float_to_binary(score * 1.0, decimals: 1)
-
-  defp format_score(_), do: "0.0"
-
-  defp observatory_library_table([]),
-    do: "<p class=\"muted\">No lock file or manifest found at the workspace root.</p>"
-
-  defp observatory_library_table(libraries) do
-    rows =
-      libraries
-      |> Enum.sort_by(&{&1["ecosystem"], &1["name"]})
-      |> Enum.map_join(fn lib ->
-        "<tr><td>#{escape(lib["name"])}</td><td>#{escape(lib["version"])}</td><td>#{escape(lib["ecosystem"])}</td><td>#{escape(lib["kind"])}</td></tr>"
-      end)
-
-    "<table class=\"observatory-table\"><thead><tr><th>Package</th><th>Version</th><th>Ecosystem</th><th>Kind</th></tr></thead><tbody>#{rows}</tbody></table>"
-  end
-
-  defp observatory_ci_list([]),
-    do: "<p class=\"muted\">No .github/workflows found at the workspace root.</p>"
-
-  defp observatory_ci_list(ci) do
-    Enum.map_join(ci, fn workflow ->
-      """
-      <article class="observatory-ci-card">
-        <header><strong>#{escape(workflow["name"])}</strong><span class="muted">#{escape(workflow["file"])}</span></header>
-        <p class="muted">on #{Enum.map_join(workflow["triggers"] || [], ", ", &escape/1)}</p>
-        <p>#{Enum.map_join(workflow["jobs"] || [], ", ", &escape/1)}</p>
-      </article>
-      """
-    end)
   end
 
   defp observatory_json(report) do
@@ -503,9 +347,6 @@ defmodule BeamAgentWeb.Page do
     |> Jason.encode!()
     |> String.replace("</", "<\\/")
   end
-
-  defp short_hash(hash) when is_binary(hash), do: String.slice(hash, 0, 7)
-  defp short_hash(_), do: "unknown"
 
   def start_id, do: Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
 

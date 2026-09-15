@@ -4,6 +4,16 @@ A standalone Phoenix frontend for Loom's existing BeamAgent HTTP/JSON control AP
 The runtime owns agents, permissions, work and cancellation. Desk attaches as a
 local authenticated client; closing it does not cancel a goal.
 
+## Repository Observatory
+
+Open **Repository Observatory** from a session for a full-page system atlas:
+explore inferred boundaries, inspect reference paths, scrub sampled history and
+rehearse the static impact of a change. Evidence, blind spots and candidate tests
+travel with an editable agent brief. No model runs just by exploring.
+
+See [the Observatory guide](../../docs/repository-observatory.md) for the model,
+agent queries, limits and dedicated browser checks.
+
 ## Start
 
 From the harness repository, build once and launch:

@@ -1,6 +1,11 @@
 {
   "name": "beam-agent-desk-browser-tests",
   "private": true,
-  "scripts": {"test": "playwright test"},
-  "devDependencies": {"@playwright/test": "1.63.0"}
+  "scripts": {
+    "test": "playwright test",
+    "test:observatory": "playwright test --config playwright.observatory.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
 }

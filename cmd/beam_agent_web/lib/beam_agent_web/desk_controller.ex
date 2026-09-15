@@ -291,6 +291,23 @@ defmodule BeamAgentWeb.DeskController do
     end
   end
 
+  def observatory_file(conn, params) do
+    if authenticated?(conn) do
+      case params["path"] do
+        path when is_binary(path) and path != "" ->
+          case RuntimeClient.observatory_file(params["session_id"], path) do
+            {:ok, file} -> json(conn, file)
+            {:error, _reason} -> conn |> put_status(404) |> json(%{error: "file_unavailable"})
+          end
+
+        _ ->
+          conn |> put_status(400) |> json(%{error: "path_required"})
+      end
+    else
+      send_resp(conn, 401, "Sign in first.")
+    end
+  end
+
   def observer_paths(conn, params) do
     if authenticated?(conn) do
       case RuntimeClient.command(

@@ -83,6 +83,7 @@ defmodule BeamAgent.Runtime do
   def budget(client), do: Client.budget(client)
   def repository(client), do: Client.repository(client)
   def observatory(client), do: Client.observatory(client)
+  def observatory_file(client, path), do: Client.observatory_file(client, path)
   def project_context(client, request \\ %{}), do: Client.project_context(client, request)
   def resource_pools(client), do: Client.resource_pools(client)
   def path_leases(client), do: Client.path_leases(client)

@@ -1,17 +1,13 @@
 defmodule BeamAgent.Project.Observatory do
   @moduledoc """
-  Read-only architectural telemetry for one workspace: commit churn, file
-  co-change coupling, a bounded dependency inventory, best-effort CI/CD
-  discovery, and a composite risk score per hotspot file.
-
-  Every input is bounded (commit count, node/edge count, library count) so a
-  huge repository degrades to a smaller honest picture rather than a slow or
-  unbounded one. Nothing here mutates the workspace or the runtime; it is a
-  pure projection over `git log`, a handful of manifest files, and the
-  existing `RepositoryIndex` snapshot.
+  Runtime-owned, read-only repository intelligence: a versioned architectural
+  model, bounded commit history, reference evidence and an inventory of root
+  dependencies and workflow definitions. Refreshes the repository index but
+  never edits workspace content, evaluates repository code or invokes a model.
+  Legacy churn fields remain available for existing API consumers.
   """
 
-  alias BeamAgent.Project.RepositoryIndex
+  alias BeamAgent.Project.{ObservatoryIntelligence, RepositoryIndex}
 
   @commit_limit 200
   @noisy_commit_files 50
@@ -19,6 +15,7 @@ defmodule BeamAgent.Project.Observatory do
   @top_edges 80
   @top_libraries 250
   @top_risks 12
+  @file_read_limit 200_000
 
   @spec snapshot(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def snapshot(project_id, opts \\ []) do
@@ -27,6 +24,9 @@ defmodule BeamAgent.Project.Observatory do
       commits = git_log(root, Keyword.get(opts, :commit_limit, @commit_limit))
       hotspots = hotspots(commits, repository.files)
       hotspot_paths = MapSet.new(hotspots, & &1.path)
+      libraries = dependency_inventory(root)
+      ci = ci_discovery(root)
+      model = BeamAgent.Project.ObservatoryIntelligence.build(repository, commits, libraries, ci)
 
       {:ok,
        %{
@@ -43,45 +43,137 @@ defmodule BeamAgent.Project.Observatory do
            edges: coupling_edges(commits, hotspot_paths)
          },
          risk: risk_assessment(hotspots),
-         libraries: dependency_inventory(root),
-         ci: ci_discovery(root)
+         libraries: libraries,
+         ci: ci,
+         model: model
        }}
     end
   end
 
-  defp git_log(root, limit) do
-    if File.exists?(Path.join(root, ".git")) do
-      case System.cmd(
-             "git",
+  @doc """
+  Read one workspace file's full text for the Observatory's code/text drill-down.
+  Read-only, contained to the workspace, capped at #{@file_read_limit} bytes and
+  never resolves credential-shaped paths. Not the model's bounded source sample.
+  """
+  @spec read_file(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def read_file(project_id, relative_path) do
+    with {:ok, repository} <- RepositoryIndex.refresh(project_id),
+         false <- ObservatoryIntelligence.sensitive_path?(relative_path),
+         {:ok, full} <- BeamAgent.Workspace.resolve(repository.workspace_root, relative_path),
+         {:ok, content, truncated} <- safe_read_bounded(full) do
+      {:ok,
+       %{
+         path: relative_path,
+         content: content,
+         bytes: byte_size(content),
+         truncated: truncated
+       }}
+    else
+      true -> {:error, :sensitive_path}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp safe_read_bounded(full) do
+    case File.stat(full) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size <= @file_read_limit ->
+        with {:ok, content} <- BeamAgent.Tools.FileSupport.read_text(full, @file_read_limit),
+             do: {:ok, content, false}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        read_prefix(full)
+
+      {:ok, %File.Stat{type: type}} ->
+        {:error, {:not_regular_file, type}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp read_prefix(full) do
+    with {:ok, io} <- File.open(full, [:read, :binary]) do
+      try do
+        case IO.binread(io, @file_read_limit) do
+          raw when is_binary(raw) and raw != "" ->
+            content = trim_to_valid_utf8(raw)
+            if content == "", do: {:error, :not_utf8_text}, else: {:ok, content, true}
+
+          _ ->
+            {:error, :unreadable_file}
+        end
+      after
+        File.close(io)
+      end
+    end
+  end
+
+  defp trim_to_valid_utf8(bytes, attempts \\ 4)
+  defp trim_to_valid_utf8(_bytes, 0), do: ""
+
+  defp trim_to_valid_utf8(bytes, attempts) do
+    if String.valid?(bytes),
+      do: bytes,
+      else: trim_to_valid_utf8(binary_part(bytes, 0, byte_size(bytes) - 1), attempts - 1)
+  end
+
+  defp git_log(root, requested_limit) do
+    limit =
+      if is_integer(requested_limit),
+        do: min(max(requested_limit, 1), @commit_limit),
+        else: @commit_limit
+
+    with git when is_binary(git) <- System.find_executable("git"),
+         {:ok, %{status: 0, output: output, truncated: false}} <-
+           BeamAgent.Subprocess.run(
+             git,
              [
                "log",
                "--no-merges",
                "-n",
                to_string(limit),
-               "--pretty=format:%x01%H",
-               "--name-only"
+               "--pretty=format:%x01%H%x1f%aI%x1f%an%x1f%s",
+               "--name-only",
+               "-z"
              ],
-             cd: root,
-             stderr_to_stdout: true
+             cwd: root,
+             timeout_ms: 8_000,
+             max_output_bytes: 2_000_000
            ) do
-        {output, 0} -> output |> String.split(<<1>>, trim: true) |> Enum.map(&parse_commit/1)
-        _failed -> []
-      end
+      output |> String.split(<<1>>, trim: true) |> Enum.flat_map(&parse_commit/1)
     else
-      []
+      _ -> []
     end
-  rescue
-    _error -> []
   end
 
   defp parse_commit(block) do
-    case String.split(block, "\n", trim: false) do
-      [hash | rest] ->
-        files = rest |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-        %{hash: String.trim(hash), files: files}
+    case String.split(block, <<0>>, trim: true) do
+      [header_and_path | rest] ->
+        [header | first_path] = String.split(header_and_path, "\n", parts: 2)
+        rest = first_path ++ rest
 
-      [] ->
-        %{hash: "", files: []}
+        case String.split(String.trim(header), <<31>>, parts: 4) do
+          [hash, date, author, subject] ->
+            [
+              %{
+                hash: hash,
+                date: date,
+                author: author,
+                subject: String.slice(subject, 0, 180),
+                files:
+                  rest
+                  |> Enum.map(&String.trim_leading(&1, "\n"))
+                  |> Enum.reject(&(&1 == ""))
+                  |> Enum.take(1000)
+              }
+            ]
+
+          _ ->
+            []
+        end
+
+      _ ->
+        []
     end
   end
 
@@ -188,6 +280,13 @@ defmodule BeamAgent.Project.Observatory do
   defp format_bytes(bytes) when bytes >= 1_024, do: "#{Float.round(bytes / 1_024, 1)} KB"
   defp format_bytes(bytes), do: "#{bytes} B"
 
+  defp safe_read(path) do
+    with {:ok, %{type: :regular}} <- File.lstat(path),
+         {:ok, content} <- BeamAgent.Tools.FileSupport.read_text(path),
+         do: {:ok, content},
+         else: (_ -> {:error, :unreadable_inventory})
+  end
+
   defp dependency_inventory(root) do
     (mix_lock(Path.join(root, "mix.lock")) ++
        npm_lock(root) ++
@@ -197,7 +296,7 @@ defmodule BeamAgent.Project.Observatory do
   end
 
   defp mix_lock(path) do
-    with {:ok, content} <- File.read(path) do
+    with {:ok, content} <- safe_read(path) do
       ~r/"([a-zA-Z0-9_]+)":\s*\{:(hex|git),\s*:[a-zA-Z0-9_.]+,\s*"([^"]+)"/
       |> Regex.scan(content)
       |> Enum.map(fn [_, name, kind, version] ->
@@ -212,7 +311,7 @@ defmodule BeamAgent.Project.Observatory do
     lock_path = Path.join(root, "package-lock.json")
     manifest_path = Path.join(root, "package.json")
 
-    with {:ok, content} <- File.read(lock_path),
+    with {:ok, content} <- safe_read(lock_path),
          {:ok, %{"packages" => packages}} <- JSON.decode(content) do
       packages
       |> Enum.reject(fn {path, _} -> path == "" end)
@@ -230,7 +329,7 @@ defmodule BeamAgent.Project.Observatory do
   end
 
   defp npm_manifest(path) do
-    with {:ok, content} <- File.read(path),
+    with {:ok, content} <- safe_read(path),
          {:ok, manifest} <- JSON.decode(content) do
       for {kind, key} <- [{"prod", "dependencies"}, {"dev", "devDependencies"}],
           {name, version} <- manifest[key] || %{} do
@@ -242,7 +341,7 @@ defmodule BeamAgent.Project.Observatory do
   end
 
   defp cargo_lock(path) do
-    with {:ok, content} <- File.read(path) do
+    with {:ok, content} <- safe_read(path) do
       ~r/\[\[package\]\]\nname = "([^"]+)"\nversion = "([^"]+)"/
       |> Regex.scan(content)
       |> Enum.map(fn [_, name, version] ->
@@ -254,7 +353,7 @@ defmodule BeamAgent.Project.Observatory do
   end
 
   defp go_sum(path) do
-    with {:ok, content} <- File.read(path) do
+    with {:ok, content} <- safe_read(path) do
       content
       |> String.split("\n", trim: true)
       |> Enum.map(&String.split(&1, " "))
@@ -274,11 +373,16 @@ defmodule BeamAgent.Project.Observatory do
   defp ci_discovery(root) do
     workflows = Path.join([root, ".github", "workflows"])
 
-    case File.ls(workflows) do
+    listing =
+      with {:ok, safe} <- BeamAgent.Workspace.resolve(root, ".github/workflows"),
+           do: File.ls(safe)
+
+    case listing do
       {:ok, entries} ->
         entries
         |> Enum.filter(&String.ends_with?(&1, [".yml", ".yaml"]))
         |> Enum.sort()
+        |> Enum.take(40)
         |> Enum.map(&workflow_summary(Path.join(workflows, &1), &1))
 
       _error ->
@@ -287,7 +391,7 @@ defmodule BeamAgent.Project.Observatory do
   end
 
   defp workflow_summary(path, filename) do
-    with {:ok, content} <- File.read(path) do
+    with {:ok, content} <- safe_read(path) do
       %{
         file: filename,
         name: workflow_name(content, filename),

@@ -72,31 +72,44 @@ defmodule BeamAgent.ControlPlane.Catalog do
   def route(%{method: "GET", path: "/api/v1/session-starts/" <> id}, _),
     do: BeamAgent.LocalSessionStarts.status(id)
 
-  def route(%{path: path, method: method} = request, opts) do
-    with ["api", "v1", "sessions", id, operation] <- String.split(path, "/", trim: true),
-         true <-
-           {method, operation} in [
-             {"GET", "snapshot"},
-             {"GET", "conversation"},
-             {"GET", "observatory"},
-             {"POST", "command"}
-           ],
+  def route(%{path: path, method: method, query: query} = request, opts) do
+    with {id, forward_path} <- session_forward(method, path, query),
          {:ok, record} <-
            BeamAgent.LocalDiscovery.lookup(
              id,
              Keyword.get(opts, :directory, BeamAgent.LocalDiscovery.directory())
            ) do
       if method == "GET" do
-        BeamAgent.LocalDiscovery.request(record, :get, "/api/v1/" <> operation)
+        BeamAgent.LocalDiscovery.request(record, :get, forward_path)
       else
         with {:ok, body} when is_map(body) <- JSON.decode(request.body) do
-          BeamAgent.LocalDiscovery.request(record, :post, "/api/v1/command", body)
+          BeamAgent.LocalDiscovery.request(record, :post, forward_path, body)
         else
           _ -> {:error, :invalid_request}
         end
       end
     else
       _ -> {:error, :session_unavailable}
+    end
+  end
+
+  defp session_forward(method, path, query) do
+    case String.split(path, "/", trim: true) do
+      ["api", "v1", "sessions", id, "observatory", "file"] when method == "GET" ->
+        {id, "/api/v1/observatory/file?" <> URI.encode_query(%{"path" => query["path"] || ""})}
+
+      ["api", "v1", "sessions", id, operation] ->
+        if {method, operation} in [
+             {"GET", "snapshot"},
+             {"GET", "conversation"},
+             {"GET", "observatory"},
+             {"POST", "command"}
+           ],
+           do: {id, "/api/v1/" <> operation},
+           else: :error
+
+      _ ->
+        :error
     end
   end
 
