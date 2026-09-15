@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, View, s},
+    app::{App, Hit, View, s},
     editor::clean,
     markdown,
 };
@@ -55,6 +55,11 @@ fn split(area: Rect, dir: Direction, constraints: Vec<Constraint>) -> Vec<Rect> 
         .split(area)
         .to_vec()
 }
+fn hit(a: &mut App, rect: Rect, action: Hit) {
+    if rect.width > 0 && rect.height > 0 {
+        a.hits.push((rect, action));
+    }
+}
 fn text(f: &mut Frame, area: Rect, mut lines: Vec<Line<'static>>) {
     for line in &mut lines {
         for span in &mut line.spans {
@@ -91,6 +96,7 @@ pub fn worker_title(w: &Value) -> String {
 }
 
 pub fn draw(f: &mut Frame, a: &mut App) {
+    a.hits.clear();
     let area = f.area();
     f.render_widget(
         Block::default().style(Style::default().bg(INK).fg(WHITE)),
@@ -126,9 +132,12 @@ pub fn draw(f: &mut Frame, a: &mut App) {
         (View::Ledger, "03  LEDGER"),
     ];
     let mut nav = vec![Span::raw("  ")];
+    let mut tab_x = zones[1].x + 2;
     for (view, label) in tabs {
+        let caption = format!(" {label} ");
+        let width = caption.width().min(u16::MAX as usize) as u16;
         nav.push(Span::styled(
-            format!(" {label} "),
+            caption,
             if a.view == view {
                 Style::default()
                     .fg(INK)
@@ -139,6 +148,12 @@ pub fn draw(f: &mut Frame, a: &mut App) {
             },
         ));
         nav.push(Span::raw("  "));
+        hit(
+            a,
+            Rect::new(tab_x, zones[1].y, width, zones[1].height),
+            Hit::View(view),
+        );
+        tab_x = tab_x.saturating_add(width.saturating_add(2));
     }
     text(f, zones[1], vec![Line::from(nav)]);
     match a.view {
@@ -163,7 +178,7 @@ pub fn draw(f: &mut Frame, a: &mut App) {
                 if a.connected { MUTED } else { RED },
             ),
             line(
-                "  ^P commands  ^R prompts  ^Y copy  mouse-select  ^J newline  PgUp trail  ^C cancel  ^Q exit",
+                "  click  Shift-drag copy  ^P commands  ^Y copy  ^J newline  PgUp trail  ^C cancel  ^Q exit",
                 MUTED,
             ),
         ],
@@ -177,9 +192,18 @@ pub fn draw(f: &mut Frame, a: &mut App) {
     if a.settings_form.is_some() {
         settings_form(f, area, a);
     }
-    if let Some(request) = &a.settings_confirm {
+    if a.settings_confirm.is_some() {
         let rect = center(area, 82, 11);
         f.render_widget(Clear, rect);
+        hit(a, area, Hit::Dismiss);
+        hit(a, rect, Hit::Capture);
+        let profile = a
+            .settings_confirm
+            .as_ref()
+            .map(|request| s(request, "profile").to_owned())
+            .unwrap_or_default();
+        let pending = a.settings_pending;
+        let notice = a.notice.clone();
         let b = panel("REMOVE PROVIDER PROFILE", RED);
         let inside = b.inner(rect);
         f.render_widget(b, rect);
@@ -187,30 +211,35 @@ pub fn draw(f: &mut Frame, a: &mut App) {
             f,
             inside,
             vec![
-                line(
-                    format!("Remove {} from saved configuration?", s(request, "profile")),
-                    ACID,
-                ),
+                line(format!("Remove {profile} from saved configuration?"), ACID),
                 line("Active/default profiles cannot be removed.", WHITE),
                 line(
                     "Stored credentials and session history are not deleted.",
                     MUTED,
                 ),
                 line(
-                    if a.settings_pending {
+                    if pending {
                         "Waiting for runtime…"
                     } else {
                         "Enter confirms · Esc cancels"
                     },
                     CYAN,
                 ),
-                line(&a.notice, MUTED),
+                line(&notice, MUTED),
             ],
         );
+        hit(
+            a,
+            Rect::new(inside.x, inside.y.saturating_add(3), 18, 1),
+            Hit::Confirm,
+        );
     }
-    if let Some(worker) = &a.confirm_cancel {
+    if a.confirm_cancel.is_some() {
         let rect = center(area, 72, 10);
         f.render_widget(Clear, rect);
+        hit(a, area, Hit::Dismiss);
+        hit(a, rect, Hit::Capture);
+        let worker = a.confirm_cancel.clone().unwrap_or_default();
         let b = panel("INTERRUPT ACTOR", RED);
         let inside = b.inner(rect);
         f.render_widget(b, rect);
@@ -219,17 +248,22 @@ pub fn draw(f: &mut Frame, a: &mut App) {
             inside,
             vec![
                 line("Cancel this worker through the OTP runtime?", WHITE),
-                line(worker, ACID),
+                line(&worker, ACID),
                 line("", WHITE),
                 line("Enter  request cancellation     Esc  keep working", MUTED),
             ],
+        );
+        hit(
+            a,
+            Rect::new(inside.x, inside.y.saturating_add(3), 28, 1),
+            Hit::Confirm,
         );
     }
     if !a.approvals.is_empty() {
         approval(f, area, a);
     }
 }
-fn header(f: &mut Frame, area: Rect, a: &App) {
+fn header(f: &mut Frame, area: Rect, a: &mut App) {
     let state = if !a.connected {
         "OFFLINE"
     } else if !a.initialized {
@@ -300,6 +334,11 @@ fn header(f: &mut Frame, area: Rect, a: &App) {
             ),
         ],
     );
+    hit(
+        a,
+        Rect::new(area.x, area.y.saturating_add(1), area.width, 1),
+        Hit::Models,
+    );
 }
 fn mission(f: &mut Frame, area: Rect, a: &mut App) {
     let columns = if area.width >= 108 {
@@ -319,6 +358,7 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
     let live = panel("LIVE ACTIVITY / ^T EXPAND TOOLS", CYAN);
     let live_inner = live.inner(zones[0]);
     f.render_widget(live, zones[0]);
+    hit(a, zones[0], Hit::ExpandTools);
     let elapsed = a.last_activity.map(|t| t.elapsed().as_secs());
     let status = if !a.connected {
         "Disconnected"
@@ -378,7 +418,25 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
             line("  F3   Inspect the evidence trail", VIOLET),
             line("  ^P   Open the command deck", ACID),
         ]);
+        let hint_y = inner
+            .y
+            .saturating_add((lines.len() as u16).saturating_sub(3));
         text(f, inner, lines);
+        hit(
+            a,
+            Rect::new(inner.x, hint_y, inner.width, 1),
+            Hit::View(View::Swarm),
+        );
+        hit(
+            a,
+            Rect::new(inner.x, hint_y.saturating_add(1), inner.width, 1),
+            Hit::View(View::Ledger),
+        );
+        hit(
+            a,
+            Rect::new(inner.x, hint_y.saturating_add(2), inner.width, 1),
+            Hit::Palette,
+        );
     } else {
         let mut lines = vec![];
         for e in &a.entries {
@@ -434,7 +492,7 @@ fn mission(f: &mut Frame, area: Rect, a: &mut App) {
         activity(f, columns[1], a);
     }
 }
-fn activity(f: &mut Frame, area: Rect, a: &App) {
+fn activity(f: &mut Frame, area: Rect, a: &mut App) {
     let b = panel("ACTOR TELEMETRY", CYAN);
     let inside = b.inner(area);
     f.render_widget(b, area);
@@ -457,8 +515,17 @@ fn activity(f: &mut Frame, area: Rect, a: &App) {
             line(" when the runtime creates them.", MUTED),
         ]);
     }
-    for w in a.workers.iter().rev().take(6) {
+    let shown: Vec<(usize, Value)> = a
+        .workers
+        .iter()
+        .enumerate()
+        .rev()
+        .take(6)
+        .map(|(index, w)| (index, w.clone()))
+        .collect();
+    for (index, w) in &shown {
         let color = status_color(s(w, "state"));
+        let before = lines.len();
         lines.extend(wrapped(
             &format!(" ● {}", worker_title(w)),
             inside.width,
@@ -482,10 +549,21 @@ fn activity(f: &mut Frame, area: Rect, a: &App) {
             ));
         }
         lines.push(line("   ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄", LINE));
+        let height = (lines.len() - before) as u16;
+        hit(
+            a,
+            Rect::new(
+                inside.x,
+                inside.y.saturating_add(before as u16),
+                inside.width,
+                height.max(1),
+            ),
+            Hit::Worker(*index),
+        );
     }
     text(f, inside, lines);
 }
-fn swarm(f: &mut Frame, area: Rect, a: &App) {
+fn swarm(f: &mut Frame, area: Rect, a: &mut App) {
     let parts = if area.width > 85 {
         split(
             area,
@@ -501,15 +579,23 @@ fn swarm(f: &mut Frame, area: Rect, a: &App) {
     let mut rows = vec![];
     let window = (inner.height as usize / 4).max(1);
     let start = a.selection.saturating_sub(window - 1);
-    for (index, w) in a.workers.iter().enumerate().skip(start).take(window) {
+    let visible: Vec<(usize, Value)> = a
+        .workers
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(window)
+        .map(|(index, w)| (index, w.clone()))
+        .collect();
+    for (index, w) in &visible {
         rows.push(Line::styled(
             format!(
                 " {} {:02}  {}",
-                if index == a.selection { "▶" } else { " " },
-                index + 1,
+                if *index == a.selection { "▶" } else { " " },
+                *index + 1,
                 worker_title(w)
             ),
-            if index == a.selection {
+            if *index == a.selection {
                 strong(ACID)
             } else {
                 style(status_color(s(w, "state")))
@@ -524,6 +610,16 @@ fn swarm(f: &mut Frame, area: Rect, a: &App) {
             MUTED,
         ));
         rows.push(line("", LINE));
+        hit(
+            a,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(((*index - start) * 4) as u16),
+                inner.width,
+                4,
+            ),
+            Hit::Worker(*index),
+        );
     }
     if a.workers.is_empty() {
         rows = vec![
@@ -586,7 +682,7 @@ fn event_label(e: &Value) -> String {
         s(data, "status")
     )
 }
-fn ledger(f: &mut Frame, area: Rect, a: &App) {
+fn ledger(f: &mut Frame, area: Rect, a: &mut App) {
     let b = panel("FLIGHT RECORDER / DURABLE EVENTS · ENTER EXPANDS", VIOLET);
     let inner = b.inner(area);
     f.render_widget(b, area);
@@ -594,14 +690,17 @@ fn ledger(f: &mut Frame, area: Rect, a: &App) {
         .selection
         .saturating_sub(inner.height.saturating_sub(1) as usize);
     let mut rows = vec![];
-    for (i, e) in a
+    let visible: Vec<(usize, Value)> = a
         .events
         .iter()
         .rev()
         .enumerate()
         .skip(start)
         .take(inner.height as usize)
-    {
+        .map(|(i, e)| (i, e.clone()))
+        .collect();
+    for (i, e) in &visible {
+        let i = *i;
         let seq = e["goal_seq"].as_u64().unwrap_or(0);
         rows.push(Line::styled(
             format!(
@@ -616,6 +715,16 @@ fn ledger(f: &mut Frame, area: Rect, a: &App) {
                 style(WHITE)
             },
         ));
+        hit(
+            a,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add((i - start) as u16),
+                inner.width,
+                1,
+            ),
+            Hit::Ledger(i),
+        );
     }
     if rows.is_empty() {
         rows.push(line(
@@ -625,7 +734,7 @@ fn ledger(f: &mut Frame, area: Rect, a: &App) {
     }
     text(f, inner, rows);
 }
-fn composer(f: &mut Frame, area: Rect, a: &App) {
+fn composer(f: &mut Frame, area: Rect, a: &mut App) {
     let title = if a.view != View::Mission {
         "DRAFT PARKED / F1 TO EDIT"
     } else if !a.initialized {
@@ -642,6 +751,7 @@ fn composer(f: &mut Frame, area: Rect, a: &App) {
         .style(Style::default().bg(PANEL));
     let inner = b.inner(area);
     f.render_widget(b, area);
+    hit(a, area, Hit::Composer);
     let before = &a.editor.text[..a.editor.cursor];
     let row = before.chars().filter(|c| *c == '\n').count();
     let col = UnicodeWidthStr::width(before.rsplit('\n').next().unwrap_or(""));
@@ -725,6 +835,21 @@ fn composer(f: &mut Frame, area: Rect, a: &App) {
                     .collect()
             };
             text(f, inside, rows);
+            for (row, i) in (start..)
+                .take(window.min(commands.len().saturating_sub(start)))
+                .enumerate()
+            {
+                hit(
+                    a,
+                    Rect::new(
+                        inside.x,
+                        inside.y.saturating_add(row as u16),
+                        inside.width,
+                        1,
+                    ),
+                    Hit::SlashRow(i),
+                );
+            }
         } else if !matches.is_empty() {
             let height = (matches.len().min(7) + 2) as u16;
             let rect = Rect::new(
@@ -758,6 +883,21 @@ fn composer(f: &mut Frame, area: Rect, a: &App) {
                     })
                     .collect(),
             );
+            for (row, i) in (start..)
+                .take(7.min(matches.len().saturating_sub(start)))
+                .enumerate()
+            {
+                hit(
+                    a,
+                    Rect::new(
+                        inside.x,
+                        inside.y.saturating_add(row as u16),
+                        inside.width,
+                        1,
+                    ),
+                    Hit::ReferenceRow(i),
+                );
+            }
         }
     }
 }
@@ -778,6 +918,8 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
         area.height.saturating_sub(4),
     );
     f.render_widget(Clear, rect);
+    hit(a, area, Hit::Dismiss);
+    hit(a, rect, Hit::Capture);
     let kind = s(d, "type");
     let title = if kind == "model_catalog" && d["combined"] == true {
         "MODEL SELECTION".into()
@@ -840,6 +982,60 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
         " ↑↓ / PgUp PgDn scroll · ^Y copy · Esc back".into()
     };
     text(f, zones[0], vec![line(help, MUTED)]);
+    if d["mission_actions"].is_array() {
+        let mut x = zones[0].x;
+        for action in crate::app::array(d, "mission_actions") {
+            let (key, label) = match action.as_str() {
+                Some("start") => ('s', "s start"),
+                Some("pause") => ('p', "p pause"),
+                Some("resume") => ('r', "r resume"),
+                Some("dismiss") => ('d', "d dismiss"),
+                Some("stop") => ('x', "x stop"),
+                Some("delete") => ('X', "X delete"),
+                _ => continue,
+            };
+            let width = (label.len() as u16).saturating_add(3);
+            hit(a, Rect::new(x, zones[0].y, width, 1), Hit::Char(key));
+            x = x.saturating_add(width);
+        }
+        hit(a, Rect::new(x, zones[0].y, 12, 1), Hit::Char('f'));
+    } else if kind == "provider_settings" {
+        for (i, key) in ['n', 'e', ' ', 'x', 'l'].into_iter().enumerate() {
+            hit(
+                a,
+                Rect::new(zones[0].x.saturating_add(i as u16 * 12), zones[0].y, 11, 1),
+                Hit::Char(key),
+            );
+        }
+    } else if kind == "model_catalog" && d["combined"] == true {
+        hit(a, Rect::new(zones[0].x, zones[0].y, 12, 1), Hit::Char('/'));
+        hit(
+            a,
+            Rect::new(
+                zones[0].x.saturating_add(zones[0].width.saturating_sub(28)),
+                zones[0].y,
+                14,
+                1,
+            ),
+            Hit::Char('p'),
+        );
+        hit(
+            a,
+            Rect::new(
+                zones[0].x.saturating_add(zones[0].width.saturating_sub(12)),
+                zones[0].y,
+                12,
+                1,
+            ),
+            Hit::Char('r'),
+        );
+    } else if kind == "models" {
+        hit(
+            a,
+            Rect::new(zones[0].x.saturating_add(22), zones[0].y, 16, 1),
+            Hit::Char('p'),
+        );
+    }
     text(f, zones[2], vec![line(&a.notice, CYAN)]);
     let mut lines = vec![];
     if !rows.is_empty() {
@@ -948,6 +1144,19 @@ fn drawer(f: &mut Frame, area: Rect, a: &mut App, d: &Value) {
                     style(WHITE)
                 },
             ));
+            let activate = (kind == "model_catalog" && d["combined"] == true)
+                || kind == "provider_kind_picker"
+                || kind == "prompt_history";
+            hit(
+                a,
+                Rect::new(
+                    body.x,
+                    body.y.saturating_add((i - start) as u16),
+                    body.width,
+                    1,
+                ),
+                Hit::DrawerRow { index: i, activate },
+            );
         }
         text(f, body, lines);
         return;
@@ -1020,16 +1229,30 @@ fn command_hint(cmd: &str) -> &str {
         _ => "runtime command",
     }
 }
-fn settings_form(f: &mut Frame, area: Rect, a: &App) {
-    let Some(form) = &a.settings_form else {
+fn settings_form(f: &mut Frame, area: Rect, a: &mut App) {
+    let Some((title, profile, provider, action, index, fields, pending)) =
+        a.settings_form.as_ref().map(|form| {
+            (
+                form.title.clone(),
+                form.profile.clone(),
+                form.provider.clone(),
+                form.action.clone(),
+                form.index,
+                form.fields
+                    .iter()
+                    .map(|(name, editor)| (name.clone(), editor.text.clone(), editor.cursor))
+                    .collect::<Vec<_>>(),
+                a.settings_pending,
+            )
+        })
+    else {
         return;
     };
     let rect = center(area, 96, 20);
     f.render_widget(Clear, rect);
-    let b = panel(
-        &format!("{} / {} {}", form.title, form.profile, form.provider),
-        ACID,
-    );
+    hit(a, area, Hit::Dismiss);
+    hit(a, rect, Hit::Capture);
+    let b = panel(&format!("{} / {} {}", title, profile, provider), ACID);
     let inner = b.inner(rect);
     f.render_widget(b, rect);
     let zones = split(
@@ -1050,7 +1273,7 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
                 CYAN,
             ),
             line(
-                if form.action == "select" {
+                if action == "select" {
                     "Saves profile + routing mode; preserves conversation"
                 } else {
                     "Saves profile + project endpoints; current profile changes apply now"
@@ -1060,9 +1283,8 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
         ],
     );
     let window = zones[1].height.max(1) as usize;
-    let start = form.index.saturating_sub(window - 1);
-    for (row, (i, (name, editor))) in form
-        .fields
+    let start = index.saturating_sub(window - 1);
+    for (row, (i, (name, text_value, cursor))) in fields
         .iter()
         .enumerate()
         .skip(start)
@@ -1081,21 +1303,21 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
             f,
             line_area,
             vec![line(
-                format!("{}{name:<12}", if i == form.index { "›" } else { " " }),
-                if i == form.index { ACID } else { MUTED },
+                format!("{}{name:<12}", if i == index { "›" } else { " " }),
+                if i == index { ACID } else { MUTED },
             )],
         );
-        let column = UnicodeWidthStr::width(&editor.text[..editor.cursor]);
+        let column = UnicodeWidthStr::width(&text_value[..*cursor]);
         let scroll = column
             .saturating_sub(field_area.width.saturating_sub(1) as usize)
             .min(u16::MAX as usize) as u16;
         f.render_widget(
-            Paragraph::new(clean(&editor.text))
+            Paragraph::new(clean(text_value))
                 .style(style(WHITE))
                 .scroll((0, scroll)),
             field_area,
         );
-        if i == form.index && !a.settings_pending {
+        if i == index && !pending {
             f.set_cursor_position((
                 field_area.x
                     + column
@@ -1105,29 +1327,33 @@ fn settings_form(f: &mut Frame, area: Rect, a: &App) {
                 field_area.y,
             ));
         }
+        hit(a, line_area, Hit::FormField(i));
     }
-    let hint = match form.fields[form.index].0.as_str() {
-        "api_key_env" => "Environment variable NAME only. Never paste an API key here.",
-        "auth_mode" => "environment | chatgpt (OpenAI) | saved (existing credentials)",
-        "strategy" => "manual = pin this model · auto = route automatically · local_only",
-        "team_mode" => {
+    let hint = match fields.get(index).map(|(name, _, _)| name.as_str()) {
+        Some("api_key_env") => "Environment variable NAME only. Never paste an API key here.",
+        Some("auth_mode") => "environment | chatgpt (OpenAI) | saved (existing credentials)",
+        Some("strategy") => "manual = pin this model · auto = route automatically · local_only",
+        Some("team_mode") => {
             "auto = task-based subagents · solo = no automatic team. Same-model workers are supported."
         }
-        "base_url" => "Changing address clears saved credential references.",
-        "profile" => "Unique name: letters, digits, dots, underscores, hyphens",
+        Some("base_url") => "Changing address clears saved credential references.",
+        Some("profile") => "Unique name: letters, digits, dots, underscores, hyphens",
         _ => "Exact model ID; use the model catalogue where available.",
     };
     let mut footer = wrapped(hint, zones[2].width, MUTED);
     footer.extend(wrapped(
         &a.notice,
         zones[2].width,
-        if a.settings_pending { CYAN } else { WHITE },
+        if pending { CYAN } else { WHITE },
     ));
     text(f, zones[2], footer);
+    hit(a, Rect::new(zones[2].x, zones[2].y, 16, 1), Hit::FormSave);
 }
-fn palette(f: &mut Frame, area: Rect, a: &App) {
+fn palette(f: &mut Frame, area: Rect, a: &mut App) {
     let rect = center(area, 68, 17);
     f.render_widget(Clear, rect);
+    hit(a, area, Hit::Dismiss);
+    hit(a, rect, Hit::Capture);
     let b = panel("COMMAND DECK / TYPE TO FILTER", ACID);
     let inner = b.inner(rect);
     f.render_widget(b, rect);
@@ -1163,6 +1389,16 @@ fn palette(f: &mut Frame, area: Rect, a: &App) {
                 style(MUTED)
             },
         ));
+        hit(
+            a,
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(2 + (i - start) as u16),
+                inner.width,
+                1,
+            ),
+            Hit::PaletteRow(i),
+        );
     }
     if items.is_empty() {
         lines.push(line(" No matching command", MUTED));
@@ -1170,22 +1406,21 @@ fn palette(f: &mut Frame, area: Rect, a: &App) {
     text(f, inner, lines);
 }
 fn approval(f: &mut Frame, area: Rect, a: &mut App) {
-    let request = &a.approvals[0];
+    let request = a.approvals[0].clone();
+    let pending = a.approvals.len();
     let rect = center(area, 90, 19);
     f.render_widget(Clear, rect);
+    hit(a, area, Hit::Dismiss);
+    hit(a, rect, Hit::Capture);
     let b = panel("AUTHORITY GATE / YOUR DECISION", RED);
     let inner = b.inner(rect);
     f.render_widget(b, rect);
     let mut lines = vec![
         line(
-            format!(
-                "{} pending · actor {}",
-                a.approvals.len(),
-                s(request, "session_id")
-            ),
+            format!("{} pending · actor {}", pending, s(&request, "session_id")),
             MUTED,
         ),
-        line(format!("Tool: {}", s(request, "tool")), ACID),
+        line(format!("Tool: {}", s(&request, "tool")), ACID),
         line("↑↓ scroll arguments · ← → choose", MUTED),
     ];
     let arguments = wrapped(
@@ -1200,6 +1435,7 @@ fn approval(f: &mut Frame, area: Rect, a: &mut App) {
     lines.extend(arguments.into_iter().skip(a.approval_scroll).take(visible));
     lines.push(line("", WHITE));
     let labels = [" DENY ", " ALLOW ONCE ", " ALLOW ALWAYS / SCOPED "];
+    let button_y = inner.y.saturating_add(lines.len() as u16);
     for (i, label) in labels.iter().enumerate() {
         lines.push(Line::styled(
             label.to_string(),
@@ -1212,6 +1448,11 @@ fn approval(f: &mut Frame, area: Rect, a: &mut App) {
                 style(MUTED)
             },
         ));
+        hit(
+            a,
+            Rect::new(inner.x, button_y.saturating_add(i as u16), inner.width, 1),
+            Hit::Approval(i),
+        );
     }
     lines.push(line(
         if a.resolving.is_some() {

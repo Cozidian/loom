@@ -7,13 +7,11 @@ mod ui;
 
 use app::App;
 use crossterm::{
-    event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers, MouseEventKind,
-    },
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
     execute,
 };
 use serde_json::{Value, json};
+use std::io::Write;
 use std::{
     fs::{File, OpenOptions},
     io::{self, BufReader},
@@ -100,16 +98,13 @@ fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_pointer_mouse();
         let _ = execute!(io::stdout(), DisableBracketedPaste);
         previous_hook(info);
     }));
     let result = (|| -> io::Result<()> {
-        // Do not enable mouse capture. Crossterm's EnableMouseCapture also
-        // turns on any-event tracking (1003h), which blocks native terminal
-        // selection/copy in Ghostty and other emulators. Wheel paging stays
-        // on PageUp/PageDown; some terminals still deliver wheel as mouse
-        // events without capture, and those still page the transcript.
         execute!(io::stdout(), EnableBracketedPaste)?;
+        enable_pointer_mouse()?;
         let mut exit_started = None;
         let mut dirty = true;
         let mut copying: Option<mpsc::Receiver<clipboard::CopyResult>> = None;
@@ -224,25 +219,31 @@ fn main() -> io::Result<()> {
                             a.command_index = 0;
                         }
                     }
-                    Event::Mouse(m) => {
-                        let code = match m.kind {
-                            MouseEventKind::ScrollUp => Some(KeyCode::PageUp),
-                            MouseEventKind::ScrollDown => Some(KeyCode::PageDown),
-                            _ => None,
-                        };
-                        if let Some(code) = code {
-                            a.key(KeyEvent::new(code, KeyModifiers::NONE));
-                        }
-                    }
+                    Event::Mouse(m) => a.mouse(m),
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
         }
     })();
+    let _ = disable_pointer_mouse();
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+fn enable_pointer_mouse() -> io::Result<()> {
+    // Button tracking + SGR coordinates. Skip 1002/1003 so Ghostty Shift-drag
+    // can still select text for native copy.
+    let mut out = io::stdout();
+    out.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+    out.flush()
+}
+
+fn disable_pointer_mouse() -> io::Result<()> {
+    let mut out = io::stdout();
+    out.write_all(b"\x1b[?1006l\x1b[?1000l")?;
+    out.flush()
 }
 
 #[cfg(test)]

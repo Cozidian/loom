@@ -1,8 +1,31 @@
 use crate::editor::{Editor, clean};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Hit {
+    Capture,
+    Dismiss,
+    View(View),
+    Models,
+    Palette,
+    PaletteRow(usize),
+    DrawerRow { index: usize, activate: bool },
+    SlashRow(usize),
+    ReferenceRow(usize),
+    Worker(usize),
+    Ledger(usize),
+    FormField(usize),
+    FormSave,
+    Confirm,
+    Approval(usize),
+    ExpandTools,
+    Composer,
+    Char(char),
+}
 
 pub fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v[key].as_str().unwrap_or("")
@@ -12,6 +35,13 @@ pub fn array(v: &Value, key: &str) -> Vec<Value> {
 }
 pub fn command(name: &str, query: &str) -> Value {
     json!({"type":"command","command":name,"query":query})
+}
+
+fn contains(rect: Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
 }
 pub const COMMANDS: &[&str] = &[
     "mission",
@@ -38,7 +68,7 @@ pub const COMMANDS: &[&str] = &[
     "new",
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Mission,
     Swarm,
@@ -121,6 +151,8 @@ pub struct App {
     pub outgoing: Vec<Value>,
     pub quit: bool,
     pub demo: bool,
+    pub hits: Vec<(Rect, Hit)>,
+    pub last_pointer: Option<(Hit, Instant)>,
 }
 
 impl Default for App {
@@ -185,6 +217,8 @@ impl Default for App {
             outgoing: vec![],
             quit: false,
             demo: false,
+            hits: vec![],
+            last_pointer: None,
         }
     }
 }
@@ -1145,6 +1179,108 @@ impl App {
         } else {
             self.clipboard = Some(content);
             self.notice = "Copying output…".into();
+        }
+    }
+
+    pub fn mouse(&mut self, m: MouseEvent) {
+        if m.modifiers.contains(KeyModifiers::SHIFT) {
+            return;
+        }
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                self.key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            }
+            MouseEventKind::ScrollDown => {
+                self.key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            }
+            MouseEventKind::Down(MouseButton::Right) => self.copy_output(false),
+            MouseEventKind::Down(MouseButton::Left) => self.pointer(m.column, m.row),
+            _ => {}
+        }
+    }
+
+    fn pointer(&mut self, column: u16, row: u16) {
+        let Some(hit) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| contains(*rect, column, row))
+            .map(|(_, hit)| hit.clone())
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let doubled = self.last_pointer.as_ref().is_some_and(|(previous, at)| {
+            previous == &hit && now.duration_since(*at) <= Duration::from_millis(500)
+        });
+        self.last_pointer = Some((hit.clone(), now));
+        self.apply_hit(hit, doubled);
+    }
+
+    fn apply_hit(&mut self, hit: Hit, doubled: bool) {
+        match hit {
+            Hit::Capture => {}
+            Hit::Dismiss => self.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Hit::View(view) => {
+                self.view = view;
+                self.selection = 0;
+            }
+            Hit::Models => self.dispatch("models", ""),
+            Hit::Palette => {
+                self.palette = true;
+                self.palette_query.clear();
+                self.palette_index = 0;
+            }
+            Hit::PaletteRow(index) => {
+                self.palette_index = index;
+                self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            }
+            Hit::DrawerRow { index, activate } => {
+                self.selection = index;
+                if activate || doubled {
+                    self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+            }
+            Hit::SlashRow(index) => {
+                self.command_index = index;
+                self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            }
+            Hit::ReferenceRow(index) => {
+                self.picker_index = index;
+                self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            }
+            Hit::Worker(index) => {
+                self.view = View::Swarm;
+                self.selection = index.min(self.workers.len().saturating_sub(1));
+                if doubled {
+                    self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+            }
+            Hit::Ledger(index) => {
+                self.view = View::Ledger;
+                self.selection = index.min(self.events.len().saturating_sub(1));
+                if doubled {
+                    self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+            }
+            Hit::FormField(index) => {
+                if let Some(form) = &mut self.settings_form {
+                    form.index = index.min(form.fields.len().saturating_sub(1));
+                }
+            }
+            Hit::FormSave => self.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Hit::Confirm => self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Hit::Approval(choice) => {
+                self.approval_choice = choice.min(2);
+                if doubled {
+                    self.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+            }
+            Hit::ExpandTools => self.expand_tools = !self.expand_tools,
+            Hit::Composer => {
+                self.view = View::Mission;
+            }
+            Hit::Char(c) => self.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
         }
     }
     pub fn key(&mut self, k: KeyEvent) {
