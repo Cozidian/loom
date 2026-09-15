@@ -401,7 +401,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 10
+    assert migrated["version"] == 11
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "echo"
@@ -428,7 +428,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 10
+    assert migrated["version"] == 11
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["active_profile"] == "ollama"
@@ -460,7 +460,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 10
+    assert migrated["version"] == 11
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
     assert migrated["context_window_tokens"] == 32_000
@@ -491,7 +491,7 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 10
+    assert migrated["version"] == 11
     refute Map.has_key?(migrated, "max_steps")
     refute Map.has_key?(migrated, "timeout_ms")
   end
@@ -519,8 +519,38 @@ defmodule BeamAgent.CLITest do
     File.write!(context.config_path, JSON.encode!(legacy))
 
     assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
-    assert migrated["version"] == 10
+    assert migrated["version"] == 11
     refute Map.has_key?(migrated, "timeout_ms")
+  end
+
+  test "version 10 configuration gains memory defaults", context do
+    legacy = %{
+      "version" => 10,
+      "active_profile" => "echo",
+      "profiles" => %{
+        "echo" => %{
+          "provider" => "echo",
+          "model" => nil,
+          "base_url" => nil,
+          "api_key_env" => nil
+        }
+      },
+      "approval_policy" => "ask",
+      "model_strategy" => "auto",
+      "data_dir" => context.data_dir,
+      "context_window_tokens" => 32_000,
+      "compaction_threshold_percent" => 75,
+      "team_mode" => "solo"
+    }
+
+    File.mkdir_p!(context.root)
+    File.write!(context.config_path, JSON.encode!(legacy))
+
+    assert {:ok, migrated} = BeamAgent.CLI.Config.load(context.config_path)
+    assert migrated["version"] == 11
+    assert migrated["memory_enabled"] == true
+    assert migrated["memory_max_entries"] == 200
+    assert migrated["memory_max_bytes"] == 500_000
   end
 
   test "grok CLI alias resolves to the xAI runtime provider", context do

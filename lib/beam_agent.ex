@@ -204,6 +204,11 @@ defmodule BeamAgent do
 
   def project_context_artifacts(project_id), do: BeamAgent.Project.ContextStore.list(project_id)
 
+  def remember(project_id, attributes), do: BeamAgent.Project.Memory.put(project_id, attributes)
+  def recall(project_id), do: BeamAgent.Project.Memory.list(project_id)
+  def recall(project_id, id), do: BeamAgent.Project.Memory.fetch(project_id, id)
+  def forget(project_id, id), do: BeamAgent.Project.Memory.forget(project_id, id)
+
   def project_preferences(project_id), do: BeamAgent.ModelRouter.preferences(project_id)
 
   def set_project_preferences(project_id, preferences) when is_map(preferences) do
@@ -543,6 +548,9 @@ defmodule BeamAgent do
       :resource_limits,
       :repository_scan_interval_ms,
       :repository_max_files,
+      :memory_enabled,
+      :memory_max_entries,
+      :memory_max_bytes,
       :routing_evidence_mode,
       :routing_exploration_percent,
       :routing_excluded_endpoints,
