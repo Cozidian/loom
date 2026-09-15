@@ -194,6 +194,14 @@ establish unattended reliability. See [commands, limits and trial evidence](docs
 - [ ] Test interruption, cancellation and reconnect around the actual coding and
   document workflows, including partially completed artifacts.
 
+### Sandboxed command execution
+
+- [x] Host-selected command sandbox backends, with macOS Seatbelt as the first
+  enforcing backend. `run_command` and verification report `sandbox_backend`.
+  Missing backends fail closed; models cannot choose the backend.
+- [ ] Add Docker and Linux Bubblewrap backends so the same command/verification
+  path can run on hosts without Seatbelt.
+
 ### Efficient use of intelligence
 
 - [ ] Establish a baseline of calls, repeated context, retries, elapsed time and

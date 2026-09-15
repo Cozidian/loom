@@ -94,8 +94,9 @@ File mutations and commands use the `ask` approval policy by default. Explicit
 `--approval auto` reduces prompts while retaining runtime safeguards; it grants
 broad tool approval, not a special “never push” policy. The vision's default of
 leaving publication to you is not yet a separate enforced permission category.
-Sandboxed command execution currently has a macOS backend; other platforms
-fail closed until an enforcing backend is available.
+Sandboxed command execution currently uses a macOS Seatbelt backend
+(`macos-seatbelt`); other platforms fail closed until an enforcing backend is
+available. Command results name the backend that ran.
 
 A terminal-only build can use `--frontend rust`
 with the legacy terminal-owned `./loom run` entry point; the service build includes Desk.

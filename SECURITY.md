@@ -17,9 +17,9 @@ independent security audit. Start with non-sensitive workspaces and the default
   browser access; no password is required.
 - `--approval auto` broadly approves tools within runtime safeguards. It is not
   an enforced prohibition on publication, destructive actions or provider costs.
-- Command sandboxing currently has a macOS implementation; unsupported platforms
-  fail closed. Word automation is a separate desktop capability, not proof that
-  arbitrary document parsing is safe.
+- Command sandboxing currently has a macOS Seatbelt backend (`macos-seatbelt`);
+  unsupported platforms fail closed. Word automation is a separate desktop
+  capability, not proof that arbitrary document parsing is safe.
 - Prompts, source excerpts and documents sent to a provider leave your machine
   unless that provider is local. Choose inputs and accounts accordingly.
 - Closing a client does not stop service-owned work. Use cancellation, observer

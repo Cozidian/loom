@@ -272,6 +272,12 @@ defmodule BeamAgent.CLITest do
     assert doctor =~ "ok  provider  echo"
     assert doctor =~ "ok  runtime"
 
+    if :os.type() == {:unix, :darwin} do
+      assert doctor =~ "ok  sandbox   macos-seatbelt (workspace-write)"
+    else
+      assert doctor =~ "warn sandbox   unavailable"
+    end
+
     {0, providers} = run_stdout(["providers"])
     assert providers =~ "demo\tDeterministic tool/subagent demo\tBeamAgent.Providers.Demo"
     assert providers =~ "echo\tDeterministic echo provider\tBeamAgent.Providers.Echo"
