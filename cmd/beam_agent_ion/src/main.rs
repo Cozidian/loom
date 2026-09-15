@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod editor;
+mod markdown;
 mod protocol;
 mod ui;
 
