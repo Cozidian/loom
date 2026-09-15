@@ -205,6 +205,13 @@ establish unattended reliability. See [commands, limits and trial evidence](docs
   everywhere. Surface which backend ran a given execution.
 
 Neither item has evidence yet; both are candidates to try, not commitments.
+### Sandboxed command execution
+
+- [x] Host-selected command sandbox backends, with macOS Seatbelt as the first
+  enforcing backend. `run_command` and verification report `sandbox_backend`.
+  Missing backends fail closed; models cannot choose the backend.
+- [ ] Add Docker and Linux Bubblewrap backends so the same command/verification
+  path can run on hosts without Seatbelt.
 
 ### Efficient use of intelligence
 

@@ -395,8 +395,10 @@ prominently while it is enabled. The older `allow` spelling remains accepted as
 an alias. Auto mode is intentionally explicit because it grants model-selected
 writes and commands. It does not disable workspace confinement, observed-file
 checks, or command sandboxing. Command confinement currently has a macOS
-Seatbelt backend; other platforms fail closed with `sandbox_unavailable` until
-an enforcing backend is added. Run `./beam_agent tools` to inspect the active
+Seatbelt backend (`macos-seatbelt`); `run_command` results include
+`sandbox_backend`, and `./loom doctor` reports the selected backend. Other
+platforms fail closed with `sandbox_unavailable` until an enforcing backend is
+added. Run `./beam_agent tools` to inspect the active
 tool catalog.
 
 Local MCP servers can be attached to a running goal with

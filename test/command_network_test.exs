@@ -36,7 +36,9 @@ defmodule BeamAgent.CommandNetworkTest do
       assert first.resource.hosts == nil
       :ok = BeamAgent.respond_approval(ctx.id, first.approval_id, :allow_always)
       assert {:ok, output} = Task.await(offline, 10_000)
-      assert JSON.decode!(output)["network"] == "loopback-only"
+      decoded = JSON.decode!(output)
+      assert decoded["network"] == "loopback-only"
+      assert decoded["sandbox_backend"] == "macos-seatbelt"
 
       external_command = Map.put(command, "network", "external")
 
