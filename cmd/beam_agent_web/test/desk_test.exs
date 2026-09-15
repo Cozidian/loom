@@ -219,6 +219,46 @@ defmodule BeamAgentWeb.DeskTest do
     assert {:ok, _} = BeamAgent.agent_pid(ctx.id)
   end
 
+  test "the directory shows each session's live activity and escapes untrusted fields" do
+    five_minutes_ago = DateTime.add(DateTime.utc_now(), -300, :second) |> DateTime.to_iso8601()
+
+    html =
+      BeamAgentWeb.Page.directory(%{
+        "sessions" => [
+          %{
+            "session_id" => "session-idle",
+            "workspace" => "/work/idle",
+            "owner_pid" => "1",
+            "started_at" => five_minutes_ago,
+            "agent_status" => "idle"
+          },
+          %{
+            "session_id" => "session-running",
+            "workspace" => "/work/running",
+            "owner_pid" => "1",
+            "started_at" => five_minutes_ago,
+            "agent_status" => "running",
+            "running_for_ms" => 65_000
+          },
+          %{
+            "session_id" => "<script>alert(1)</script>",
+            "workspace" => "/work/unknown",
+            "owner_pid" => "1",
+            "started_at" => nil
+          }
+        ]
+      })
+
+    assert html =~ "status-idle"
+    assert html =~ "Idle"
+    assert html =~ "status-running"
+    assert html =~ "Running · 1m"
+    assert html =~ "status-unknown"
+    assert html =~ "Started 5m ago"
+    refute html =~ "<script>"
+    assert html =~ "&lt;script&gt;"
+  end
+
   test "rendering escapes untrusted activity and session text" do
     html =
       BeamAgentWeb.Page.panels(

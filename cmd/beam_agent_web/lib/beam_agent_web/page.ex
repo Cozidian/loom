@@ -56,13 +56,51 @@ defmodule BeamAgentWeb.Page do
     #{if directory["unavailable"], do: "<p>Discovery unavailable. Session count is unknown.</p>", else: ""}
     #{if sessions == [], do: "<p class=muted>No discoverable live sessions. Start a TUI with the rebuilt CLI. Older running binaries need one restart to publish their connection.</p>", else: ""}
     <div class="session-grid">#{Enum.map_join(sessions, fn session -> """
-        <article class="session-card"><div class="card-chrome" aria-hidden="true"><span>● ● ●</span><span>runtime.ex</span></div><p class="eyebrow">Live runtime · PID #{escape(session["owner_pid"])}</p>
+        <article class="session-card"><div class="card-chrome" aria-hidden="true"><span>● ● ●</span><span>runtime.ex</span></div>
+        <div class="session-top"><p class="eyebrow">Live runtime · PID #{escape(session["owner_pid"])}</p>#{activity_badge(session)}</div>
         <h2>#{escape(Path.basename(session["workspace"] || "Workspace"))}</h2><p class="muted">#{escape(session["workspace"])}</p>
+        <p class="session-meta">#{escape(started_ago(session["started_at"]))}</p>
         <p class="session-id">#{escape(session["session_id"])}</p><a class="session-open" href="/sessions/#{escape(session["session_id"])}">Open session ↗</a>
         <div class="attach-command"><p class="muted">Attach a terminal</p><code>./loom attach #{escape(session["session_id"])}</code></div></article>
       """ end)}</div>
     """
   end
+
+  defp activity_badge(session) do
+    case session["agent_status"] do
+      "running" ->
+        "<span class=\"status-pill status-running\">● Running#{running_for(session["running_for_ms"])}</span>"
+
+      "cancelling" ->
+        "<span class=\"status-pill status-cancelling\">● Stopping</span>"
+
+      "idle" ->
+        "<span class=\"status-pill status-idle\">● Idle</span>"
+
+      _ ->
+        "<span class=\"status-pill status-unknown\">● Unknown</span>"
+    end
+  end
+
+  defp running_for(ms) when is_integer(ms), do: " · " <> compact_duration(div(ms, 1000))
+  defp running_for(_), do: ""
+
+  defp started_ago(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, started, _} ->
+        "Started " <> compact_duration(DateTime.diff(DateTime.utc_now(), started)) <> " ago"
+
+      _ ->
+        ""
+    end
+  end
+
+  defp started_ago(_), do: ""
+
+  defp compact_duration(seconds) when seconds < 60, do: "#{max(seconds, 0)}s"
+  defp compact_duration(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m"
+  defp compact_duration(seconds) when seconds < 86_400, do: "#{div(seconds, 3600)}h"
+  defp compact_duration(seconds), do: "#{div(seconds, 86_400)}d"
 
   def desk(result, csrf, notice, session_id \\ nil) do
     prefix = session_prefix(session_id)

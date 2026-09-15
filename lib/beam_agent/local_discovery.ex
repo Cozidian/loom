@@ -60,23 +60,39 @@ defmodule BeamAgent.LocalDiscovery do
 
       sessions =
         entries
-        |> Task.async_stream(fn name -> lookup(String.trim_trailing(name, ".json"), dir) end,
+        |> Task.async_stream(fn name -> annotated(String.trim_trailing(name, ".json"), dir) end,
           max_concurrency: 8,
-          timeout: 3000,
+          timeout: 4000,
           on_timeout: :kill_task
         )
         |> Enum.flat_map(fn
-          {:ok, {:ok, record}} ->
-            [Map.take(record, ["session_id", "workspace", "started_at", "owner_pid"])]
-
-          _ ->
-            []
+          {:ok, {:ok, session}} -> [session]
+          _ -> []
         end)
 
       {:ok, %{sessions: sessions, limit: 200}}
     else
       {:error, :enoent} -> {:ok, %{sessions: [], limit: 200}}
       _ -> {:error, :discovery_unavailable}
+    end
+  end
+
+  # A directory listing is a mini activity summary, not a content view: it
+  # gets the same identity-verified round trip already made for `lookup/2`,
+  # plus one more cheap in-memory read (no extra content, no extra risk) --
+  # never the conversation, prompt or task detail itself.
+  defp annotated(id, dir) do
+    with {:ok, record} <- lookup(id, dir) do
+      activity =
+        case request(record, :get, "/api/v1/activity") do
+          {:ok, activity} -> Map.take(activity, ["agent_status", "running_for_ms"])
+          _ -> %{}
+        end
+
+      {:ok,
+       record
+       |> Map.take(["session_id", "workspace", "started_at", "owner_pid"])
+       |> Map.merge(activity)}
     end
   end
 

@@ -144,6 +144,13 @@ defmodule BeamAgent.ControlPlane.HTTPServer do
     json(200, %{ok: true, result: identity})
   end
 
+  defp route(%{method: "GET", path: "/api/v1/activity"}, control_plane, _token) do
+    case ControlPlane.activity(control_plane) do
+      {:ok, activity} -> json(200, %{ok: true, result: activity})
+      {:error, reason} -> json(200, %{ok: false, error: catalog_error(reason)})
+    end
+  end
+
   defp route(%{method: "GET", path: "/"}, _control_plane, token),
     do: response(200, "text/html; charset=utf-8", page(token))
 

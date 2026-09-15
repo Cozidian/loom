@@ -40,6 +40,7 @@ defmodule BeamAgent.Runtime.Client do
     do: GenServer.call(client, {:reconnect, session_id, opts})
 
   def status(client), do: GenServer.call(client, :status)
+  def activity(client), do: GenServer.call(client, :activity)
 
   def inspect_events(client, query, opts),
     do: GenServer.call(client, {:inspect_events, query, opts})
@@ -284,6 +285,25 @@ defmodule BeamAgent.Runtime.Client do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  # Cheap enough to fan out to every discovered session for a directory
+  # listing: no cross-process call, just the status this client already
+  # tracks reactively (bootstrap/snapshot/event handling keep it current).
+  def handle_call(:activity, _from, state) do
+    activity =
+      case state.current do
+        %{started_at: started_at} ->
+          %{
+            agent_status: state.agent_status,
+            running_for_ms: System.monotonic_time(:millisecond) - started_at
+          }
+
+        _ ->
+          %{agent_status: state.agent_status}
+      end
+
+    {:reply, {:ok, activity}, state}
   end
 
   def handle_call(:status, _from, state) do
@@ -620,7 +640,13 @@ defmodule BeamAgent.Runtime.Client do
            send(owner, {result_ref, BeamAgent.ask(state.session_id, prompt, attachment_ids)})
          end) do
       {:ok, pid} ->
-        current = %{pid: pid, monitor: Process.monitor(pid), result_ref: result_ref}
+        current = %{
+          pid: pid,
+          monitor: Process.monitor(pid),
+          result_ref: result_ref,
+          started_at: System.monotonic_time(:millisecond)
+        }
+
         notify(state, {:turn_started, prompt})
         {:reply, :ok, %{state | current: current, agent_status: :running}}
 
